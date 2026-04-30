@@ -1,0 +1,27 @@
+# MUSINSA STANDARD 히어로 봇 — 랭킹봇 설정
+# 매시간 정각에 무신사 랭킹 캡처 + 매일 09:00 일일 리포트
+
+bot:
+  name: "MUSINSA STANDARD 히어로 봇"
+  icon_path: "assets/hero_bot.png"
+
+ranking:
+  # SQLite 저장 경로 (hero_bot 기준 상대경로)
+  db_path: "data/rankings.db"
+
+  # 무신사 랭킹 섹션 — [전체] 탭 = sectionId 199 + subPan=product
+  section_id: 199
+  sub_pan: "product"
+  top_n: 300
+
+  # 무탠다드 계열 브랜드 키워드
+  brand_keywords:
+    - "무신사 스탠다드"
+    - "무신사 스탠다드 우먼"
+    - "무신사 스탠다드 키즈"
+
+  # 히어로 상품 UID 리스트 — 라인별 탭 A열에서 동적 로드
+  hero_sheet_id: "1aAYXjJPFgWCJAmZabc_f-f-wF3z492cIeDE-aVlx-HY"
+
+  # 일일 archive 대상 시트 ([브랜드부문] 전략팀 > 3.전략 > 2.히어로 > MUSINSA STANDARD 히어로 랭킹봇)
+  archive_sheet_id: "1UqH-pi5YuQrVYpfj74khXSTVbWml1m4YuaKUAnUgzPI"

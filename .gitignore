@@ -1,0 +1,11 @@
+secrets.yaml
+credentials.json
+token.json
+data/
+logs/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.vscode/
