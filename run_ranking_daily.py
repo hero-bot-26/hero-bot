@@ -50,6 +50,7 @@ def main() -> int:
     cfg_full = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     cfg = cfg_full.get("ranking", {})
     archive_sheet_id = cfg["archive_sheet_id"]
+    archive_sheet_url = cfg.get("archive_sheet_url")
 
     try:
         creds = get_credentials(CREDENTIALS_PATH, TOKEN_PATH)
@@ -76,6 +77,7 @@ def main() -> int:
             slack_target=slack_target,
             log=log,
             target_day=target_day,
+            sheet_url=archive_sheet_url,
         )
     except Exception as e:
         log.error(persona.task_failed(str(e)))

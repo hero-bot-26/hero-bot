@@ -25,3 +25,5 @@ ranking:
 
   # 일일 archive 대상 시트 ([브랜드부문] 전략팀 > 3.전략 > 2.히어로 > MUSINSA STANDARD 히어로 랭킹봇)
   archive_sheet_id: "1UqH-pi5YuQrVYpfj74khXSTVbWml1m4YuaKUAnUgzPI"
+  # Slack 리포트 제목에 박을 링크 (Long 탭 직링크)
+  archive_sheet_url: "https://docs.google.com/spreadsheets/d/1UqH-pi5YuQrVYpfj74khXSTVbWml1m4YuaKUAnUgzPI/edit?gid=476774888#gid=476774888"

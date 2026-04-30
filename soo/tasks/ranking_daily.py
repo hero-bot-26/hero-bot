@@ -89,15 +89,24 @@ def _new_and_jumped(
     return new_entries, jumped
 
 
+def _title(target_day: date, sheet_url: str | None) -> str:
+    """Slack mrkdwn — sheet_url 있으면 제목 텍스트를 링크로."""
+    text = f"{target_day.isoformat()} 무탠다드 랭킹 리포트"
+    if sheet_url:
+        return f"📊 *<{sheet_url}|{text}>* (Top 300 기준)"
+    return f"📊 *{text}* (Top 300 기준)"
+
+
 def build_report(
     rows: list[dict],
     prev_rows: list[dict],
     target_day: date,
     hero_uids: set[str],
+    sheet_url: str | None = None,
 ) -> str:
     n_snapshots = sheet_archive.count_snapshots(rows)
     if n_snapshots == 0:
-        return f"📊 *{target_day.isoformat()} 랭킹 리포트* — 캡처된 스냅샷이 없어요. (봇 미실행 또는 데이터 누락)"
+        return f"{_title(target_day, sheet_url)} — 캡처된 스냅샷이 없어요. (봇 미실행 또는 데이터 누락)"
 
     aggregated = _aggregate(rows)
     prev_aggregated = _aggregate(prev_rows) if prev_rows else {}
@@ -116,7 +125,7 @@ def build_report(
     missing_hero_uids = hero_uids - in_chart_hero_uids
 
     lines = []
-    lines.append(f"📊 *{target_day.isoformat()} 무탠다드 랭킹 리포트* (Top 300 기준)")
+    lines.append(_title(target_day, sheet_url))
     lines.append(f"_캡처 {n_snapshots}/48 회 · 무탠 계열 누적 등장 {len(aggregated)}개 · "
                  f"히어로 {len(hero_aggs)}/{len(hero_uids)} 진입_")
     lines.append("")
@@ -172,6 +181,7 @@ def run(
     slack_target: str | None,
     log: logging.Logger,
     target_day: date | None = None,
+    sheet_url: str | None = None,
 ) -> dict:
     if target_day is None:
         target_day = date.today() - timedelta(days=1)
@@ -187,7 +197,7 @@ def run(
     log.info(persona.step(f"Long 탭에서 read (그제 {prev_day.isoformat()}) — {len(prev_rows)}행"))
 
     # 2) 리포트 생성 + Slack 발송
-    report = build_report(rows, prev_rows, target_day, hero_uids)
+    report = build_report(rows, prev_rows, target_day, hero_uids, sheet_url=sheet_url)
     log.info(persona.step(f"리포트 생성 — {len(report)}자"))
     for line in report.split("\n"):
         log.info(line)
