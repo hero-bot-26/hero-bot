@@ -60,12 +60,48 @@ def _hero_summary_line(agg: dict) -> str:
     )
 
 
-def build_report(rows: list[dict], target_day: date, hero_uids: set[str]) -> str:
+JUMP_THRESHOLD = 50  # 전일 대비 peak rank 향상 폭이 이 이상이면 "급상승"
+
+
+def _new_and_jumped(
+    aggregated: dict[str, dict],
+    prev_aggregated: dict[str, dict],
+) -> tuple[list[dict], list[tuple[dict, int]]]:
+    """신규 진입 + 급상승 분리.
+
+    Returns:
+      new_entries: 어제 등장, 그제 미등장 → peak_rank 오름차순 정렬
+      jumped: [(agg, prev_peak), ...] — 양쪽 다 등장 + peak rank가 JUMP_THRESHOLD 이상 향상
+    """
+    new_entries = []
+    jumped: list[tuple[dict, int]] = []
+    for gn, a in aggregated.items():
+        if gn not in prev_aggregated:
+            new_entries.append(a)
+        else:
+            prev_peak = prev_aggregated[gn]["peak_rank"]
+            jump = prev_peak - a["peak_rank"]  # 양수 = 향상
+            if jump >= JUMP_THRESHOLD:
+                jumped.append((a, prev_peak))
+
+    new_entries.sort(key=lambda a: a["peak_rank"])
+    jumped.sort(key=lambda x: -(x[1] - x[0]["peak_rank"]))  # 큰 폭부터
+    return new_entries, jumped
+
+
+def build_report(
+    rows: list[dict],
+    prev_rows: list[dict],
+    target_day: date,
+    hero_uids: set[str],
+) -> str:
     n_snapshots = sheet_archive.count_snapshots(rows)
     if n_snapshots == 0:
         return f"📊 *{target_day.isoformat()} 랭킹 리포트* — 캡처된 스냅샷이 없어요. (봇 미실행 또는 데이터 누락)"
 
     aggregated = _aggregate(rows)
+    prev_aggregated = _aggregate(prev_rows) if prev_rows else {}
+    new_entries, jumped = _new_and_jumped(aggregated, prev_aggregated)
 
     hero_aggs = sorted(
         [a for a in aggregated.values() if a["is_hero"]],
@@ -107,6 +143,24 @@ def build_report(rows: list[dict], target_day: date, hero_uids: set[str]) -> str
     else:
         lines.append("  _없음_")
 
+    # 신규 진입 + 급상승
+    lines.append("")
+    lines.append(f"🚀 *전일 대비 급상승 / 신규 진입* (peak rank {JUMP_THRESHOLD}위 이상 향상)")
+    if not prev_rows:
+        lines.append("  _전일 데이터 부족 — 비교 불가_")
+    elif not new_entries and not jumped:
+        lines.append("  _급상승/신규 진입 없음_")
+    else:
+        for a in new_entries[:10]:
+            lines.append(f"  • 🆕 최고 랭킹 #{a['peak_rank']:>3}  {a['product_name'][:42]:<42}  (신규 · {_format_time(a['peak_ts'])} 피크)")
+        if len(new_entries) > 10:
+            lines.append(f"  _… 신규 외 {len(new_entries) - 10}개_")
+        for a, prev_peak in jumped[:10]:
+            jump_amt = prev_peak - a["peak_rank"]
+            lines.append(f"  • 📈 최고 랭킹 #{a['peak_rank']:>3}  {a['product_name'][:42]:<42}  (전일 #{prev_peak} → +{jump_amt}↑)")
+        if len(jumped) > 10:
+            lines.append(f"  _… 급상승 외 {len(jumped) - 10}개_")
+
     return "\n".join(lines)
 
 
@@ -124,13 +178,16 @@ def run(
 
     log.info(persona.starting_task(f"{target_day.isoformat()} 랭킹 일일 리포트", persona.RANKING_BOT))
 
-    # 1) Sheet에서 어제 데이터 read
+    # 1) Sheet에서 어제 + 그제 데이터 read (그제는 신규/급상승 비교용)
     rows = sheet_archive.read_day_long(sheets_service, sheet_id, target_day)
-    log.info(persona.step(f"Long 탭에서 read — {len(rows)}행, "
+    log.info(persona.step(f"Long 탭에서 read (어제) — {len(rows)}행, "
                           f"{sheet_archive.count_snapshots(rows)}개 시각"))
+    prev_day = target_day - timedelta(days=1)
+    prev_rows = sheet_archive.read_day_long(sheets_service, sheet_id, prev_day)
+    log.info(persona.step(f"Long 탭에서 read (그제 {prev_day.isoformat()}) — {len(prev_rows)}행"))
 
     # 2) 리포트 생성 + Slack 발송
-    report = build_report(rows, target_day, hero_uids)
+    report = build_report(rows, prev_rows, target_day, hero_uids)
     log.info(persona.step(f"리포트 생성 — {len(report)}자"))
     for line in report.split("\n"):
         log.info(line)
