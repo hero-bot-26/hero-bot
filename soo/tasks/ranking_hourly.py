@@ -1,18 +1,19 @@
-"""매시간 정각 트리거 — 무신사 랭킹 Top 300에서 무탠 계열 추출 → SQLite 저장."""
+"""매시간 정각 트리거 — 무신사 랭킹 Top 300 → 무탠 매칭 → Sheet의 Long 탭에 직접 append."""
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
-from pathlib import Path
+from typing import Any
 
 from soo import persona
 from soo.scrapers.musinsa_ranking import fetch_top, filter_by_brand
-from soo.storage import ranking_db
+from soo.storage import sheet_archive
 
 
 def run(
-    db_path: Path,
+    sheets_service: Any,
+    sheet_id: str,
     brand_keywords: list[str],
     hero_uids: set[str],
     log: logging.Logger,
@@ -20,9 +21,7 @@ def run(
     section_id: int = 199,
     sub_pan: str | None = "product",
 ) -> dict:
-    """1회 캡처 + 저장. 결과 요약 dict 반환."""
     captured_at = datetime.now()
-    # ts는 30분 슬롯으로 정규화 (분 = 0 또는 30)
     minute_slot = 0 if captured_at.minute < 30 else 30
     ts = captured_at.replace(minute=minute_slot, second=0, microsecond=0)
 
@@ -35,20 +34,20 @@ def run(
     matched = filter_by_brand(all_items, brand_keywords)
     log.info(persona.step(f"브랜드 매칭: {len(matched)}개 (키워드: {', '.join(brand_keywords)})"))
 
-    rows = []
+    items_for_sheet: list[tuple] = []
     hero_hits = []
     for it in matched:
         is_hero = it.goods_no in hero_uids
         if is_hero:
             hero_hits.append(it)
-        rows.append((it.goods_no, it.rank, it.brand, it.product_name, is_hero))
+        items_for_sheet.append((it.goods_no, it.rank, it.brand, it.product_name, is_hero))
 
-    ranking_db.save_snapshot(
-        db_path=db_path,
+    appended = sheet_archive.append_realtime(
+        sheets_service=sheets_service,
+        sheet_id=sheet_id,
         ts=ts,
-        captured_at=captured_at,
-        fetched_total=len(all_items),
-        items=rows,
+        items=items_for_sheet,
+        log=log,
     )
 
     if hero_hits:
@@ -61,7 +60,7 @@ def run(
         log.info(persona.step("히어로 진입 0개"))
 
     log.info(persona.task_done_ok(
-        f"{ts.strftime('%H:%M')} 스냅샷 저장 — 무탠 {len(matched)}개 / 히어로 {len(hero_hits)}개"
+        f"{ts.strftime('%H:%M')} 캡처 — Sheet에 {appended}행 append (무탠 {len(matched)} / 히어로 {len(hero_hits)})"
     ))
 
     return {
@@ -69,4 +68,5 @@ def run(
         "matched": len(matched),
         "hero_hits": len(hero_hits),
         "fetched": len(all_items),
+        "appended": appended,
     }

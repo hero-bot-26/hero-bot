@@ -1,9 +1,9 @@
-"""mini soo — 매일 09:00 전날 24시간 랭킹 데이터 일일 리포트.
+"""매일 09:00 — Sheet의 Long 탭에서 어제 데이터 read → 집계 → Slack → Wide 탭 append.
 
 사용:
-  python run_ranking_daily.py                  # 정상 (어제 데이터)
-  python run_ranking_daily.py --as-of 2026-04-30  # 특정 날짜
-  python run_ranking_daily.py --dry-run        # 발송 없이 콘솔만
+  python run_ranking_daily.py
+  python run_ranking_daily.py --as-of 2026-04-30
+  python run_ranking_daily.py --dry-run        # Slack 발송 없이 콘솔만
 """
 
 from __future__ import annotations
@@ -49,36 +49,33 @@ def main() -> int:
     log = persona.setup_logger(LOG_DIR, dry_run=args.dry_run)
     cfg_full = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     cfg = cfg_full.get("ranking", {})
-    db_path = ROOT / cfg.get("db_path", "data/rankings.db")
+    archive_sheet_id = cfg["archive_sheet_id"]
 
-    # Google 인증 — 히어로 리스트 + Sheet archive 둘 다 필요
-    sheets_svc = None
-    hero_uids = set()
     try:
         creds = get_credentials(CREDENTIALS_PATH, TOKEN_PATH)
         svc = build_services(creds)
         sheets_svc = svc["sheets"]
         heroes = load_hero_list(sheets_svc, cfg["hero_sheet_id"])
         hero_uids = set(heroes.keys())
+        log.info(persona.step(f"히어로 리스트 로드 — {len(hero_uids)}개"))
     except Exception as e:
-        log.warning(persona.step(f"Google 인증/히어로 로드 실패: {e}"))
+        log.error(persona.task_failed(f"Google 인증/히어로 로드 실패: {e}"))
+        log.debug(traceback.format_exc())
+        return 1
 
     secrets = load_secrets(SECRETS_PATH)
     slack_token = None if args.dry_run else secrets.get("slack_bot_token")
     slack_target = None if args.dry_run else secrets.get("slack_target")
-    archive_sheet_id = None if args.dry_run else cfg.get("archive_sheet_id")
 
     try:
         ranking_daily.run(
-            db_path=db_path,
+            sheets_service=sheets_svc,
+            sheet_id=archive_sheet_id,
             hero_uids=hero_uids,
             slack_bot_token=slack_token,
             slack_target=slack_target,
             log=log,
             target_day=target_day,
-            sheets_service=sheets_svc,
-            archive_sheet_id=archive_sheet_id,
-            purge_after_archive=not args.dry_run,
         )
     except Exception as e:
         log.error(persona.task_failed(str(e)))

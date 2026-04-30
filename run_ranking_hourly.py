@@ -1,8 +1,8 @@
-"""mini soo — 매시간 정각 무신사 랭킹 캡처 엔트리포인트.
+"""매시간 정각 — 무신사 랭킹 캡처 → Sheet의 Long 탭에 직접 append.
 
 사용:
-  python run_ranking_hourly.py             # 정상 1회 캡처
-  python run_ranking_hourly.py --dry-run   # 저장 없이 fetch만 (테스트용)
+  python run_ranking_hourly.py
+  python run_ranking_hourly.py --dry-run   # Sheet 호출 없이 fetch만
 """
 
 from __future__ import annotations
@@ -46,15 +46,21 @@ def main() -> int:
         log.error(persona.task_failed("config.yaml에 'ranking' 섹션이 없어요"))
         return 1
 
-    db_path = ROOT / cfg.get("db_path", "data/rankings.db")
     brand_keywords = cfg.get("brand_keywords") or [
         "무신사 스탠다드", "무신사 스탠다드 우먼", "무신사 스탠다드 키즈",
     ]
     top_n = int(cfg.get("top_n", 300))
     section_id = int(cfg.get("section_id", 199))
     sub_pan = cfg.get("sub_pan", "product")
+    archive_sheet_id = cfg["archive_sheet_id"]
 
-    # 히어로 리스트 — Sheets에서 매번 fetch (변동분 자동 반영)
+    if args.dry_run:
+        from soo.scrapers.musinsa_ranking import fetch_top, filter_by_brand
+        items = fetch_top(n=top_n, section_id=section_id, sub_pan=sub_pan)
+        matched = filter_by_brand(items, brand_keywords)
+        log.info(persona.step(f"[DRY] fetched={len(items)} matched={len(matched)}"))
+        return 0
+
     try:
         creds = get_credentials(CREDENTIALS_PATH, TOKEN_PATH)
         svc = build_services(creds)
@@ -62,20 +68,14 @@ def main() -> int:
         hero_uids = set(heroes.keys())
         log.info(persona.step(f"히어로 리스트 로드 — {len(hero_uids)}개"))
     except Exception as e:
-        log.warning(persona.step(f"히어로 리스트 로드 실패 (계속 진행): {e}"))
-        hero_uids = set()
-
-    if args.dry_run:
-        from soo.scrapers.musinsa_ranking import fetch_top, filter_by_brand
-        items = fetch_top(n=top_n, section_id=section_id, sub_pan=sub_pan)
-        matched = filter_by_brand(items, brand_keywords)
-        hero_hits = [it for it in matched if it.goods_no in hero_uids]
-        log.info(persona.step(f"[DRY] fetched={len(items)} matched={len(matched)} hero={len(hero_hits)}"))
-        return 0
+        log.error(persona.task_failed(f"Google 인증/히어로 로드 실패: {e}"))
+        log.debug(traceback.format_exc())
+        return 1
 
     try:
         ranking_hourly.run(
-            db_path=db_path,
+            sheets_service=svc["sheets"],
+            sheet_id=archive_sheet_id,
             brand_keywords=brand_keywords,
             hero_uids=hero_uids,
             log=log,

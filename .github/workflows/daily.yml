@@ -1,0 +1,47 @@
+name: Daily ranking report
+
+on:
+  schedule:
+    # KST 09:00 = UTC 00:00
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: "대상 날짜 (YYYY-MM-DD, 기본 어제)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Slack 발송 안 함 (true/false)"
+        required: false
+        default: "false"
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run daily report
+        env:
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_TARGET:             ${{ secrets.SLACK_TARGET }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.as_of }}" ]; then
+            ARGS="$ARGS --as-of ${{ github.event.inputs.as_of }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python run_ranking_daily.py $ARGS

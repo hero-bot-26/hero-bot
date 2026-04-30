@@ -1,0 +1,29 @@
+name: Hourly ranking capture
+
+on:
+  schedule:
+    # 매시간 정각 (UTC = KST). KST와 UTC는 매시간 단위로 동일 분.
+    - cron: "0 * * * *"
+  workflow_dispatch:  # 수동 실행 버튼
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run hourly capture
+        env:
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          # Hourly는 Slack 발송 안 함 (Daily가 발송)
+        run: python run_ranking_hourly.py
