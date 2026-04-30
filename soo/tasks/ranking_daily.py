@@ -45,16 +45,17 @@ def _aggregate(rows: list[dict]) -> dict[str, dict]:
 def _format_time(iso_ts: str) -> str:
     try:
         dt = datetime.fromisoformat(iso_ts)
-        return f"{dt.hour}시"
+        if dt.minute == 0:
+            return f"{dt.hour}시"
+        return f"{dt.hour}:{dt.minute:02d}"
     except Exception:
         return iso_ts
 
 
 def _hero_summary_line(agg: dict) -> str:
     return (
-        f"#{agg['peak_rank']:>3}  "
-        f"{agg['product_name'][:38]:<38}  "
-        f"{agg['hours_in_chart']:>2}시간 등장  "
+        f"최고 랭킹 #{agg['peak_rank']:>3}  "
+        f"{agg['product_name'][:42]:<42}  "
         f"({_format_time(agg['peak_ts'])} 피크)"
     )
 
@@ -80,7 +81,7 @@ def build_report(rows: list[dict], target_day: date, hero_uids: set[str]) -> str
 
     lines = []
     lines.append(f"📊 *{target_day.isoformat()} 무탠다드 랭킹 리포트* (Top 300 기준)")
-    lines.append(f"_캡처 {n_snapshots}/24 스냅샷 · 무탠 계열 누적 등장 {len(aggregated)}개 · "
+    lines.append(f"_캡처 {n_snapshots}/48 회 · 무탠 계열 누적 등장 {len(aggregated)}개 · "
                  f"히어로 {len(hero_aggs)}/{len(hero_uids)} 진입_")
     lines.append("")
 

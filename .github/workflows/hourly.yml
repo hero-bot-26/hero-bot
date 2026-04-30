@@ -2,8 +2,8 @@ name: Hourly ranking capture
 
 on:
   schedule:
-    # 매시간 정각 (UTC = KST). KST와 UTC는 매시간 단위로 동일 분.
-    - cron: "0 * * * *"
+    # 매시간 정각 + 30분 (총 48회/일). KST와 UTC는 분 단위 동일.
+    - cron: "0,30 * * * *"
   workflow_dispatch:  # 수동 실행 버튼
 
 jobs:
