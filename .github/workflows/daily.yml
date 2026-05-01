@@ -2,7 +2,8 @@ name: Daily ranking report
 
 on:
   schedule:
-    # KST 09:15 = UTC 00:15 (UTC 00:00 폭주 시점 회피)
+    # KST 09:15. 단일 cron — 두 번 발화하면 채널에 같은 리포트가 중복 발송되므로.
+    # 만약 누락되면 사용자가 Actions 페이지에서 Run workflow 수동 트리거.
     - cron: "15 0 * * *"
   workflow_dispatch:
     inputs:
