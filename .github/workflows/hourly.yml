@@ -2,11 +2,11 @@ name: Hourly ranking capture
 
 on:
   schedule:
-    # 30분 슬롯 (00, 30) 각각에 3개 시점 trigger 시도 — GitHub schedule 누락 보강.
-    # 같은 슬롯에 중복 발화하면 row가 2~3개 들어가지만 집계는 정상 동작 (peak_rank는 min).
-    - cron: "7,37 * * * *"
-    - cron: "17,47 * * * *"
-    - cron: "26,56 * * * *"
+    # 매시간 1회 캡처 — 같은 :00 슬롯에 3개 시점에서 trigger 시도 (누락 보강).
+    # 같은 슬롯에 중복 발화하면 row가 2~3개 들어가지만 집계는 정상 (peak_rank는 min).
+    - cron: "7 * * * *"
+    - cron: "17 * * * *"
+    - cron: "27 * * * *"
   workflow_dispatch:  # 수동 실행 버튼
 
 jobs:

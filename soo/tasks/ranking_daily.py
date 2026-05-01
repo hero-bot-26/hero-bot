@@ -126,7 +126,7 @@ def build_report(
 
     lines = []
     lines.append(_title(target_day, sheet_url))
-    lines.append(f"_캡처 {n_snapshots}/48 회 · 무탠 계열 누적 등장 {len(aggregated)}개 · "
+    lines.append(f"_캡처 {n_snapshots}/24 회 · 무탠 계열 누적 등장 {len(aggregated)}개 · "
                  f"히어로 {len(hero_aggs)}/{len(hero_uids)} 진입_")
     lines.append("")
 

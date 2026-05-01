@@ -22,8 +22,8 @@ def run(
     sub_pan: str | None = "product",
 ) -> dict:
     captured_at = datetime.now()
-    minute_slot = 0 if captured_at.minute < 30 else 30
-    ts = captured_at.replace(minute=minute_slot, second=0, microsecond=0)
+    # 매시간 1회 — 모든 trigger를 :00 슬롯으로 정규화 (분 무관)
+    ts = captured_at.replace(minute=0, second=0, microsecond=0)
 
     log.info(persona.starting_task(f"랭킹 캡처 {ts.strftime('%Y-%m-%d %H:%M')}", persona.RANKING_BOT))
     log.info(persona.step(f"무신사 Top {top_n} (section {section_id}) 가져오는 중..."))

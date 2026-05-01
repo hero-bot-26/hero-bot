@@ -23,8 +23,8 @@ WIDE_TAB = "Wide"
 
 LONG_HEADER = ["날짜", "시간", "goods_no", "랭킹 순위", "브랜드", "상품명", "히어로여부"]
 
-# Wide tab — 30분 슬롯 48개
-TIME_SLOTS = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 30)]
+# Wide tab — 매시간 슬롯 24개 (00시~23시)
+TIME_SLOTS = [f"{h:02d}:00" for h in range(24)]
 WIDE_HEADER = ["날짜", "goods_no", "브랜드", "상품명", "히어로여부"] + TIME_SLOTS
 
 
