@@ -5,10 +5,14 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from soo import persona
 from soo.scrapers.musinsa_ranking import fetch_top, filter_by_brand
 from soo.storage import sheet_archive
+
+
+KST = ZoneInfo("Asia/Seoul")
 
 
 def run(
@@ -21,11 +25,17 @@ def run(
     section_id: int = 199,
     sub_pan: str | None = "product",
 ) -> dict:
-    captured_at = datetime.now()
-    # 매시간 1회 — 모든 trigger를 :00 슬롯으로 정규화 (분 무관)
+    captured_at = datetime.now(KST)
+    # 매시간 1회 — 모든 trigger를 KST :00 슬롯으로 정규화 (분 무관)
     ts = captured_at.replace(minute=0, second=0, microsecond=0)
 
-    log.info(persona.starting_task(f"랭킹 캡처 {ts.strftime('%Y-%m-%d %H:%M')}", persona.RANKING_BOT))
+    log.info(persona.starting_task(f"랭킹 캡처 {ts.strftime('%Y-%m-%d %H:%M KST')}", persona.RANKING_BOT))
+
+    # 멱등성: 같은 시간 슬롯에 이미 적재됐으면 skip (동일 시간 내 중복 trigger 방지)
+    if sheet_archive.has_hour_data(sheets_service, sheet_id, ts):
+        log.info(persona.step(f"{ts.strftime('%H:%M')} 슬롯 이미 적재됨 — skip"))
+        return {"ts": ts, "matched": 0, "hero_hits": 0, "fetched": 0, "appended": 0, "skipped": True}
+
     log.info(persona.step(f"무신사 Top {top_n} (section {section_id}) 가져오는 중..."))
 
     all_items = fetch_top(n=top_n, section_id=section_id, sub_pan=sub_pan)

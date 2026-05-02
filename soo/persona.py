@@ -90,19 +90,28 @@ def send_slack(
     bot_token: str,
     target: str,
     persona: Persona | None = None,
+    log: logging.Logger | None = None,
 ) -> bool:
     """Slack chat.postMessage 로 메시지 발송.
 
     target: 채널 ID (`C0XXX...`), 채널명 (`#general`), 또는 사용자 ID (`U0XXX...`).
     persona: 주어지면 username/icon override. (Bot 권한에 chat:write.customize 가 있어야 적용됨;
              없어도 메시지는 잘 가고 username/icon만 무시됨.)
+    log: 주어지면 실패 사유를 로깅. CI 워크플로 디버깅에 필수.
     """
     if not bot_token or not target:
+        if log:
+            log.error(task_failed(
+                f"Slack 발송 — token/target 누락 (token={'있음' if bot_token else '없음'}, "
+                f"target={'있음' if target else '없음'})"
+            ))
         return False
     try:
         from slack_sdk import WebClient
         from slack_sdk.errors import SlackApiError
     except ImportError:
+        if log:
+            log.error(task_failed("Slack 발송 — slack_sdk 미설치"))
         return False
 
     client = WebClient(token=bot_token)
@@ -117,5 +126,12 @@ def send_slack(
     try:
         client.chat_postMessage(**kwargs)
         return True
-    except SlackApiError:
+    except SlackApiError as e:
+        if log:
+            err = (e.response.get("error") if e.response else None) or str(e)
+            log.error(task_failed(f"Slack API 에러 — {err}"))
+        return False
+    except Exception as e:
+        if log:
+            log.error(task_failed(f"Slack 발송 예외 — {type(e).__name__}: {e}"))
         return False
