@@ -2,9 +2,10 @@ name: Daily ranking report
 
 on:
   schedule:
-    # KST 09:15. 단일 cron — 두 번 발화하면 채널에 같은 리포트가 중복 발송되므로.
-    # 만약 누락되면 사용자가 Actions 페이지에서 Run workflow 수동 트리거.
+    # KST 09:15 (메인) + 09:45 (백업). 슬랙 중복 방지는
+    # ranking_daily 측에서 "이미 오늘 발송됨" 체크로 처리.
     - cron: "15 0 * * *"
+    - cron: "45 0 * * *"
   workflow_dispatch:
     inputs:
       as_of:
@@ -15,6 +16,14 @@ on:
         description: "Slack 발송 안 함 (true/false)"
         required: false
         default: "false"
+      force:
+        description: "이미 발송됐어도 재발송 (true/false)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: daily-report
+  cancel-in-progress: false
 
 jobs:
   report:
@@ -44,5 +53,8 @@ jobs:
           fi
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
+          fi
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            ARGS="$ARGS --force"
           fi
           python run_ranking_daily.py $ARGS

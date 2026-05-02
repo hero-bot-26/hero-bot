@@ -2,12 +2,15 @@ name: Hourly ranking capture
 
 on:
   schedule:
-    # 매시간 1회 캡처 — 같은 :00 슬롯에 3개 시점에서 trigger 시도 (누락 보강).
-    # 같은 슬롯에 중복 발화하면 row가 2~3개 들어가지만 집계는 정상 (peak_rank는 min).
-    - cron: "7 * * * *"
-    - cron: "17 * * * *"
-    - cron: "27 * * * *"
-  workflow_dispatch:  # 수동 실행 버튼
+    # 시간당 6회 시도 — GitHub schedule 부하/스킵에 대비. 모든 trigger는
+    # ranking_hourly 안에서 같은 :00 슬롯으로 정규화되고, has_hour_data로
+    # 멱등성 체크 후 첫 성공만 실제 적재. 나머지는 빠르게 종료.
+    - cron: "3,13,23,33,43,53 * * * *"
+  workflow_dispatch:  # 외부 cron(cron-job.org 등)에서 GitHub API로 호출
+
+concurrency:
+  group: hourly-capture
+  cancel-in-progress: false
 
 jobs:
   capture:

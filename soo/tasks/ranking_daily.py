@@ -209,6 +209,7 @@ def run(
             bot_token=slack_bot_token,
             target=slack_target,
             persona=persona.RANKING_BOT,
+            log=log,
         )
         log.info(persona.step(f"Slack 발송 — {'성공' if sent else '실패'}"))
 

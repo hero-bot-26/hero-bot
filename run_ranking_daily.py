@@ -12,8 +12,9 @@ import argparse
 import io
 import sys
 import traceback
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -21,7 +22,11 @@ from soo import persona
 from soo.auth import build_services, get_credentials
 from soo.hero_list import load_hero_list
 from soo.secrets import load_secrets
+from soo.storage import sheet_archive
 from soo.tasks import ranking_daily
+
+
+KST = ZoneInfo("Asia/Seoul")
 
 
 ROOT = Path(__file__).parent
@@ -41,10 +46,14 @@ def main() -> int:
     _utf8()
     p = argparse.ArgumentParser()
     p.add_argument("--dry-run", action="store_true", help="Slack 발송 없이 콘솔만")
-    p.add_argument("--as-of", type=str, default=None, help="대상 날짜 YYYY-MM-DD (기본 어제)")
+    p.add_argument("--as-of", type=str, default=None, help="대상 날짜 YYYY-MM-DD (기본 어제 KST)")
+    p.add_argument("--force", action="store_true", help="이미 발송됐어도 재발송")
     args = p.parse_args()
 
-    target_day = date.fromisoformat(args.as_of) if args.as_of else date.today() - timedelta(days=1)
+    if args.as_of:
+        target_day = date.fromisoformat(args.as_of)
+    else:
+        target_day = (datetime.now(KST) - timedelta(days=1)).date()
 
     log = persona.setup_logger(LOG_DIR, dry_run=args.dry_run)
     cfg_full = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -63,6 +72,15 @@ def main() -> int:
         log.error(persona.task_failed(f"Google 인증/히어로 로드 실패: {e}"))
         log.debug(traceback.format_exc())
         return 1
+
+    # 멱등성: Wide 탭에 같은 target_day 행이 이미 있으면 (= 이미 발송) skip.
+    # daily cron이 09:15/09:45 두 번 발화하므로 두 번째는 자동 skip 되어야 함.
+    if not args.force and not args.dry_run and sheet_archive.has_day_wide(sheets_svc, archive_sheet_id, target_day):
+        log.info(persona.task_done_skip(
+            f"{target_day.isoformat()} 리포트는 이미 발송됨 (Wide 탭에 행 존재). "
+            f"재발송하려면 --force 사용."
+        ))
+        return 0
 
     secrets = load_secrets(SECRETS_PATH)
     slack_token = None if args.dry_run else secrets.get("slack_bot_token")

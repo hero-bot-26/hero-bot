@@ -67,6 +67,49 @@ def _ensure_tab(sheets_service: Any, sheet_id: str, tab: str, header: list[str])
 # ───────────────────────────────────────────────────────────
 # Hourly: 매시간 raw row 를 Long 탭에 append
 # ───────────────────────────────────────────────────────────
+def has_hour_data(
+    sheets_service: Any,
+    sheet_id: str,
+    ts: datetime,
+) -> bool:
+    """Long 탭에 ts 시각(YYYY-MM-DD, HH:00) 슬롯의 행이 이미 있으면 True.
+
+    같은 시간 내 중복 trigger를 멱등 처리하기 위해 사용. 마지막 ~200행만 검사 —
+    concurrency 그룹이 활성이면 직전 적재가 마지막 영역에 몰려있다.
+    """
+    target_date = ts.date().isoformat()
+    target_time = ts.strftime("%H:%M")
+    try:
+        meta = sheets_service.spreadsheets().get(
+            spreadsheetId=sheet_id,
+            fields="sheets(properties(title,gridProperties(rowCount)))",
+        ).execute()
+    except Exception:
+        return False
+    long_props = next(
+        (s["properties"] for s in meta.get("sheets", [])
+         if s["properties"]["title"] == LONG_TAB),
+        None,
+    )
+    if not long_props:
+        return False
+    row_count = long_props.get("gridProperties", {}).get("rowCount", 0)
+    if row_count < 2:
+        return False
+    start = max(2, row_count - 200)
+    resp = sheets_service.spreadsheets().values().get(
+        spreadsheetId=sheet_id,
+        range=f"'{LONG_TAB}'!A{start}:B{row_count}",
+        valueRenderOption="UNFORMATTED_VALUE",
+        dateTimeRenderOption="FORMATTED_STRING",
+    ).execute()
+    rows = resp.get("values", [])
+    for row in rows:
+        if len(row) >= 2 and str(row[0]) == target_date and str(row[1]) == target_time:
+            return True
+    return False
+
+
 def append_realtime(
     sheets_service: Any,
     sheet_id: str,
@@ -74,7 +117,12 @@ def append_realtime(
     items: list[tuple],
     log: logging.Logger,
 ) -> int:
-    """items: [(goods_no, rank, brand, product_name, is_hero), ...]"""
+    """items: [(goods_no, rank, brand, product_name, is_hero), ...]
+
+    valueInputOption="RAW" — 날짜/시간/숫자 자동 파싱 막아서 ISO 문자열 그대로 보존.
+    USER_ENTERED 쓰면 Sheets가 날짜 타입으로 변환 → daily가 read할 때 로케일 포맷
+    (예: "2026. 5. 1.")으로 돌아와서 ISO 문자열 비교에 실패함.
+    """
     _ensure_tab(sheets_service, sheet_id, LONG_TAB, LONG_HEADER)
 
     rows = []
@@ -82,8 +130,8 @@ def append_realtime(
         rows.append([
             ts.date().isoformat(),
             ts.strftime("%H:%M"),
-            goods_no,
-            rank,
+            str(goods_no),
+            int(rank),
             brand,
             product_name,
             _hero_label(bool(is_hero)),
@@ -96,7 +144,7 @@ def append_realtime(
     sheets_service.spreadsheets().values().append(
         spreadsheetId=sheet_id,
         range=f"'{LONG_TAB}'!A1",
-        valueInputOption="USER_ENTERED",
+        valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
     ).execute()
@@ -121,25 +169,43 @@ def read_day_long(
     resp = sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id,
         range=f"'{LONG_TAB}'!A2:G",  # 헤더 제외
+        # UNFORMATTED + FORMATTED_STRING — 날짜/시간 셀이 USER_ENTERED로
+        # 파싱돼있어도 사람이 읽을 수 있는 문자열로 받고, 숫자(goods_no, rank)는
+        # 그대로 받는다. 기존 데이터 호환을 위해 ISO/로케일 양쪽 매칭.
+        valueRenderOption="UNFORMATTED_VALUE",
+        dateTimeRenderOption="FORMATTED_STRING",
     ).execute()
     raw = resp.get("values", [])
 
     day_str = target_day.isoformat()
+    # 호환: "2026. 5. 1." / "2026.5.1." 같은 한국 로케일 포맷도 매칭
+    day_alt_strict = f"{target_day.year}. {target_day.month}. {target_day.day}."
+    day_alt_compact = f"{target_day.year}.{target_day.month}.{target_day.day}."
     out: list[dict] = []
     for row in raw:
         if len(row) < 7:
             row = row + [""] * (7 - len(row))
         date_s, time_s, goods_no, rank_s, brand, product_name, hero_s = row[:7]
-        if date_s != day_str:
+        date_str = str(date_s).strip()
+        if date_str not in (day_str, day_alt_strict, day_alt_compact):
             continue
         try:
             rank = int(rank_s)
         except (TypeError, ValueError):
             continue
-        try:
-            ts_iso = f"{date_s}T{time_s}:00"
-        except Exception:
-            continue
+        # 시간 정규화: "08:00" 또는 "오전 8:00:00" 등 → "HH:00"
+        time_str = str(time_s).strip()
+        if ":" in time_str:
+            # "8:00:00", "오전 8:00:00", "08:00" 등에서 시간만 추출
+            parts = time_str.replace("오전", "").replace("오후", "").strip().split(":")
+            try:
+                hour = int(parts[0])
+                if "오후" in str(time_s) and hour < 12:
+                    hour += 12
+                time_str = f"{hour:02d}:00"
+            except (ValueError, IndexError):
+                continue
+        ts_iso = f"{day_str}T{time_str}:00"
         out.append({
             "ts": ts_iso,
             "goods_no": str(goods_no),
@@ -215,9 +281,40 @@ def append_day_wide(
     sheets_service.spreadsheets().values().append(
         spreadsheetId=sheet_id,
         range=f"'{WIDE_TAB}'!A1",
-        valueInputOption="USER_ENTERED",
+        valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": wide_data},
     ).execute()
     log.info(persona.step(f"Wide 탭 append: {len(wide_data)}행"))
     return len(wide_data)
+
+
+# ───────────────────────────────────────────────────────────
+# Daily 멱등성: Wide 탭에 같은 target_day 행이 이미 있는지 체크
+# ───────────────────────────────────────────────────────────
+def has_day_wide(
+    sheets_service: Any,
+    sheet_id: str,
+    target_day: date,
+) -> bool:
+    """Wide 탭 A열(날짜)에 target_day 가 이미 있으면 True."""
+    try:
+        resp = sheets_service.spreadsheets().values().get(
+            spreadsheetId=sheet_id,
+            range=f"'{WIDE_TAB}'!A2:A",
+            valueRenderOption="UNFORMATTED_VALUE",
+            dateTimeRenderOption="FORMATTED_STRING",
+        ).execute()
+    except Exception:
+        return False
+    rows = resp.get("values", [])
+    day_str = target_day.isoformat()
+    day_alt_strict = f"{target_day.year}. {target_day.month}. {target_day.day}."
+    day_alt_compact = f"{target_day.year}.{target_day.month}.{target_day.day}."
+    for row in rows:
+        if not row:
+            continue
+        v = str(row[0]).strip()
+        if v in (day_str, day_alt_strict, day_alt_compact):
+            return True
+    return False
