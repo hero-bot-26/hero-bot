@@ -2,10 +2,11 @@ name: Daily ranking report
 
 on:
   schedule:
-    # KST 09:15 (메인) + 09:45 (백업). 슬랙 중복 방지는
-    # ranking_daily 측에서 "이미 오늘 발송됨" 체크로 처리.
+    # KST 09:00, 09:15, 09:30, 10:00 안전망. ranking_daily 측 중복 체크로 1회만 발송
+    - cron: "0 0 * * *"
     - cron: "15 0 * * *"
-    - cron: "45 0 * * *"
+    - cron: "30 0 * * *"
+    - cron: "0 1 * * *"
   workflow_dispatch:
     inputs:
       as_of:
