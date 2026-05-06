@@ -12,7 +12,7 @@ ranking:
   # 무신사 랭킹 섹션 — [전체] 탭 = sectionId 199 + subPan=product
   section_id: 199
   sub_pan: "product"
-  top_n: 300
+  top_n: 100
 
   # 무탠다드 계열 브랜드 키워드
   brand_keywords:
