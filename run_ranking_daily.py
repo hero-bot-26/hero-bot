@@ -60,6 +60,7 @@ def main() -> int:
     cfg = cfg_full.get("ranking", {})
     archive_sheet_id = cfg["archive_sheet_id"]
     archive_sheet_url = cfg.get("archive_sheet_url")
+    top_n = int(cfg.get("top_n", 100))
 
     try:
         creds = get_credentials(CREDENTIALS_PATH, TOKEN_PATH)
@@ -96,6 +97,7 @@ def main() -> int:
             log=log,
             target_day=target_day,
             sheet_url=archive_sheet_url,
+            top_n=top_n,
         )
     except Exception as e:
         log.error(persona.task_failed(str(e)))

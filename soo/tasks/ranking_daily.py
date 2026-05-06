@@ -89,12 +89,12 @@ def _new_and_jumped(
     return new_entries, jumped
 
 
-def _title(target_day: date, sheet_url: str | None) -> str:
+def _title(target_day: date, sheet_url: str | None, top_n: int) -> str:
     """Slack mrkdwn — sheet_url 있으면 제목 텍스트를 링크로."""
     text = f"{target_day.isoformat()} 무탠다드 랭킹 리포트"
     if sheet_url:
-        return f"📊 *<{sheet_url}|{text}>* (Top 300 기준)"
-    return f"📊 *{text}* (Top 300 기준)"
+        return f"📊 *<{sheet_url}|{text}>* (Top {top_n} 기준)"
+    return f"📊 *{text}* (Top {top_n} 기준)"
 
 
 def build_report(
@@ -103,10 +103,16 @@ def build_report(
     target_day: date,
     hero_uids: set[str],
     sheet_url: str | None = None,
+    top_n: int = 100,
 ) -> str:
+    # 과도기 호환: top_n이 줄어든 직후엔 기존 데이터에 rank > top_n 행이 섞여있음.
+    # 리포트는 현재 top_n 기준으로만 보여줘야 일관성 유지.
+    rows = [r for r in rows if r.get("rank", 999) <= top_n]
+    prev_rows = [r for r in prev_rows if r.get("rank", 999) <= top_n]
+
     n_snapshots = sheet_archive.count_snapshots(rows)
     if n_snapshots == 0:
-        return f"{_title(target_day, sheet_url)} — 캡처된 스냅샷이 없어요. (봇 미실행 또는 데이터 누락)"
+        return f"{_title(target_day, sheet_url, top_n)} — 캡처된 스냅샷이 없어요. (봇 미실행 또는 데이터 누락)"
 
     aggregated = _aggregate(rows)
     prev_aggregated = _aggregate(prev_rows) if prev_rows else {}
@@ -125,7 +131,7 @@ def build_report(
     missing_hero_uids = hero_uids - in_chart_hero_uids
 
     lines = []
-    lines.append(_title(target_day, sheet_url))
+    lines.append(_title(target_day, sheet_url, top_n))
     lines.append(f"_캡처 {n_snapshots}/24 회 · 무탠 계열 누적 등장 {len(aggregated)}개 · "
                  f"히어로 {len(hero_aggs)}/{len(hero_uids)} 진입_")
     lines.append("")
@@ -182,6 +188,7 @@ def run(
     log: logging.Logger,
     target_day: date | None = None,
     sheet_url: str | None = None,
+    top_n: int = 100,
 ) -> dict:
     if target_day is None:
         target_day = date.today() - timedelta(days=1)
@@ -197,7 +204,7 @@ def run(
     log.info(persona.step(f"Long 탭에서 read (그제 {prev_day.isoformat()}) — {len(prev_rows)}행"))
 
     # 2) 리포트 생성 + Slack 발송
-    report = build_report(rows, prev_rows, target_day, hero_uids, sheet_url=sheet_url)
+    report = build_report(rows, prev_rows, target_day, hero_uids, sheet_url=sheet_url, top_n=top_n)
     log.info(persona.step(f"리포트 생성 — {len(report)}자"))
     for line in report.split("\n"):
         log.info(line)
