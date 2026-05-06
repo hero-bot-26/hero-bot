@@ -91,6 +91,7 @@ def send_slack(
     target: str,
     persona: Persona | None = None,
     log: logging.Logger | None = None,
+    blocks: list | None = None,
 ) -> bool:
     """Slack chat.postMessage 로 메시지 발송.
 
@@ -98,6 +99,7 @@ def send_slack(
     persona: 주어지면 username/icon override. (Bot 권한에 chat:write.customize 가 있어야 적용됨;
              없어도 메시지는 잘 가고 username/icon만 무시됨.)
     log: 주어지면 실패 사유를 로깅. CI 워크플로 디버깅에 필수.
+    blocks: Slack Block Kit blocks (image_block 등). 주어지면 message는 fallback text로 사용.
     """
     if not bot_token or not target:
         if log:
@@ -116,6 +118,8 @@ def send_slack(
 
     client = WebClient(token=bot_token)
     kwargs: dict = {"channel": target, "text": message, "mrkdwn": True}
+    if blocks:
+        kwargs["blocks"] = blocks
     if persona:
         if persona.slack_username:
             kwargs["username"] = persona.slack_username

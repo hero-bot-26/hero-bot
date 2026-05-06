@@ -49,10 +49,12 @@ def main() -> int:
     brand_keywords = cfg.get("brand_keywords") or [
         "무신사 스탠다드", "무신사 스탠다드 우먼", "무신사 스탠다드 키즈",
     ]
-    top_n = int(cfg.get("top_n", 300))
+    top_n = int(cfg.get("top_n", 100))
     section_id = int(cfg.get("section_id", 199))
     sub_pan = cfg.get("sub_pan", "product")
     archive_sheet_id = cfg["archive_sheet_id"]
+    screenshot_threshold = int(cfg.get("screenshot_threshold", 10))
+    screenshot_folder_id = (cfg.get("screenshot_folder_id") or "").strip()
 
     if args.dry_run:
         from soo.scrapers.musinsa_ranking import fetch_top, filter_by_brand
@@ -82,6 +84,9 @@ def main() -> int:
             top_n=top_n,
             section_id=section_id,
             sub_pan=sub_pan,
+            drive_service=svc["drive"],
+            screenshot_threshold=screenshot_threshold,
+            screenshot_folder_id=screenshot_folder_id,
         )
     except Exception as e:
         log.error(persona.task_failed(str(e)))
