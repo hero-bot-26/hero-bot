@@ -1,6 +1,11 @@
 """Google Drive에 PNG 업로드 + Slack image_block에서 임베드 가능한 URL 발급.
 
 URL은 lh3.googleusercontent.com/d/{file_id} 형태 — Slack이 raw image로 인식.
+
+⚠️ Shared Drive(공유 드라이브) 호환:
+  - 모든 files / permissions API 호출에 supportsAllDrives=True 명시
+  - 검색에는 includeItemsFromAllDrives=True 추가
+  안 그러면 Workspace 도메인 폴더가 404 NotFound로 보임.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ def upload_png(
         body=metadata,
         media_body=media,
         fields="id",
+        supportsAllDrives=True,
     ).execute()
     file_id = file["id"]
 
@@ -39,6 +45,7 @@ def upload_png(
         fileId=file_id,
         body={"role": "reader", "type": "anyone"},
         fields="id",
+        supportsAllDrives=True,
     ).execute()
 
     image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
@@ -57,6 +64,8 @@ def ensure_subfolder(drive_service: Any, parent_id: str, name: str) -> str:
         q=query,
         fields="files(id,name)",
         pageSize=1,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
     files = resp.get("files", [])
     if files:
@@ -69,5 +78,6 @@ def ensure_subfolder(drive_service: Any, parent_id: str, name: str) -> str:
             "parents": [parent_id],
         },
         fields="id",
+        supportsAllDrives=True,
     ).execute()
     return folder["id"]
