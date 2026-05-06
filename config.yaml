@@ -27,3 +27,8 @@ ranking:
   archive_sheet_id: "1UqH-pi5YuQrVYpfj74khXSTVbWml1m4YuaKUAnUgzPI"
   # Slack 리포트 제목에 박을 링크 (Long 탭 직링크)
   archive_sheet_url: "https://docs.google.com/spreadsheets/d/1UqH-pi5YuQrVYpfj74khXSTVbWml1m4YuaKUAnUgzPI/edit?gid=476774888#gid=476774888"
+
+  # 스크린샷: rank ≤ threshold 진입 + 그날 best 갱신 시 무신사 랭킹 페이지 풀페이지 캡처 → Drive 업로드.
+  # screenshot_folder_id 빈 값/미설정이면 스크린샷 기능 비활성화 (적재만 수행).
+  screenshot_threshold: 10
+  screenshot_folder_id: ""

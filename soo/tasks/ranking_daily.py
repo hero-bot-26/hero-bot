@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from soo import persona
-from soo.storage import sheet_archive
+from soo.storage import sheet_archive, screenshots_tab
 
 
 def _aggregate(rows: list[dict]) -> dict[str, dict]:
@@ -179,6 +179,67 @@ def build_report(
     return "\n".join(lines)
 
 
+def _send_screenshots(
+    *,
+    sheets_service: Any,
+    sheet_id: str,
+    target_day: date,
+    rows: list[dict],
+    slack_bot_token: str,
+    slack_target: str,
+    log: logging.Logger,
+) -> int:
+    """어제 스크린샷이 있는 상품들을 image_block으로 별도 Slack 메시지 발송."""
+    records = screenshots_tab.read_day_records(sheets_service, sheet_id, target_day)
+    if not records:
+        return 0
+
+    # rows에서 product_name lookup (Screenshots 탭엔 이름 없음)
+    name_lookup: dict[str, str] = {}
+    for r in rows:
+        gn = r["goods_no"]
+        if gn not in name_lookup:
+            name_lookup[gn] = r.get("product_name", "")
+
+    # peak_rank 오름차순으로 정렬 (#1, #2, ... 순서로 표시)
+    items = sorted(records.items(), key=lambda kv: kv[1]["peak_rank"])
+
+    blocks: list[dict] = [
+        {"type": "header", "text": {"type": "plain_text", "text": "📸 Top 10 진입 스크린샷"}},
+    ]
+    for gn, rec in items:
+        if not rec.get("screenshot_url"):
+            continue
+        name = name_lookup.get(gn, gn)
+        caption = f"*#{rec['peak_rank']:>2}*  {name[:60]}"
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": caption}})
+        blocks.append({
+            "type": "image",
+            "image_url": rec["screenshot_url"],
+            "alt_text": name[:100] or gn,
+        })
+
+    if len(blocks) <= 1:
+        return 0
+
+    # Slack은 한 메시지당 50 block 제한 — 필요 시 분할 발송
+    sent_count = 0
+    chunk_size = 48  # header 2 block + content (image=2blocks/item) 합쳐서 50 안 넘게
+    for i in range(0, len(blocks), chunk_size):
+        chunk = blocks[i:i + chunk_size]
+        ok = persona.send_slack(
+            "📸 스크린샷",  # fallback text
+            bot_token=slack_bot_token,
+            target=slack_target,
+            persona=persona.RANKING_BOT,
+            log=log,
+            blocks=chunk,
+        )
+        if ok:
+            sent_count += 1
+    return sent_count
+
+
 def run(
     sheets_service: Any,
     sheet_id: str,
@@ -219,6 +280,19 @@ def run(
             log=log,
         )
         log.info(persona.step(f"Slack 발송 — {'성공' if sent else '실패'}"))
+
+        # 2-1) Top 10 진입 스크린샷 image_block 발송 (있으면 본문 다음 메시지로)
+        if sent:
+            screenshots_sent = _send_screenshots(
+                sheets_service=sheets_service,
+                sheet_id=sheet_id,
+                target_day=target_day,
+                rows=rows,
+                slack_bot_token=slack_bot_token,
+                slack_target=slack_target,
+                log=log,
+            )
+            log.info(persona.step(f"스크린샷 image_block — {screenshots_sent}건"))
 
     # 3) Wide 탭에 일일 요약 append
     wide_appended = sheet_archive.append_day_wide(
