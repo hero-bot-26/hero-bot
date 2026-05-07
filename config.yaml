@@ -32,3 +32,5 @@ ranking:
   # screenshot_folder_id 빈 값/미설정이면 스크린샷 기능 비활성화 (적재만 수행).
   screenshot_threshold: 10
   screenshot_folder_id: "17_YC5TKvrpOdDfokLJZcEIn1hO2xZfzM"
+  # 캡처 시 하단을 rank N까지만 보이게 자름 (null/0 = 풀페이지). 모바일/데스크톱 6열 = 2줄 = 12.
+  screenshot_crop_to_rank: 12

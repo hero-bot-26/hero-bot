@@ -30,6 +30,7 @@ def _maybe_capture_screenshot(
     threshold: int,
     folder_id: str,
     section_id: int,
+    crop_to_rank: int | None,
     log: logging.Logger,
 ) -> int:
     """rank ≤ threshold 진입 + 그날 best 갱신된 항목 있으면 1회 캡처/업로드/upsert.
@@ -67,7 +68,10 @@ def _maybe_capture_screenshot(
     ))
 
     try:
-        png = musinsa_screenshot.screenshot_ranking_full_page(section_id=section_id)
+        png = musinsa_screenshot.screenshot_ranking_full_page(
+            section_id=section_id,
+            crop_to_rank=crop_to_rank,
+        )
     except Exception as e:
         log.error(persona.task_failed(f"스크린샷 캡처 실패: {e}"))
         log.debug(traceback.format_exc())
@@ -115,6 +119,7 @@ def run(
     drive_service: Any = None,
     screenshot_threshold: int = 10,
     screenshot_folder_id: str = "",
+    screenshot_crop_to_rank: int | None = 12,
 ) -> dict:
     captured_at = datetime.now(KST)
     # 매시간 1회 — 모든 trigger를 KST :00 슬롯으로 정규화 (분 무관)
@@ -172,6 +177,7 @@ def run(
             threshold=screenshot_threshold,
             folder_id=screenshot_folder_id,
             section_id=section_id,
+            crop_to_rank=screenshot_crop_to_rank,
             log=log,
         )
 

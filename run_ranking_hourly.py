@@ -55,6 +55,8 @@ def main() -> int:
     archive_sheet_id = cfg["archive_sheet_id"]
     screenshot_threshold = int(cfg.get("screenshot_threshold", 10))
     screenshot_folder_id = (cfg.get("screenshot_folder_id") or "").strip()
+    _crop = cfg.get("screenshot_crop_to_rank", 12)
+    screenshot_crop_to_rank = int(_crop) if _crop else None
 
     if args.dry_run:
         from soo.scrapers.musinsa_ranking import fetch_top, filter_by_brand
@@ -87,6 +89,7 @@ def main() -> int:
             drive_service=svc["drive"],
             screenshot_threshold=screenshot_threshold,
             screenshot_folder_id=screenshot_folder_id,
+            screenshot_crop_to_rank=screenshot_crop_to_rank,
         )
     except Exception as e:
         log.error(persona.task_failed(str(e)))
