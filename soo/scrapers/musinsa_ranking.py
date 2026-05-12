@@ -33,24 +33,24 @@ class RankItem:
     url: str
 
 
-def _params_page1(section_id: int, sub_pan: str | None = None) -> dict:
+def _params_page1(section_id: int, sub_pan: str | None = None, gf: str = "A") -> dict:
     p = {
         "storeCode": "musinsa",
         "sectionId": str(section_id),
         "contentsId": "",
         "categoryCode": "000",
         "ageBand": "AGE_BAND_ALL",
-        "gf": "A",
+        "gf": gf,
     }
     if sub_pan:
         p["subPan"] = sub_pan
     return p
 
 
-def _params_pagen(page: int, offset: int, start_rank: int) -> dict:
+def _params_pagen(page: int, offset: int, start_rank: int, gf: str = "A") -> dict:
     return {
         "storeCode": "musinsa",
-        "gf": "A",
+        "gf": gf,
         "ageBand": "AGE_BAND_ALL",
         "period": "REALTIME",
         "eventPeriod": "BASIC_REALTIME",
@@ -93,10 +93,12 @@ def fetch_top(
     sub_pan: str | None = "product",
     timeout: float = 10.0,
     sleep_between: float = 0.5,
+    gf: str = "A",
 ) -> list[RankItem]:
     """무신사 랭킹 Top N 가져오기 (페이지 단위 fetch, 합쳐서 반환).
 
     sectionId=199 + subPan=product = 사용자가 보는 [전체] 탭 기본값.
+    gf = "A"(전체) / "M"(남자) / "F"(여자) — 랭킹 페이지 우측 성별 필터.
     """
     import time
 
@@ -106,7 +108,7 @@ def fetch_top(
     all_items: list[RankItem] = []
 
     # Page 1 — 별도 엔드포인트 사용
-    resp = sess.get(_API_PAGE1, params=_params_page1(section_id, sub_pan), timeout=timeout)
+    resp = sess.get(_API_PAGE1, params=_params_page1(section_id, sub_pan, gf=gf), timeout=timeout)
     resp.raise_for_status()
     items = _extract_items(resp.json())
     all_items.extend(items)
@@ -116,7 +118,7 @@ def fetch_top(
     while len(all_items) < n:
         last_rank = max((it.rank for it in all_items), default=0)
         offset = len(all_items)
-        params = _params_pagen(page=page, offset=offset, start_rank=last_rank + 1)
+        params = _params_pagen(page=page, offset=offset, start_rank=last_rank + 1, gf=gf)
         time.sleep(sleep_between)
         resp = sess.get(_API_PAGEN.format(section=section_id), params=params, timeout=timeout)
         resp.raise_for_status()

@@ -22,7 +22,6 @@ from soo import persona
 from soo.auth import build_services, get_credentials
 from soo.hero_list import load_hero_list
 from soo.secrets import load_secrets
-from soo.storage import sheet_archive
 from soo.tasks import ranking_daily
 
 
@@ -74,15 +73,8 @@ def main() -> int:
         log.debug(traceback.format_exc())
         return 1
 
-    # 멱등성: Wide 탭에 같은 target_day 행이 이미 있으면 (= 이미 발송) skip.
-    # daily cron이 09:15/09:45 두 번 발화하므로 두 번째는 자동 skip 되어야 함.
-    if not args.force and not args.dry_run and sheet_archive.has_day_wide(sheets_svc, archive_sheet_id, target_day):
-        log.info(persona.task_done_skip(
-            f"{target_day.isoformat()} 리포트는 이미 발송됨 (Wide 탭에 행 존재). "
-            f"재발송하려면 --force 사용."
-        ))
-        return 0
-
+    # 멱등성: 뷰별로 Wide 탭에 이미 적재됐는지는 ranking_daily.run() 내부에서 처리.
+    # daily cron이 09:15/09:45 두 번 발화해도 두 번째는 뷰별 has_day_wide()로 자동 skip.
     secrets = load_secrets(SECRETS_PATH)
     slack_token = None if args.dry_run else secrets.get("slack_bot_token")
     slack_target = None if args.dry_run else secrets.get("slack_target")
@@ -98,6 +90,7 @@ def main() -> int:
             target_day=target_day,
             sheet_url=archive_sheet_url,
             top_n=top_n,
+            force=args.force,
         )
     except Exception as e:
         log.error(persona.task_failed(str(e)))

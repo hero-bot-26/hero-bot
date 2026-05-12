@@ -19,7 +19,7 @@ _USER_AGENT = (
 
 _RANKING_URL_TEMPLATE = (
     "https://www.musinsa.com/main/musinsa/ranking"
-    "?storeCode=musinsa&sectionId={section_id}&categoryCode=000&gf=A&ageBand=AGE_BAND_ALL"
+    "?storeCode=musinsa&sectionId={section_id}&categoryCode=000&gf={gf}&ageBand=AGE_BAND_ALL"
 )
 
 # lazy-load된 product 카드들이 모두 그려지도록 한 번 끝까지 스크롤 → 위로 → 이미지 onload 대기.
@@ -70,13 +70,15 @@ def screenshot_ranking_full_page(
     timeout_ms: int = 30000,
     viewport_width: int = 1280,
     crop_to_rank: int | None = 12,
+    gf: str = "A",
 ) -> bytes:
     """무신사 랭킹 페이지 PNG 바이트 반환.
 
     crop_to_rank: 해당 순위까지만 보이게 하단 자름. None/0이면 풀페이지.
                   카드를 N개 못 찾으면 풀페이지로 fallback.
+    gf: "A"(전체) / "M"(남자) / "F"(여자). URL의 gf 파라미터로 들어감.
     """
-    url = _RANKING_URL_TEMPLATE.format(section_id=section_id)
+    url = _RANKING_URL_TEMPLATE.format(section_id=section_id, gf=gf)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:

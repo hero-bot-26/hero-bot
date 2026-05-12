@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from soo import persona
+from soo import persona, VIEWS
 from soo.auth import build_services, get_credentials
 from soo.hero_list import load_hero_list
 from soo.tasks import ranking_hourly
@@ -60,9 +60,10 @@ def main() -> int:
 
     if args.dry_run:
         from soo.scrapers.musinsa_ranking import fetch_top, filter_by_brand
-        items = fetch_top(n=top_n, section_id=section_id, sub_pan=sub_pan)
-        matched = filter_by_brand(items, brand_keywords)
-        log.info(persona.step(f"[DRY] fetched={len(items)} matched={len(matched)}"))
+        for gf, view in VIEWS:
+            items = fetch_top(n=top_n, section_id=section_id, sub_pan=sub_pan, gf=gf)
+            matched = filter_by_brand(items, brand_keywords)
+            log.info(persona.step(f"[DRY][{view}] fetched={len(items)} matched={len(matched)}"))
         return 0
 
     try:

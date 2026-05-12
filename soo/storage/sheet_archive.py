@@ -1,10 +1,14 @@
 """Google Sheet에 랭킹 데이터 적재 + 조회.
 
-탭 구조:
-- Long 탭: 시각×상품 단위 raw row (Hourly가 매시간 append, Daily가 read)
-  날짜 / 시간 / goods_no / 랭킹 순위 / 브랜드 / 상품명 / 히어로여부
-- Wide 탭: 일자×상품 단위, 시간을 컬럼으로 (Daily가 09:00에 일일 요약 append)
-  날짜 / goods_no / 브랜드 / 상품명 / 히어로여부 / 00:00 / 00:30 / ... / 23:30
+탭 구조 (뷰 컬럼 추가 후):
+- Long 탭: 시각×뷰×상품 단위 raw row (Hourly가 매시간 뷰별로 append, Daily가 read)
+  날짜 / 시간 / 뷰 / goods_no / 랭킹 순위 / 브랜드 / 상품명 / 히어로여부
+- Wide 탭: 일자×뷰×상품 단위, 시간을 컬럼으로 (Daily가 09:00에 뷰별 일일 요약 append)
+  날짜 / 뷰 / goods_no / 브랜드 / 상품명 / 히어로여부 / 00:00 / ... / 23:00
+
+뷰 = "전체"/"남자"/"여자" (무신사 랭킹 페이지 우측 성별 필터).
+기존 7컬럼 Long / 5+24컬럼 Wide 스키마(뷰 없음)는 자동 마이그레이션 — 컬럼 insert + 헤더 갱신.
+기존 행의 빈 뷰 셀은 read 시 "전체"로 해석.
 
 탭이 없으면 헤더와 함께 자동 생성.
 """
@@ -15,25 +19,118 @@ import logging
 from datetime import date, datetime
 from typing import Any
 
-from soo import persona
+from soo import persona, DEFAULT_VIEW_LABEL
 
 
 LONG_TAB = "Long"
 WIDE_TAB = "Wide"
 
-LONG_HEADER = ["날짜", "시간", "goods_no", "랭킹 순위", "브랜드", "상품명", "히어로여부"]
+LONG_HEADER = ["날짜", "시간", "뷰", "goods_no", "랭킹 순위", "브랜드", "상품명", "히어로여부"]
+LONG_HEADER_OLD = ["날짜", "시간", "goods_no", "랭킹 순위", "브랜드", "상품명", "히어로여부"]
+_LONG_VIEW_COL_IDX = 2  # 0-based, "뷰" 컬럼이 들어갈 위치 (= C열)
 
 # Wide tab — 매시간 슬롯 24개 (00시~23시)
 TIME_SLOTS = [f"{h:02d}:00" for h in range(24)]
-WIDE_HEADER = ["날짜", "goods_no", "브랜드", "상품명", "히어로여부"] + TIME_SLOTS
+WIDE_HEADER = ["날짜", "뷰", "goods_no", "브랜드", "상품명", "히어로여부"] + TIME_SLOTS
+WIDE_HEADER_OLD = ["날짜", "goods_no", "브랜드", "상품명", "히어로여부"] + TIME_SLOTS
+_WIDE_VIEW_COL_IDX = 1  # 0-based, "뷰" 컬럼이 들어갈 위치 (= B열)
 
 
 def _hero_label(is_hero: bool) -> str:
     return "히어로" if is_hero else ""
 
 
-def _ensure_tab(sheets_service: Any, sheet_id: str, tab: str, header: list[str]) -> None:
-    """탭이 없으면 만들고 헤더 작성. 있으면 헤더가 비어있을 때만 헤더 채움."""
+def _col_letter(idx_zero_based: int) -> str:
+    """0=A, 1=B, ..."""
+    return chr(ord("A") + idx_zero_based)
+
+
+def _migrate_view_column(
+    sheets_service: Any,
+    sheet_id: str,
+    tab: str,
+    view_col_idx: int,
+    expected_old_header: list[str],
+    expected_new_header: list[str],
+    log: logging.Logger | None = None,
+) -> bool:
+    """탭이 옛 헤더(뷰 컬럼 없음)면 view_col_idx 위치에 컬럼 insert + "뷰" 헤더 작성.
+
+    이미 새 헤더면 no-op. 탭이 없으면 호출 측(_ensure_tab)에서 처리. True=마이그 발생.
+    """
+    meta = sheets_service.spreadsheets().get(
+        spreadsheetId=sheet_id, fields="sheets(properties(title,sheetId))"
+    ).execute()
+    sheet_props = next(
+        (s["properties"] for s in meta.get("sheets", []) if s["properties"]["title"] == tab),
+        None,
+    )
+    if not sheet_props:
+        return False  # 탭 자체가 없음 — _ensure_tab이 새 헤더로 만들 것
+
+    resp = sheets_service.spreadsheets().values().get(
+        spreadsheetId=sheet_id, range=f"'{tab}'!A1:1"
+    ).execute()
+    current = (resp.get("values") or [[]])[0]
+
+    if current == expected_new_header:
+        return False
+    if not current:
+        # 헤더가 비어 있으면 그냥 새 헤더로 작성
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=sheet_id,
+            range=f"'{tab}'!A1",
+            valueInputOption="RAW",
+            body={"values": [expected_new_header]},
+        ).execute()
+        return False
+
+    if current == expected_old_header:
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=sheet_id,
+            body={"requests": [{
+                "insertDimension": {
+                    "range": {
+                        "sheetId": sheet_props["sheetId"],
+                        "dimension": "COLUMNS",
+                        "startIndex": view_col_idx,
+                        "endIndex": view_col_idx + 1,
+                    },
+                    "inheritFromBefore": False,
+                },
+            }]},
+        ).execute()
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=sheet_id,
+            range=f"'{tab}'!{_col_letter(view_col_idx)}1",
+            valueInputOption="RAW",
+            body={"values": [["뷰"]]},
+        ).execute()
+        if log:
+            log.info(persona.step(f"[{tab}] 뷰 컬럼 {_col_letter(view_col_idx)}열에 자동 insert"))
+        return True
+
+    # 알 수 없는 헤더 — 손대지 않고 경고만
+    if log:
+        log.warning(persona.step(
+            f"[{tab}] 헤더가 기대값과 다름. 자동 마이그 skip. 현재={current}"
+        ))
+    return False
+
+
+def _ensure_tab(
+    sheets_service: Any,
+    sheet_id: str,
+    tab: str,
+    header: list[str],
+    old_header: list[str] | None = None,
+    view_col_idx: int | None = None,
+    log: logging.Logger | None = None,
+) -> None:
+    """탭이 없으면 만들고 헤더 작성. 있으면:
+       - 헤더가 비어있으면 새 헤더 채움
+       - 헤더가 옛 스키마(view 없음)이면 마이그 (insert column + 헤더 갱신)
+    """
     meta = sheets_service.spreadsheets().get(
         spreadsheetId=sheet_id, fields="sheets.properties"
     ).execute()
@@ -50,6 +147,16 @@ def _ensure_tab(sheets_service: Any, sheet_id: str, tab: str, header: list[str])
             valueInputOption="RAW",
             body={"values": [header]},
         ).execute()
+        return
+
+    if old_header is not None and view_col_idx is not None:
+        _migrate_view_column(
+            sheets_service, sheet_id, tab,
+            view_col_idx=view_col_idx,
+            expected_old_header=old_header,
+            expected_new_header=header,
+            log=log,
+        )
         return
 
     resp = sheets_service.spreadsheets().values().get(
@@ -71,11 +178,12 @@ def has_hour_data(
     sheets_service: Any,
     sheet_id: str,
     ts: datetime,
+    view: str,
 ) -> bool:
-    """Long 탭에 ts 시각(YYYY-MM-DD, HH:00) 슬롯의 행이 이미 있으면 True.
+    """Long 탭에 (ts 시각, view) 슬롯의 행이 이미 있으면 True.
 
-    같은 시간 내 중복 trigger를 멱등 처리하기 위해 사용. 마지막 ~200행만 검사 —
-    concurrency 그룹이 활성이면 직전 적재가 마지막 영역에 몰려있다.
+    뷰별 멱등 — 동일 시간에 전체는 적재됐지만 남자는 아직이면 남자만 진행.
+    마지막 ~600행만 검사 (3개 뷰 × Top 100 × 2시간 정도 여유).
     """
     target_date = ts.date().isoformat()
     target_time = ts.strftime("%H:%M")
@@ -96,16 +204,21 @@ def has_hour_data(
     row_count = long_props.get("gridProperties", {}).get("rowCount", 0)
     if row_count < 2:
         return False
-    start = max(2, row_count - 200)
+    start = max(2, row_count - 600)
     resp = sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id,
-        range=f"'{LONG_TAB}'!A{start}:B{row_count}",
+        range=f"'{LONG_TAB}'!A{start}:C{row_count}",
         valueRenderOption="UNFORMATTED_VALUE",
         dateTimeRenderOption="FORMATTED_STRING",
     ).execute()
     rows = resp.get("values", [])
     for row in rows:
-        if len(row) >= 2 and str(row[0]) == target_date and str(row[1]) == target_time:
+        if len(row) < 2:
+            continue
+        if str(row[0]) != target_date or str(row[1]) != target_time:
+            continue
+        row_view = (str(row[2]).strip() if len(row) >= 3 else "") or DEFAULT_VIEW_LABEL
+        if row_view == view:
             return True
     return False
 
@@ -114,22 +227,25 @@ def append_realtime(
     sheets_service: Any,
     sheet_id: str,
     ts: datetime,
+    view: str,
     items: list[tuple],
     log: logging.Logger,
 ) -> int:
     """items: [(goods_no, rank, brand, product_name, is_hero), ...]
 
     valueInputOption="RAW" — 날짜/시간/숫자 자동 파싱 막아서 ISO 문자열 그대로 보존.
-    USER_ENTERED 쓰면 Sheets가 날짜 타입으로 변환 → daily가 read할 때 로케일 포맷
-    (예: "2026. 5. 1.")으로 돌아와서 ISO 문자열 비교에 실패함.
     """
-    _ensure_tab(sheets_service, sheet_id, LONG_TAB, LONG_HEADER)
+    _ensure_tab(
+        sheets_service, sheet_id, LONG_TAB, LONG_HEADER,
+        old_header=LONG_HEADER_OLD, view_col_idx=_LONG_VIEW_COL_IDX, log=log,
+    )
 
     rows = []
     for goods_no, rank, brand, product_name, is_hero in items:
         rows.append([
             ts.date().isoformat(),
             ts.strftime("%H:%M"),
+            view,
             str(goods_no),
             int(rank),
             brand,
@@ -138,7 +254,7 @@ def append_realtime(
         ])
 
     if not rows:
-        log.info(persona.step("Long 탭 append: 0행 (매칭된 상품 없음)"))
+        log.info(persona.step(f"Long 탭 append [{view}]: 0행 (매칭된 상품 없음)"))
         return 0
 
     sheets_service.spreadsheets().values().append(
@@ -148,46 +264,49 @@ def append_realtime(
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
     ).execute()
-    log.info(persona.step(f"Long 탭 append: {len(rows)}행"))
+    log.info(persona.step(f"Long 탭 append [{view}]: {len(rows)}행"))
     return len(rows)
 
 
 # ───────────────────────────────────────────────────────────
-# Daily: Long 탭에서 특정 날짜 데이터 read → ranking_db rows 형식으로
+# Daily: Long 탭에서 특정 날짜 × 뷰 데이터 read → ranking_db rows 형식으로
 # ───────────────────────────────────────────────────────────
 def read_day_long(
     sheets_service: Any,
     sheet_id: str,
     target_day: date,
+    view: str | None = None,
 ) -> list[dict]:
     """Long 탭에서 target_day 의 모든 row를 읽어 dict 리스트로 반환.
 
-    반환 row 구조 (기존 ranking_db.rankings_for_day 와 호환):
-      {"ts": "YYYY-MM-DDTHH:MM:00", "goods_no": str, "rank": int,
+    view 지정 시 해당 뷰 행만. None이면 전체 뷰 합쳐서 반환 (뷰 필드는 row에 포함).
+    빈 뷰 셀은 DEFAULT_VIEW_LABEL("전체")로 해석 — 기존 데이터 호환.
+
+    반환 row 구조:
+      {"ts": "YYYY-MM-DDTHH:MM:00", "view": str, "goods_no": str, "rank": int,
        "brand": str, "product_name": str, "is_hero": bool}
     """
     resp = sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id,
-        range=f"'{LONG_TAB}'!A2:G",  # 헤더 제외
-        # UNFORMATTED + FORMATTED_STRING — 날짜/시간 셀이 USER_ENTERED로
-        # 파싱돼있어도 사람이 읽을 수 있는 문자열로 받고, 숫자(goods_no, rank)는
-        # 그대로 받는다. 기존 데이터 호환을 위해 ISO/로케일 양쪽 매칭.
+        range=f"'{LONG_TAB}'!A2:H",  # 헤더 제외, 8컬럼
         valueRenderOption="UNFORMATTED_VALUE",
         dateTimeRenderOption="FORMATTED_STRING",
     ).execute()
     raw = resp.get("values", [])
 
     day_str = target_day.isoformat()
-    # 호환: "2026. 5. 1." / "2026.5.1." 같은 한국 로케일 포맷도 매칭
     day_alt_strict = f"{target_day.year}. {target_day.month}. {target_day.day}."
     day_alt_compact = f"{target_day.year}.{target_day.month}.{target_day.day}."
     out: list[dict] = []
     for row in raw:
-        if len(row) < 7:
-            row = row + [""] * (7 - len(row))
-        date_s, time_s, goods_no, rank_s, brand, product_name, hero_s = row[:7]
+        if len(row) < 8:
+            row = row + [""] * (8 - len(row))
+        date_s, time_s, view_s, goods_no, rank_s, brand, product_name, hero_s = row[:8]
         date_str = str(date_s).strip()
         if date_str not in (day_str, day_alt_strict, day_alt_compact):
+            continue
+        row_view = (str(view_s).strip() or DEFAULT_VIEW_LABEL)
+        if view is not None and row_view != view:
             continue
         try:
             rank = int(rank_s)
@@ -196,7 +315,6 @@ def read_day_long(
         # 시간 정규화: "08:00" 또는 "오전 8:00:00" 등 → "HH:00"
         time_str = str(time_s).strip()
         if ":" in time_str:
-            # "8:00:00", "오전 8:00:00", "08:00" 등에서 시간만 추출
             parts = time_str.replace("오전", "").replace("오후", "").strip().split(":")
             try:
                 hour = int(parts[0])
@@ -208,6 +326,7 @@ def read_day_long(
         ts_iso = f"{day_str}T{time_str}:00"
         out.append({
             "ts": ts_iso,
+            "view": row_view,
             "goods_no": str(goods_no),
             "rank": rank,
             "brand": brand,
@@ -223,9 +342,9 @@ def count_snapshots(rows: list[dict]) -> int:
 
 
 # ───────────────────────────────────────────────────────────
-# Daily: Wide 탭에 일일 요약 append
+# Daily: Wide 탭에 일일 요약 append (뷰별 행)
 # ───────────────────────────────────────────────────────────
-def _build_wide_rows(rows: list[dict], target_day: date) -> list[list]:
+def _build_wide_rows(rows: list[dict], target_day: date, view: str) -> list[list]:
     by_goods: dict[str, dict] = {}
     for r in rows:
         try:
@@ -253,7 +372,7 @@ def _build_wide_rows(rows: list[dict], target_day: date) -> list[list]:
     out = []
     day_str = target_day.isoformat()
     for gn, info in items:
-        row = [day_str, gn, info["brand"], info["product_name"], _hero_label(info["is_hero"])]
+        row = [day_str, view, gn, info["brand"], info["product_name"], _hero_label(info["is_hero"])]
         for slot in TIME_SLOTS:
             r = info["ranks"].get(slot)
             row.append(r if r is not None else "")
@@ -265,16 +384,20 @@ def append_day_wide(
     sheets_service: Any,
     sheet_id: str,
     target_day: date,
+    view: str,
     rows: list[dict],
     log: logging.Logger,
 ) -> int:
     if not rows:
-        log.info(persona.step("Wide 탭 append: 0행 (데이터 없음)"))
+        log.info(persona.step(f"Wide 탭 append [{view}]: 0행 (데이터 없음)"))
         return 0
 
-    _ensure_tab(sheets_service, sheet_id, WIDE_TAB, WIDE_HEADER)
+    _ensure_tab(
+        sheets_service, sheet_id, WIDE_TAB, WIDE_HEADER,
+        old_header=WIDE_HEADER_OLD, view_col_idx=_WIDE_VIEW_COL_IDX, log=log,
+    )
 
-    wide_data = _build_wide_rows(rows, target_day)
+    wide_data = _build_wide_rows(rows, target_day, view)
     if not wide_data:
         return 0
 
@@ -285,23 +408,27 @@ def append_day_wide(
         insertDataOption="INSERT_ROWS",
         body={"values": wide_data},
     ).execute()
-    log.info(persona.step(f"Wide 탭 append: {len(wide_data)}행"))
+    log.info(persona.step(f"Wide 탭 append [{view}]: {len(wide_data)}행"))
     return len(wide_data)
 
 
 # ───────────────────────────────────────────────────────────
-# Daily 멱등성: Wide 탭에 같은 target_day 행이 이미 있는지 체크
+# Daily 멱등성: Wide 탭에 (target_day, view) 행이 이미 있는지 체크
 # ───────────────────────────────────────────────────────────
 def has_day_wide(
     sheets_service: Any,
     sheet_id: str,
     target_day: date,
+    view: str,
 ) -> bool:
-    """Wide 탭 A열(날짜)에 target_day 가 이미 있으면 True."""
+    """Wide 탭에 (날짜=target_day, 뷰=view) 행이 이미 있으면 True.
+
+    빈 뷰 셀은 DEFAULT_VIEW_LABEL("전체")로 간주 — 기존 데이터 호환.
+    """
     try:
         resp = sheets_service.spreadsheets().values().get(
             spreadsheetId=sheet_id,
-            range=f"'{WIDE_TAB}'!A2:A",
+            range=f"'{WIDE_TAB}'!A2:B",
             valueRenderOption="UNFORMATTED_VALUE",
             dateTimeRenderOption="FORMATTED_STRING",
         ).execute()
@@ -315,6 +442,9 @@ def has_day_wide(
         if not row:
             continue
         v = str(row[0]).strip()
-        if v in (day_str, day_alt_strict, day_alt_compact):
+        if v not in (day_str, day_alt_strict, day_alt_compact):
+            continue
+        row_view = (str(row[1]).strip() if len(row) >= 2 else "") or DEFAULT_VIEW_LABEL
+        if row_view == view:
             return True
     return False
