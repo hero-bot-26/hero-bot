@@ -82,6 +82,7 @@ def main() -> int:
     try:
         ranking_daily.run(
             sheets_service=sheets_svc,
+            drive_service=svc["drive"],
             sheet_id=archive_sheet_id,
             hero_uids=hero_uids,
             slack_bot_token=slack_token,

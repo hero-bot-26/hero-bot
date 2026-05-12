@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from soo import persona, VIEWS
-from soo.storage import sheet_archive, screenshots_tab
+from soo.storage import drive_uploader, sheet_archive, screenshots_tab
 
 
 def _aggregate(rows: list[dict]) -> dict[str, dict]:
@@ -179,6 +179,7 @@ def build_report(
 def _send_screenshots(
     *,
     sheets_service: Any,
+    drive_service: Any,
     sheet_id: str,
     target_day: date,
     view: str,
@@ -187,7 +188,11 @@ def _send_screenshots(
     slack_target: str,
     log: logging.Logger,
 ) -> int:
-    """(뷰별) 어제 스크린샷이 있는 상품들을 image_block으로 별도 Slack 메시지 발송."""
+    """(뷰별) 어제 스크린샷 PNG들을 Drive에서 다운받아 슬랙에 직접 업로드.
+
+    무신사 Workspace가 Drive anyone-with-link 외부 공개를 차단하므로 image_block(URL) 방식
+    대신 files_upload_v2로 채널에 PNG 파일을 직접 올림. 슬랙이 자체 호스팅하여 미리보기 정상.
+    """
     records = screenshots_tab.read_day_records(sheets_service, sheet_id, target_day, view=view)
     if not records:
         return 0
@@ -198,46 +203,69 @@ def _send_screenshots(
         if gn not in name_lookup:
             name_lookup[gn] = r.get("product_name", "")
 
-    items = sorted(records.items(), key=lambda kv: kv[1]["peak_rank"])
+    items_with_file = [(gn, rec) for gn, rec in records.items() if rec.get("file_id")]
+    if not items_with_file:
+        return 0
+    items_with_file.sort(key=lambda kv: kv[1]["peak_rank"])
 
-    blocks: list[dict] = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"📸 [{view}] Top 10 진입 스크린샷"}},
-    ]
-    for gn, rec in items:
-        if not rec.get("screenshot_url"):
-            continue
-        name = name_lookup.get(gn, gn)
-        caption = f"*#{rec['peak_rank']:>2}*  {name[:60]}"
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": caption}})
-        blocks.append({
-            "type": "image",
-            "image_url": rec["screenshot_url"],
-            "alt_text": name[:100] or gn,
-        })
+    # 헤더 메시지 1개
+    persona.send_slack(
+        f"📸 *[{view}] Top 10 진입 스크린샷* — {len(items_with_file)}건",
+        bot_token=slack_bot_token,
+        target=slack_target,
+        persona=persona.RANKING_BOT,
+        log=log,
+    )
 
-    if len(blocks) <= 1:
+    try:
+        from slack_sdk import WebClient
+        from slack_sdk.errors import SlackApiError
+    except ImportError:
+        log.error(persona.task_failed("slack_sdk 미설치 — files_upload_v2 발송 불가"))
         return 0
 
+    client = WebClient(token=slack_bot_token)
+
+    # 채널 ID로 정규화 — files_upload_v2는 D/C/G/Z 시작 ID 필요. 사용자 ID(U…)면 IM 열어 변환.
+    upload_channel = slack_target
+    if slack_target and slack_target.startswith("U"):
+        try:
+            im = client.conversations_open(users=slack_target)
+            upload_channel = im["channel"]["id"]
+        except SlackApiError as e:
+            log.error(persona.task_failed(f"DM 채널 열기 실패 — {e.response.get('error') if e.response else e}"))
+            return 0
+
     sent_count = 0
-    chunk_size = 48
-    for i in range(0, len(blocks), chunk_size):
-        chunk = blocks[i:i + chunk_size]
-        ok = persona.send_slack(
-            f"📸 [{view}] 스크린샷",
-            bot_token=slack_bot_token,
-            target=slack_target,
-            persona=persona.RANKING_BOT,
-            log=log,
-            blocks=chunk,
-        )
-        if ok:
+    for gn, rec in items_with_file:
+        name = name_lookup.get(gn, gn)
+        caption = f"*#{rec['peak_rank']:>2}*  {name[:60]}"
+        try:
+            png = drive_uploader.download_png(drive_service, rec["file_id"])
+        except Exception as e:
+            log.error(persona.task_failed(f"Drive 다운로드 실패 [{view}] ({gn}): {e}"))
+            continue
+        try:
+            client.files_upload_v2(
+                channel=upload_channel,
+                file=png,
+                filename=f"ranking_{view}_{target_day.isoformat()}_rank{rec['peak_rank']:02d}_{gn}.png",
+                title=f"[{view}] #{rec['peak_rank']} {name[:60]}",
+                initial_comment=caption,
+            )
             sent_count += 1
+        except SlackApiError as e:
+            err = e.response.get("error") if e.response else str(e)
+            log.error(persona.task_failed(f"Slack 업로드 실패 [{view}] ({gn}): {err}"))
+        except Exception as e:
+            log.error(persona.task_failed(f"Slack 업로드 예외 [{view}] ({gn}): {type(e).__name__}: {e}"))
     return sent_count
 
 
 def _run_view(
     *,
     sheets_service: Any,
+    drive_service: Any,
     sheet_id: str,
     view: str,
     target_day: date,
@@ -281,6 +309,7 @@ def _run_view(
         if sent:
             screenshots_sent = _send_screenshots(
                 sheets_service=sheets_service,
+                drive_service=drive_service,
                 sheet_id=sheet_id,
                 target_day=target_day,
                 view=view,
@@ -289,7 +318,7 @@ def _run_view(
                 slack_target=slack_target,
                 log=log,
             )
-            log.info(persona.step(f"[{view}] 스크린샷 image_block — {screenshots_sent}건"))
+            log.info(persona.step(f"[{view}] 스크린샷 슬랙 업로드 — {screenshots_sent}건"))
 
     wide_appended = sheet_archive.append_day_wide(
         sheets_service=sheets_service,
@@ -321,6 +350,7 @@ def run(
     sheet_url: str | None = None,
     top_n: int = 100,
     force: bool = False,
+    drive_service: Any = None,
 ) -> dict:
     if target_day is None:
         target_day = date.today() - timedelta(days=1)
@@ -333,6 +363,7 @@ def run(
         try:
             result = _run_view(
                 sheets_service=sheets_service,
+                drive_service=drive_service,
                 sheet_id=sheet_id,
                 view=view,
                 target_day=target_day,

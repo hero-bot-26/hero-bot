@@ -1,11 +1,10 @@
-"""Google Drive에 PNG 업로드 + Slack image_block에서 임베드 가능한 URL 발급.
+"""Google Drive에 PNG 업로드 (archive 용도) + 다운로드 헬퍼.
 
-URL은 lh3.googleusercontent.com/d/{file_id} 형태 — Slack이 raw image로 인식.
+무신사 Workspace 정책상 anyone-with-link 외부 공개가 막혀 있어 (publishOutNotPermitted),
+Slack 미리보기는 daily가 file_id로 PNG를 다운받아 files_upload_v2로 채널에 직접 업로드.
+Drive는 archive 역할.
 
-⚠️ Shared Drive(공유 드라이브) 호환:
-  - 모든 files / permissions API 호출에 supportsAllDrives=True 명시
-  - 검색에는 includeItemsFromAllDrives=True 추가
-  안 그러면 Workspace 도메인 폴더가 404 NotFound로 보임.
+⚠️ Shared Drive 호환: 모든 files API 호출에 supportsAllDrives=True 명시.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from __future__ import annotations
 import io
 from typing import Any
 
-from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 
 def upload_png(
@@ -22,9 +21,9 @@ def upload_png(
     filename: str,
     image_bytes: bytes,
 ) -> tuple[str, str]:
-    """폴더에 PNG 업로드 + anyone-readable 권한 부여. (image_url, file_id) 반환.
+    """폴더에 PNG 업로드. (drive_view_url, file_id) 반환.
 
-    image_url: lh3.googleusercontent.com/d/{file_id} — Slack image_block에서 직접 임베드 가능.
+    drive_view_url: 도메인 내 사용자가 클릭 시 Drive에서 열림. 슬랙 미리보기엔 안 씀.
     """
     metadata = {"name": filename, "parents": [folder_id]}
     media = MediaIoBaseUpload(
@@ -39,17 +38,18 @@ def upload_png(
         supportsAllDrives=True,
     ).execute()
     file_id = file["id"]
+    return f"https://drive.google.com/file/d/{file_id}/view", file_id
 
-    # anyone with link can view → Slack이 fetch 가능
-    drive_service.permissions().create(
-        fileId=file_id,
-        body={"role": "reader", "type": "anyone"},
-        fields="id",
-        supportsAllDrives=True,
-    ).execute()
 
-    image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
-    return image_url, file_id
+def download_png(drive_service: Any, file_id: str) -> bytes:
+    """file_id로 Drive PNG 다운로드. daily가 슬랙 업로드 직전 호출."""
+    buf = io.BytesIO()
+    request = drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buf.getvalue()
 
 
 def ensure_subfolder(drive_service: Any, parent_id: str, name: str) -> str:

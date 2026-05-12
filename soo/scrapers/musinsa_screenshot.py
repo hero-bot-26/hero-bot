@@ -43,7 +43,9 @@ async () => {
 }
 """
 
-# rank N번째 product 카드 bottom Y를 px로 반환. N개 미만이면 null.
+# rank N번째까지의 클립 height(px) 반환. 다음 행(N+1번째 카드)의 top Y 직전까지 자름 →
+# N번째 카드 아래의 상품명·가격 텍스트가 자연스럽게 포함됨. N+1이 없으면 마지막 카드
+# bottom + 여유 패딩(상품명 영역) 사용.
 _FIND_RANK_BOTTOM_JS = r"""
 (rankLimit) => {
     const seen = new Set();
@@ -52,15 +54,17 @@ _FIND_RANK_BOTTOM_JS = r"""
         const href = a.href;
         if (seen.has(href)) continue;
         const r = a.getBoundingClientRect();
-        // 의미 있는 크기의 카드만 (ad/icon 등 제외)
         if (r.width < 80 || r.height < 80) continue;
         seen.add(href);
         cards.push({ y: r.top + window.scrollY, height: r.height });
     }
     cards.sort((a, b) => a.y - b.y);
     if (cards.length < rankLimit) return null;
+    if (cards.length > rankLimit) {
+        return Math.ceil(cards[rankLimit].y - 4);
+    }
     const last = cards[rankLimit - 1];
-    return Math.ceil(last.y + last.height + 8);
+    return Math.ceil(last.y + last.height + 160);
 }
 """
 
