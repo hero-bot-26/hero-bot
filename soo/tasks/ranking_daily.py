@@ -104,13 +104,21 @@ def build_report(
     hero_uids: set[str],
     sheet_url: str | None = None,
     top_n: int = 100,
+    screenshots_count: int = 0,
 ) -> str:
     rows = [r for r in rows if r.get("rank", 999) <= top_n]
     prev_rows = [r for r in prev_rows if r.get("rank", 999) <= top_n]
 
     n_snapshots = sheet_archive.count_snapshots(rows)
     if n_snapshots == 0:
-        return f"{_title(target_day, view, sheet_url, top_n)} — 캡처된 스냅샷이 없어요. (봇 미실행 또는 데이터 누락)"
+        msg = (
+            f"{_title(target_day, view, sheet_url, top_n)} — "
+            f"Long 탭에 [{view}] 시간별 적재 행이 0건이에요. "
+            f"(hourly 봇이 [{view}] 뷰를 못 적재 — 워크플로우/스키마 마이그 누락 의심)"
+        )
+        if screenshots_count > 0:
+            msg += f"\n_단, Drive 스크린샷은 [{view}] 뷰로 {screenshots_count}장 캡처돼 있음._"
+        return msg
 
     aggregated = _aggregate(rows)
     prev_aggregated = _aggregate(prev_rows) if prev_rows else {}
@@ -136,10 +144,10 @@ def build_report(
 
     lines.append("🎯 *히어로 (사전 지정 상품)*")
     if hero_aggs:
-        for a in hero_aggs[:20]:
+        for a in hero_aggs[:5]:
             lines.append(f"  • {_hero_summary_line(a)}")
-        if len(hero_aggs) > 20:
-            lines.append(f"  _… 외 {len(hero_aggs) - 20}개_")
+        if len(hero_aggs) > 5:
+            lines.append(f"  _… 외 {len(hero_aggs) - 5}개 (전체 목록은 Wide 탭)_")
     else:
         lines.append("  _없음_")
 
@@ -147,31 +155,33 @@ def build_report(
         lines.append(f"  ⚠️ 미진입 히어로 {len(missing_hero_uids)}개 (전체 {len(hero_uids)}개 중)")
 
     lines.append("")
-    lines.append(f"📈 *기타 무탠 계열 진입* (히어로 외 — 상위 10)")
+    lines.append(f"📈 *기타 무탠 계열 진입* (히어로 외 — 상위 5)")
     if other_aggs:
-        for a in other_aggs[:10]:
+        for a in other_aggs[:5]:
             lines.append(f"  • {_hero_summary_line(a)}")
-        if len(other_aggs) > 10:
-            lines.append(f"  _… 외 {len(other_aggs) - 10}개_")
+        if len(other_aggs) > 5:
+            lines.append(f"  _… 외 {len(other_aggs) - 5}개 (전체 목록은 Wide 탭)_")
     else:
         lines.append("  _없음_")
 
     lines.append("")
-    lines.append(f"🚀 *전일 대비 급상승 / 신규 진입* (peak rank {JUMP_THRESHOLD}위 이상 향상)")
+    lines.append(f"🚀 *전일 대비 급상승 / 신규 진입* (peak rank {JUMP_THRESHOLD}위 이상 향상 · 합쳐 상위 5)")
     if not prev_rows:
         lines.append("  _전일 데이터 부족 — 비교 불가_")
     elif not new_entries and not jumped:
         lines.append("  _급상승/신규 진입 없음_")
     else:
-        for a in new_entries[:10]:
+        shown = 0
+        for a in new_entries[:5]:
             lines.append(f"  • 🆕 최고 랭킹 #{a['peak_rank']:>3}  {a['product_name'][:42]:<42}  (신규 · {_format_time(a['peak_ts'])} 피크)")
-        if len(new_entries) > 10:
-            lines.append(f"  _… 신규 외 {len(new_entries) - 10}개_")
-        for a, prev_peak in jumped[:10]:
+            shown += 1
+        for a, prev_peak in jumped[: max(0, 5 - shown)]:
             jump_amt = prev_peak - a["peak_rank"]
             lines.append(f"  • 📈 최고 랭킹 #{a['peak_rank']:>3}  {a['product_name'][:42]:<42}  (전일 #{prev_peak} → +{jump_amt}↑)")
-        if len(jumped) > 10:
-            lines.append(f"  _… 급상승 외 {len(jumped) - 10}개_")
+            shown += 1
+        remaining = (len(new_entries) + len(jumped)) - shown
+        if remaining > 0:
+            lines.append(f"  _… 외 {remaining}개 (전체 목록은 Wide 탭)_")
 
     return "\n".join(lines)
 
@@ -290,7 +300,14 @@ def _run_view(
     prev_rows = sheet_archive.read_day_long(sheets_service, sheet_id, prev_day, view=view)
     log.info(persona.step(f"[{view}] Long 탭 read (그제 {prev_day.isoformat()}) — {len(prev_rows)}행"))
 
-    report = build_report(rows, prev_rows, target_day, view, hero_uids, sheet_url=sheet_url, top_n=top_n)
+    # Long 0건 케이스에서 "그래도 Drive PNG는 있다"를 보여주기 위해 미리 카운트
+    screenshots_records = screenshots_tab.read_day_records(sheets_service, sheet_id, target_day, view=view)
+    screenshots_count = len(screenshots_records)
+
+    report = build_report(
+        rows, prev_rows, target_day, view, hero_uids,
+        sheet_url=sheet_url, top_n=top_n, screenshots_count=screenshots_count,
+    )
     log.info(persona.step(f"[{view}] 리포트 생성 — {len(report)}자"))
     for line in report.split("\n"):
         log.info(line)
