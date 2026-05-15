@@ -323,20 +323,9 @@ def _run_view(
         )
         log.info(persona.step(f"[{view}] Slack 발송 — {'성공' if sent else '실패'}"))
 
-        if sent:
-            screenshots_sent = _send_screenshots(
-                sheets_service=sheets_service,
-                drive_service=drive_service,
-                sheet_id=sheet_id,
-                target_day=target_day,
-                view=view,
-                rows=rows,
-                slack_bot_token=slack_bot_token,
-                slack_target=slack_target,
-                log=log,
-            )
-            log.info(persona.step(f"[{view}] 스크린샷 슬랙 업로드 — {screenshots_sent}건"))
-
+    # Wide 적재는 스크린샷 업로드 전에 — 스크린샷이 10분 cap 안에서 못 끝나
+    # GH Actions 가 SIGKILL 해도 다음 cron 이 has_day_wide() 로 이 뷰를 skip 하고
+    # 다음 뷰로 넘어가게 한다 (스크린샷 일부 누락은 감수, Slack 중복 발송 방지가 우선).
     wide_appended = sheet_archive.append_day_wide(
         sheets_service=sheets_service,
         sheet_id=sheet_id,
@@ -345,6 +334,20 @@ def _run_view(
         rows=rows,
         log=log,
     )
+
+    if sent:
+        screenshots_sent = _send_screenshots(
+            sheets_service=sheets_service,
+            drive_service=drive_service,
+            sheet_id=sheet_id,
+            target_day=target_day,
+            view=view,
+            rows=rows,
+            slack_bot_token=slack_bot_token,
+            slack_target=slack_target,
+            log=log,
+        )
+        log.info(persona.step(f"[{view}] 스크린샷 슬랙 업로드 — {screenshots_sent}건"))
 
     return {
         "view": view,
