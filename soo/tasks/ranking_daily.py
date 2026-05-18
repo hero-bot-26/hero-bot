@@ -298,7 +298,8 @@ def _run_view(
     force: bool,
 ) -> dict:
     # 멱등성: 이미 (date, view) wide-append 된 경우 force 아니면 skip
-    if not force and sheet_archive.has_day_wide(sheets_service, sheet_id, target_day, view=view):
+    already_wide = sheet_archive.has_day_wide(sheets_service, sheet_id, target_day, view=view)
+    if not force and already_wide:
         log.info(persona.step(f"[{view}] Wide 탭에 이미 적재됨 — skip (재발송: --force)"))
         return {"view": view, "skipped": True, "rows_read": 0, "slack_sent": False, "wide_appended": 0}
 
@@ -335,14 +336,19 @@ def _run_view(
     # Wide 적재는 스크린샷 업로드 전에 — 스크린샷이 10분 cap 안에서 못 끝나
     # GH Actions 가 SIGKILL 해도 다음 cron 이 has_day_wide() 로 이 뷰를 skip 하고
     # 다음 뷰로 넘어가게 한다 (스크린샷 일부 누락은 감수, Slack 중복 발송 방지가 우선).
-    wide_appended = sheet_archive.append_day_wide(
-        sheets_service=sheets_service,
-        sheet_id=sheet_id,
-        target_day=target_day,
-        view=view,
-        rows=rows,
-        log=log,
-    )
+    # force=True 재실행 시 이미 wide 행이 있으면 중복 적재 방지하고 슬랙만 다시 보낸다.
+    if already_wide:
+        log.info(persona.step(f"[{view}] Wide 탭 이미 적재됨 — append skip (slack만 재발송)"))
+        wide_appended = 0
+    else:
+        wide_appended = sheet_archive.append_day_wide(
+            sheets_service=sheets_service,
+            sheet_id=sheet_id,
+            target_day=target_day,
+            view=view,
+            rows=rows,
+            log=log,
+        )
 
     if report_ts:
         screenshots_sent = _send_screenshots(
@@ -387,6 +393,17 @@ def run(
     prev_day = target_day - timedelta(days=1)
 
     log.info(persona.starting_task(f"{target_day.isoformat()} 랭킹 일일 리포트 (3뷰)", persona.RANKING_BOT))
+
+    # 가독성 안내 — 각 view 리포트의 스크린샷은 해당 메시지의 thread(댓글)에 들어간다.
+    # 매일 발송되지만 한 줄짜리라 노이즈 부담은 작음.
+    if slack_bot_token and slack_target:
+        persona.send_slack(
+            "📎 _가독성을 높이기 위해, 각 top10 랭킹 사진은 각 리포트의 댓글(thread)에서 확인 가능합니다._",
+            bot_token=slack_bot_token,
+            target=slack_target,
+            persona=persona.RANKING_BOT,
+            log=log,
+        )
 
     per_view: list[dict] = []
     for _gf, view in VIEWS:
