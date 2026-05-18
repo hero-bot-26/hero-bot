@@ -394,6 +394,26 @@ def run(
 
     log.info(persona.starting_task(f"{target_day.isoformat()} 랭킹 일일 리포트 (3뷰)", persona.RANKING_BOT))
 
+    # 모든 뷰가 이미 Wide에 적재됐고 force=False면 안내 메시지 발송 전에 일찍 return —
+    # GH Actions cron 안전망(09:00/09:15/09:30/10:00)이 4번 발화할 때 첫 번째 외 3번은
+    # 뷰 처리는 _run_view 내부 has_day_wide()로 skip되지만 안내 메시지만 외롭게 발송돼
+    # 노이즈가 되던 버그 (2026-05-18 21:52 사고).
+    if not force:
+        all_done = all(
+            sheet_archive.has_day_wide(sheets_service, sheet_id, target_day, view=view)
+            for _gf, view in VIEWS
+        )
+        if all_done:
+            log.info(persona.step("모든 뷰가 이미 적재됨 — 안내/리포트 전체 skip (재발송: --force)"))
+            return {
+                "target_day": target_day,
+                "per_view": [
+                    {"view": v, "skipped": True, "rows_read": 0,
+                     "slack_sent": False, "wide_appended": 0}
+                    for _gf, v in VIEWS
+                ],
+            }
+
     # 가독성 안내 — 각 view 리포트의 스크린샷은 해당 메시지의 thread(댓글)에 들어간다.
     # 매일 발송되지만 한 줄짜리라 노이즈 부담은 작음.
     if slack_bot_token and slack_target:
