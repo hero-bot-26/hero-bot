@@ -92,14 +92,20 @@ def send_slack(
     persona: Persona | None = None,
     log: logging.Logger | None = None,
     blocks: list | None = None,
-) -> bool:
-    """Slack chat.postMessage 로 메시지 발송.
+    thread_ts: str | None = None,
+) -> str | None:
+    """Slack chat.postMessage 로 메시지 발송. 성공 시 메시지 ts, 실패 시 None.
 
     target: 채널 ID (`C0XXX...`), 채널명 (`#general`), 또는 사용자 ID (`U0XXX...`).
+    thread_ts: 주어지면 해당 부모 메시지의 thread reply로 발송 (채널 main timeline 영향 X).
     persona: 주어지면 username/icon override. (Bot 권한에 chat:write.customize 가 있어야 적용됨;
              없어도 메시지는 잘 가고 username/icon만 무시됨.)
     log: 주어지면 실패 사유를 로깅. CI 워크플로 디버깅에 필수.
     blocks: Slack Block Kit blocks (image_block 등). 주어지면 message는 fallback text로 사용.
+
+    반환을 ts/None로 잡은 이유: 같은 view 안에서 report 메시지의 ts를 받아
+    screenshots를 thread reply로 묶기 위함. 기존 호출자의 `if sent:` 패턴은
+    str/None도 truthy/falsy로 그대로 동작.
     """
     if not bot_token or not target:
         if log:
@@ -107,19 +113,21 @@ def send_slack(
                 f"Slack 발송 — token/target 누락 (token={'있음' if bot_token else '없음'}, "
                 f"target={'있음' if target else '없음'})"
             ))
-        return False
+        return None
     try:
         from slack_sdk import WebClient
         from slack_sdk.errors import SlackApiError
     except ImportError:
         if log:
             log.error(task_failed("Slack 발송 — slack_sdk 미설치"))
-        return False
+        return None
 
     client = WebClient(token=bot_token)
     kwargs: dict = {"channel": target, "text": message, "mrkdwn": True}
     if blocks:
         kwargs["blocks"] = blocks
+    if thread_ts:
+        kwargs["thread_ts"] = thread_ts
     if persona:
         if persona.slack_username:
             kwargs["username"] = persona.slack_username
@@ -128,14 +136,14 @@ def send_slack(
         elif persona.slack_icon_url:
             kwargs["icon_url"] = persona.slack_icon_url
     try:
-        client.chat_postMessage(**kwargs)
-        return True
+        resp = client.chat_postMessage(**kwargs)
+        return resp.get("ts")
     except SlackApiError as e:
         if log:
             err = (e.response.get("error") if e.response else None) or str(e)
             log.error(task_failed(f"Slack API 에러 — {err}"))
-        return False
+        return None
     except Exception as e:
         if log:
             log.error(task_failed(f"Slack 발송 예외 — {type(e).__name__}: {e}"))
-        return False
+        return None

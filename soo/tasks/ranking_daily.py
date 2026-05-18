@@ -196,12 +196,17 @@ def _send_screenshots(
     rows: list[dict],
     slack_bot_token: str,
     slack_target: str,
+    thread_ts: str | None,
     log: logging.Logger,
 ) -> int:
     """(뷰별) 어제 스크린샷 PNG들을 Drive에서 다운받아 슬랙에 직접 업로드.
 
     무신사 Workspace가 Drive anyone-with-link 외부 공개를 차단하므로 image_block(URL) 방식
     대신 files_upload_v2로 채널에 PNG 파일을 직접 올림. 슬랙이 자체 호스팅하여 미리보기 정상.
+
+    thread_ts: 해당 view 리포트 메시지의 ts. 헤더와 모든 PNG를 그 thread reply로 묶음 —
+               files_upload_v2가 슬랙 백엔드에서 한 박자 늦게 게시되면서
+               다음 view 리포트 뒤로 밀려 뒤섞이는 문제 방지.
     """
     records = screenshots_tab.read_day_records(sheets_service, sheet_id, target_day, view=view)
     if not records:
@@ -218,12 +223,13 @@ def _send_screenshots(
         return 0
     items_with_file.sort(key=lambda kv: kv[1]["peak_rank"])
 
-    # 헤더 메시지 1개
+    # 헤더 메시지 1개 (view 리포트 thread 안에)
     persona.send_slack(
         f"📸 *[{view}] Top 10 진입 스크린샷* — {len(items_with_file)}건",
         bot_token=slack_bot_token,
         target=slack_target,
         persona=persona.RANKING_BOT,
+        thread_ts=thread_ts,
         log=log,
     )
 
@@ -256,13 +262,16 @@ def _send_screenshots(
             log.error(persona.task_failed(f"Drive 다운로드 실패 [{view}] ({gn}): {e}"))
             continue
         try:
-            client.files_upload_v2(
+            upload_kwargs: dict = dict(
                 channel=upload_channel,
                 file=png,
                 filename=f"ranking_{view}_{target_day.isoformat()}_rank{rec['peak_rank']:02d}_{gn}.png",
                 title=f"[{view}] #{rec['peak_rank']} {name[:60]}",
                 initial_comment=caption,
             )
+            if thread_ts:
+                upload_kwargs["thread_ts"] = thread_ts
+            client.files_upload_v2(**upload_kwargs)
             sent_count += 1
         except SlackApiError as e:
             err = e.response.get("error") if e.response else str(e)
@@ -312,16 +321,16 @@ def _run_view(
     for line in report.split("\n"):
         log.info(line)
 
-    sent = False
+    report_ts: str | None = None
     if slack_bot_token and slack_target:
-        sent = persona.send_slack(
+        report_ts = persona.send_slack(
             report,
             bot_token=slack_bot_token,
             target=slack_target,
             persona=persona.RANKING_BOT,
             log=log,
         )
-        log.info(persona.step(f"[{view}] Slack 발송 — {'성공' if sent else '실패'}"))
+        log.info(persona.step(f"[{view}] Slack 발송 — {'성공' if report_ts else '실패'}"))
 
     # Wide 적재는 스크린샷 업로드 전에 — 스크린샷이 10분 cap 안에서 못 끝나
     # GH Actions 가 SIGKILL 해도 다음 cron 이 has_day_wide() 로 이 뷰를 skip 하고
@@ -335,7 +344,7 @@ def _run_view(
         log=log,
     )
 
-    if sent:
+    if report_ts:
         screenshots_sent = _send_screenshots(
             sheets_service=sheets_service,
             drive_service=drive_service,
@@ -345,6 +354,7 @@ def _run_view(
             rows=rows,
             slack_bot_token=slack_bot_token,
             slack_target=slack_target,
+            thread_ts=report_ts,
             log=log,
         )
         log.info(persona.step(f"[{view}] 스크린샷 슬랙 업로드 — {screenshots_sent}건"))
@@ -354,7 +364,7 @@ def _run_view(
         "skipped": False,
         "rows_read": len(rows),
         "report_len": len(report),
-        "slack_sent": sent,
+        "slack_sent": bool(report_ts),
         "wide_appended": wide_appended,
     }
 
