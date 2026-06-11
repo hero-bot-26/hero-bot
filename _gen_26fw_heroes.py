@@ -229,9 +229,23 @@ html2, n = re.subn(r"const HEROES = \[.*?\n\];", new_block, html, count=1, flags
 assert n == 1, f"HEROES 배열 교체 실패 (matched {n})"
 html2, nt = re.subn(r"const APP_TODAY = '[^']*';",
                     f"const APP_TODAY = '{TODAY.isoformat()}';", html2, count=1)
+
+# ── 실적 대시보드 데이터 주입 (build_dashboard) ──
+# 소스 시트: 전환기엔 전사 대시보드(DEV_SHEET_ID, 동일 raw 탭 보유). 운영 시 SA 시트로 교체.
+nd = 0
+try:
+    from soo.hero_ops.sales_rollup import build_dashboard, DEV_SHEET_ID
+    dash = build_dashboard(sheets, drive, DEV_SHEET_ID, TODAY.isoformat())
+    dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
+    html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
+    assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
+    print(f"DASHBOARD: 히어로 {len(dash['heroes'])}개 주입 (매핑 {dash['_stats']['mapped']}/{dash['_stats']['rows']})")
+except Exception as e:
+    print(f"[주의] DASHBOARD 주입 실패 — 실적 대시보드는 기존값 유지: {type(e).__name__}: {e}")
+
 HTML.write_text(html2, encoding="utf-8")
 
-print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt})")
+print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · DASHBOARD(교체 {nd})")
 for h in heroes:
     done = sum(1 for s in h["stages"] if s == "done")
     prog = sum(1 for s in h["stages"] if s == "progress")
