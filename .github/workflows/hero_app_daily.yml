@@ -1,0 +1,57 @@
+name: Hero master app daily update
+
+# 매일 PLM 구글시트(데이터브릭스 자동출력)를 읽어 app.html 재생성 → hero-master-app에 push → Vercel 재배포.
+# 랩탑 무관(클라우드 실행). 데이터브릭스 잡이 새벽(예 06:00 KST)에 시트를 채운 뒤 돌도록 스케줄.
+on:
+  schedule:
+    - cron: "0 22 * * *"   # 07:00 KST (Databricks 06:00 이후)
+  workflow_dispatch: {}     # 수동 실행 버튼
+
+concurrency:
+  group: hero-app-daily
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout hero_bot (생성기)
+        uses: actions/checkout@v4
+
+      - name: Checkout hero-master-app (배포 repo)
+        uses: actions/checkout@v4
+        with:
+          repository: hero-bot-26/hero-master-app
+          token: ${{ secrets.APP_REPO_PAT }}     # hero-master-app 쓰기 권한 PAT
+          path: hero-master-app
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install pandas openpyxl        # plm_ingest import용 (requirements 미포함)
+
+      - name: Generate app.html (구글시트 → app.html)
+        env:
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          APP_REPO_PATH:            ${{ github.workspace }}/hero-master-app
+        run: python _gen_26fw_heroes.py --sheet
+
+      - name: Commit & push (변경 있을 때만)
+        run: |
+          cd hero-master-app
+          git config user.name  "hero-bot"
+          git config user.email "hero-bot@users.noreply.github.com"
+          git add public/app.html
+          if git diff --cached --quiet; then
+            echo "변경 없음 — 커밋 스킵"
+          else
+            git commit -m "데이터 갱신 (자동) $(date -u +%Y-%m-%d)"
+            git push
+          fi
