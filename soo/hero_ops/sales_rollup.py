@@ -241,7 +241,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
     heroes, stats = aggregate(sheets, sheet_id, g2h)
     hero_stock, sty_stock = aggregate_stock(sheets, sheet_id, g2h)
     hero_in, sty_in = aggregate_inbound(sheets, sheet_id, g2h)
-    targets = parse_targets(drive)
+    targets = parse_targets(sheets)
 
     # 히어로명 → 시즌 (g2h 값에서)
     hero_season = {}

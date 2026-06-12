@@ -1,13 +1,13 @@
 """히어로 목표·준비물량 → 스타일(base 품번)별 정규화.
 
-소스: ★MSTRD 상품기획 xlsx (Drive의 Office 파일). Sheets API로는 못 읽어
-      Drive get_media 로 내려받아 openpyxl(read_only)로 읽는다. (PLM xlsx 읽기와 같은 방식)
+소스: 전사 대시보드(네이티브 Google Sheet)의 '히어로목표(거래량)' 탭. Sheets API로 직접 읽는다.
+      (과거엔 ★MSTRD 상품기획 .xlsx를 get_media+openpyxl로 읽었으나, 그 파일은 100MB 초과
+       Office 파일이라 편집분이 Drive로 저장되지 않아 신규 히어로 목표가 빠졌다. → 네이티브 탭으로 전환.)
 
-'히어로목표' 탭 = 전치(품번이 열) + 채널 2블록:
-  - R2="ON 목표"  → C~Y열  (온라인 목표 블록)
-  - R2="OFF 목표" → AB~AX열 (오프라인 목표 블록)  ※ 같은 품번이 양 블록에 등장. TOTAL = ON+OFF.
-  - 각 블록 R3=품번, R4=품명, R5=준비물량, R6=목표소진율, R7=목표판매량, R8~=월별.
-  - 그 뒤(BC~)에 목표 거래액(GMV) 블록도 있음 — qty 섹션은 R3=="GMV" 만나면 종료. (거래액은 추후)
+'히어로목표(거래량)' 탭 = 전치(품번이 열) + 채널 2블록 (같은 품번이 양 블록에 등장, TOTAL = ON+OFF):
+  - R2 = 채널 라벨 ("Online" / "Offline")
+  - R3 = 신품번,  R4 = 품명,  R5 = 준비물량,  R6 = 목표소진율,  R7 = 목표판매량,  R8~ = 월별
+  ※ '거래액(GMV)'은 별도 탭이며 보지 않는다 (거래량만).
 
 반환: { base_style_no: {
           target_qty, target_qty_on, target_qty_off,
@@ -17,15 +17,16 @@
 """
 from __future__ import annotations
 
-import io
 import re
 
-TARGET_FILE_ID = "1VTf5psWNm0-EuR1gz4AQrOTy7r5j0ebS"   # ★MSTRD_26SS 상품기획(상품MAP).xlsx
-TARGET_TAB = "히어로목표"
+# 전사 대시보드(네이티브) — 매출/재고와 동일 시트. 목표는 '히어로목표(거래량)' 탭.
+TARGET_SHEET_ID = "1aAYXjJPFgWCJAmZabc_f-f-wF3z492cIeDE-aVlx-HY"
+TARGET_TAB = "히어로목표(거래량)"
+TARGET_RANGE = f"'{TARGET_TAB}'!A2:DZ8"   # R2(채널)~R8, 열은 넉넉히 (현재 ~113열까지 사용)
 STYLE_RE = re.compile(r"^M[A-Z0-9]{8}$")
 
-# rows[] 0-indexed (min_row=1부터): R3=품번, R5=준비물량, R6=목표소진율, R7=목표판매량
-_R_STYLE, _R_PREP, _R_SELL, _R_TGT = 2, 4, 5, 6
+# A2부터 읽으므로 rows[] 0-indexed: 0=R2(채널), 1=R3(신품번), 3=R5(준비물량), 4=R6(소진율), 5=R7(목표판매량)
+_R_CHANNEL, _R_STYLE, _R_PREP, _R_SELL, _R_TGT = 0, 1, 3, 4, 5
 
 
 def _num(v):
@@ -39,39 +40,38 @@ def _base(style) -> str:
     return str(style).strip().split("-")[0]
 
 
-def load_workbook(drive):
-    """Drive에서 xlsx 내려받아 openpyxl 워크북 반환 (read_only, 값만)."""
-    data = drive.files().get_media(fileId=TARGET_FILE_ID, supportsAllDrives=True).execute()
-    import openpyxl
-    return openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+def parse_targets(sheets, sheet_id=TARGET_SHEET_ID, tab_range=TARGET_RANGE) -> dict:
+    res = sheets.spreadsheets().values().get(
+        spreadsheetId=sheet_id, range=tab_range,
+        valueRenderOption="UNFORMATTED_VALUE").execute()
+    rows = res.get("values", [])
 
+    def R(i):
+        return rows[i] if i < len(rows) else []
 
-def parse_targets(drive) -> dict:
-    wb = load_workbook(drive)
-    ws = wb[TARGET_TAB]
-    rows = list(ws.iter_rows(min_row=1, max_row=8, max_col=80, values_only=True))
-    r2, r3 = rows[1], rows[_R_STYLE]
-    r5, r6, r7 = rows[_R_PREP], rows[_R_SELL], rows[_R_TGT]
-    wb.close()
+    ch, sty = R(_R_CHANNEL), R(_R_STYLE)
+    prep, sell, tgt = R(_R_PREP), R(_R_SELL), R(_R_TGT)
+
+    def cell(row, c):
+        return row[c] if c < len(row) and row[c] not in (None, "") else None
 
     on: dict[str, dict] = {}
     off: dict[str, dict] = {}
-    block = None
-    for c in range(2, len(r3)):
-        lab = str(r2[c]).strip() if c < len(r2) and r2[c] else ""
-        cell = str(r3[c]).strip() if c < len(r3) and r3[c] else ""
-        if lab == "ON 목표":
-            block = on
-        elif lab == "OFF 목표":
-            block = off
-        if cell == "GMV" or cell.endswith("거래액"):   # qty 섹션 끝 (그 뒤는 목표 거래액)
-            break
-        if block is None or not STYLE_RE.match(cell):
+    for c in range(2, max(len(sty), len(ch))):
+        s = str(cell(sty, c) or "").strip()
+        if not STYLE_RE.match(s):
             continue
-        block[_base(cell)] = {
-            "prep": _num(r5[c]) if c < len(r5) else None,
-            "target": _num(r7[c]) if c < len(r7) else None,
-            "sell": _num(r6[c]) if c < len(r6) else None,
+        channel = str(cell(ch, c) or "").strip().lower()
+        if channel.startswith("online"):
+            block = on
+        elif channel.startswith("offline"):
+            block = off
+        else:
+            continue
+        block[_base(s)] = {
+            "prep": _num(cell(prep, c)),
+            "target": _num(cell(tgt, c)),
+            "sell": _num(cell(sell, c)),
         }
 
     out: dict[str, dict] = {}
@@ -97,9 +97,9 @@ if __name__ == "__main__":   # 단독 실행 = 파싱 + 검증
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from soo.auth import get_credentials, build_services
     ROOT = Path(__file__).resolve().parents[2]
-    drive = build_services(get_credentials(ROOT / "credentials.json", ROOT / "token.json"))["drive"]
+    sheets = build_services(get_credentials(ROOT / "credentials.json", ROOT / "token.json"))["sheets"]
 
-    t = parse_targets(drive)
+    t = parse_targets(sheets)
     print(f"목표 보유 품번 {len(t)}개")
     print(f"{'품번':12} {'목표(ON)':>8} {'목표(OFF)':>8} {'목표TOTAL':>9} {'준비TOTAL':>9} {'소진율':>6}")
     for k, v in sorted(t.items()):
