@@ -229,6 +229,9 @@ html2, n = re.subn(r"const HEROES = \[.*?\n\];", new_block, html, count=1, flags
 assert n == 1, f"HEROES 배열 교체 실패 (matched {n})"
 html2, nt = re.subn(r"const APP_TODAY = '[^']*';",
                     f"const APP_TODAY = '{TODAY.isoformat()}';", html2, count=1)
+# 홈 화면 실적 카드 기준일(하드코딩 SALES_AS_OF)도 DASHBOARD.as_of와 동일하게 매일 갱신
+html2, nsa = re.subn(r"const SALES_AS_OF = '[^']*';",
+                     f"const SALES_AS_OF = '{TODAY.isoformat()}';", html2, count=1)
 
 # ── 실적 대시보드 데이터 주입 (build_dashboard) ──
 # 소스 시트: 전환기엔 전사 대시보드(DEV_SHEET_ID, 동일 raw 탭 보유). 운영 시 SA 시트로 교체.
@@ -245,7 +248,7 @@ except Exception as e:
 
 HTML.write_text(html2, encoding="utf-8")
 
-print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · DASHBOARD(교체 {nd})")
+print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · DASHBOARD(교체 {nd})")
 for h in heroes:
     done = sum(1 for s in h["stages"] if s == "done")
     prog = sum(1 for s in h["stages"] if s == "progress")
