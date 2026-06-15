@@ -241,29 +241,43 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
     heroes, stats = aggregate(sheets, sheet_id, g2h)
     hero_stock, sty_stock = aggregate_stock(sheets, sheet_id, g2h)
     hero_in, sty_in = aggregate_inbound(sheets, sheet_id, g2h)
-    targets = parse_targets(sheets)
+    targets = parse_targets(sheets, as_of)   # 기간별(YTD/MTD/WEEK/DAY) 누적 목표
 
     # 히어로명 → 시즌 (g2h 값에서)
     hero_season = {}
     for v in g2h.values():
         hero_season.setdefault(v["hero"], v["season"])
 
-    # 히어로별 목표 (신품번 → 히어로 합산)
-    TKEYS = ["target_qty", "target_qty_on", "target_qty_off", "prep_qty", "prep_qty_on", "prep_qty_off"]
-    hero_target = defaultdict(lambda: {k: 0.0 for k in TKEYS})
+    # 히어로별 목표 (신품번 → 히어로 합산). tq=기간별 목표판매량, prep=준비물량(시즌)
+    _CH = ("t", "o", "f")
+
+    def _blank_target():
+        return {"tq": {p: {k: 0.0 for k in _CH} for p in PERIODS},
+                "prep": {k: 0.0 for k in _CH}}
+
+    hero_target = defaultdict(_blank_target)
     sty_target = {}                       # 신품번base → target (per-style, 코드 맞을 때만 sty에 부착)
     for style, t in targets.items():
         sty_target[style] = t
         hero = s2h.get(style)
         if not hero:
             continue
-        for k in TKEYS:
-            hero_target[hero][k] += t.get(k) or 0
+        HT = hero_target[hero]
+        for p in PERIODS:
+            for k in _CH:
+                HT["tq"][p][k] += t["tq"][p][k] or 0
+        for k in _CH:
+            HT["prep"][k] += t["prep"][k] or 0
 
     def _tgt(d):
-        out = {k: round(d[k]) or None for k in TKEYS}
-        out["sellthrough"] = round(d["target_qty"] / d["prep_qty"], 4) if d["prep_qty"] else None
-        return out
+        # 목표/준비 모두 0이면 None (목표 미설정 히어로)
+        has = any(d["tq"]["YTD"][k] for k in _CH) or any(d["prep"][k] for k in _CH)
+        if not has:
+            return None
+        return {
+            "tq": {p: {k: round(d["tq"][p][k]) or None for k in _CH} for p in PERIODS},
+            "prep": {k: round(d["prep"][k]) or None for k in _CH},
+        }
 
     def _stock(d):
         if not d.get("qty"):
@@ -317,12 +331,17 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
 
 
 def _tgt_or_none(t):
+    """스타일(신품번)용 목표 — parse_targets 구조 그대로(0은 None화)."""
     if not t:
         return None
-    return {"target_qty": t.get("target_qty"), "target_qty_on": t.get("target_qty_on"),
-            "target_qty_off": t.get("target_qty_off"), "prep_qty": t.get("prep_qty"),
-            "prep_qty_on": t.get("prep_qty_on"), "prep_qty_off": t.get("prep_qty_off"),
-            "sellthrough": t.get("target_sellthrough")}
+    _CH = ("t", "o", "f")
+    has = any(t["tq"]["YTD"][k] for k in _CH) or any(t["prep"][k] for k in _CH)
+    if not has:
+        return None
+    return {
+        "tq": {p: {k: (t["tq"][p][k] or None) for k in _CH} for p in PERIODS},
+        "prep": {k: (t["prep"][k] or None) for k in _CH},
+    }
 
 
 if __name__ == "__main__":
@@ -365,7 +384,7 @@ if __name__ == "__main__":
     for h in dash["heroes"][:4]:
         ty = h["periods"]["YTD"]["c"]["t"]      # [지표배열]
         gmv, qty = ty[_GI], ty[_QI]
-        tg = (h.get("target") or {}).get("target_qty")
+        tg = ((h.get("target") or {}).get("tq") or {}).get("YTD", {}).get("t")
         ach = f"{qty/tg*100:.0f}%" if tg else "-"
         print(f"  {h['name'][:14]:14}[{h['season']}] YTD {억(gmv)}/{qty} 목표{tg} 달성{ach} "
               f"재고{(h.get('stock') or {}).get('qty','-')} 입고{(h.get('inbound') or {}).get('qty','-')} "
