@@ -322,20 +322,12 @@ def _run_view(
     for line in report.split("\n"):
         log.info(line)
 
-    report_ts: str | None = None
-    if slack_bot_token and slack_target:
-        report_ts = persona.send_slack(
-            report,
-            bot_token=slack_bot_token,
-            target=slack_target,
-            persona=persona.RANKING_BOT,
-            log=log,
-        )
-        log.info(persona.step(f"[{view}] Slack 발송 — {'성공' if report_ts else '실패'}"))
-
-    # Wide 적재는 스크린샷 업로드 전에 — 스크린샷이 10분 cap 안에서 못 끝나
-    # GH Actions 가 SIGKILL 해도 다음 cron 이 has_day_wide() 로 이 뷰를 skip 하고
-    # 다음 뷰로 넘어가게 한다 (스크린샷 일부 누락은 감수, Slack 중복 발송 방지가 우선).
+    # ── 멱등성 우선: Slack 발송 *전에* Wide 적재부터 한다. ──
+    # 발송 후 적재하면, 적재가 Sheets 분당 쿼터(60/min)로 실패할 때 dedup 마커(Wide 행)가
+    # 안 남아 다음 트리거가 같은 리포트를 재발송한다 (2026-06 [여자] 뷰 오후 중복 사고).
+    # 적재를 먼저 하면 "Wide 행 존재 ⟺ 발송을 시도함"이 성립해 중복이 구조적으로 불가능.
+    # (적재 실패 시 예외가 run()의 뷰별 try/except로 잡혀 발송 자체를 건너뛰고, 다음 실행이
+    #  read→append→발송을 1회만 다시 수행한다. append_day_wide 는 쿼터 429를 백오프 재시도.)
     # force=True 재실행 시 이미 wide 행이 있으면 중복 적재 방지하고 슬랙만 다시 보낸다.
     if already_wide:
         log.info(persona.step(f"[{view}] Wide 탭 이미 적재됨 — append skip (slack만 재발송)"))
@@ -349,6 +341,17 @@ def _run_view(
             rows=rows,
             log=log,
         )
+
+    report_ts: str | None = None
+    if slack_bot_token and slack_target:
+        report_ts = persona.send_slack(
+            report,
+            bot_token=slack_bot_token,
+            target=slack_target,
+            persona=persona.RANKING_BOT,
+            log=log,
+        )
+        log.info(persona.step(f"[{view}] Slack 발송 — {'성공' if report_ts else '실패'}"))
 
     if report_ts:
         screenshots_sent = _send_screenshots(

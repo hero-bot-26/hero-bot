@@ -16,10 +16,34 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime
 from typing import Any
 
+from googleapiclient.errors import HttpError
+
 from soo import persona, DEFAULT_VIEW_LABEL
+
+
+def _execute(request: Any, num_retries: int = 5) -> Any:
+    """Sheets API 호출(.execute())을 429/5xx에서 지수 백오프로 재시도.
+
+    무신사 일일 리포트는 3개 뷰를 순차 처리하며 뷰당 여러 번 read/write 한다.
+    마지막 뷰([여자])에서 분당 쿼터(60 req/min·user)에 걸려 Wide 적재가 429로
+    실패하던 사고(2026-06) 대응. 1초→2→4→…(최대 30초) 백오프로 다음 분 쿼터 창까지
+    버틴다. 모든 재시도 소진 시 원래 HttpError를 그대로 raise.
+    """
+    delay = 1.0
+    for attempt in range(num_retries + 1):
+        try:
+            return request.execute()
+        except HttpError as e:
+            status = getattr(getattr(e, "resp", None), "status", None)
+            if status is not None and int(status) in (429, 500, 502, 503) and attempt < num_retries:
+                time.sleep(delay)
+                delay = min(delay * 2, 30.0)
+                continue
+            raise
 
 
 LONG_TAB = "Long"
@@ -58,9 +82,9 @@ def _migrate_view_column(
 
     이미 새 헤더면 no-op. 탭이 없으면 호출 측(_ensure_tab)에서 처리. True=마이그 발생.
     """
-    meta = sheets_service.spreadsheets().get(
+    meta = _execute(sheets_service.spreadsheets().get(
         spreadsheetId=sheet_id, fields="sheets(properties(title,sheetId))"
-    ).execute()
+    ))
     sheet_props = next(
         (s["properties"] for s in meta.get("sheets", []) if s["properties"]["title"] == tab),
         None,
@@ -68,25 +92,25 @@ def _migrate_view_column(
     if not sheet_props:
         return False  # 탭 자체가 없음 — _ensure_tab이 새 헤더로 만들 것
 
-    resp = sheets_service.spreadsheets().values().get(
+    resp = _execute(sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id, range=f"'{tab}'!A1:1"
-    ).execute()
+    ))
     current = (resp.get("values") or [[]])[0]
 
     if current == expected_new_header:
         return False
     if not current:
         # 헤더가 비어 있으면 그냥 새 헤더로 작성
-        sheets_service.spreadsheets().values().update(
+        _execute(sheets_service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
             range=f"'{tab}'!A1",
             valueInputOption="RAW",
             body={"values": [expected_new_header]},
-        ).execute()
+        ))
         return False
 
     if current == expected_old_header:
-        sheets_service.spreadsheets().batchUpdate(
+        _execute(sheets_service.spreadsheets().batchUpdate(
             spreadsheetId=sheet_id,
             body={"requests": [{
                 "insertDimension": {
@@ -99,13 +123,13 @@ def _migrate_view_column(
                     "inheritFromBefore": False,
                 },
             }]},
-        ).execute()
-        sheets_service.spreadsheets().values().update(
+        ))
+        _execute(sheets_service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
             range=f"'{tab}'!{_col_letter(view_col_idx)}1",
             valueInputOption="RAW",
             body={"values": [["뷰"]]},
-        ).execute()
+        ))
         if log:
             log.info(persona.step(f"[{tab}] 뷰 컬럼 {_col_letter(view_col_idx)}열에 자동 insert"))
         return True
@@ -131,22 +155,22 @@ def _ensure_tab(
        - 헤더가 비어있으면 새 헤더 채움
        - 헤더가 옛 스키마(view 없음)이면 마이그 (insert column + 헤더 갱신)
     """
-    meta = sheets_service.spreadsheets().get(
+    meta = _execute(sheets_service.spreadsheets().get(
         spreadsheetId=sheet_id, fields="sheets.properties"
-    ).execute()
+    ))
     existing = {s["properties"]["title"] for s in meta["sheets"]}
 
     if tab not in existing:
-        sheets_service.spreadsheets().batchUpdate(
+        _execute(sheets_service.spreadsheets().batchUpdate(
             spreadsheetId=sheet_id,
             body={"requests": [{"addSheet": {"properties": {"title": tab}}}]},
-        ).execute()
-        sheets_service.spreadsheets().values().update(
+        ))
+        _execute(sheets_service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
             range=f"'{tab}'!A1",
             valueInputOption="RAW",
             body={"values": [header]},
-        ).execute()
+        ))
         return
 
     if old_header is not None and view_col_idx is not None:
@@ -159,16 +183,16 @@ def _ensure_tab(
         )
         return
 
-    resp = sheets_service.spreadsheets().values().get(
+    resp = _execute(sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id, range=f"'{tab}'!A1:1"
-    ).execute()
+    ))
     if not resp.get("values"):
-        sheets_service.spreadsheets().values().update(
+        _execute(sheets_service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
             range=f"'{tab}'!A1",
             valueInputOption="RAW",
             body={"values": [header]},
-        ).execute()
+        ))
 
 
 # ───────────────────────────────────────────────────────────
@@ -188,10 +212,10 @@ def has_hour_data(
     target_date = ts.date().isoformat()
     target_time = ts.strftime("%H:%M")
     try:
-        meta = sheets_service.spreadsheets().get(
+        meta = _execute(sheets_service.spreadsheets().get(
             spreadsheetId=sheet_id,
             fields="sheets(properties(title,gridProperties(rowCount)))",
-        ).execute()
+        ))
     except Exception:
         return False
     long_props = next(
@@ -205,12 +229,12 @@ def has_hour_data(
     if row_count < 2:
         return False
     start = max(2, row_count - 600)
-    resp = sheets_service.spreadsheets().values().get(
+    resp = _execute(sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id,
         range=f"'{LONG_TAB}'!A{start}:C{row_count}",
         valueRenderOption="UNFORMATTED_VALUE",
         dateTimeRenderOption="FORMATTED_STRING",
-    ).execute()
+    ))
     rows = resp.get("values", [])
     for row in rows:
         if len(row) < 2:
@@ -257,13 +281,13 @@ def append_realtime(
         log.info(persona.step(f"Long 탭 append [{view}]: 0행 (매칭된 상품 없음)"))
         return 0
 
-    sheets_service.spreadsheets().values().append(
+    _execute(sheets_service.spreadsheets().values().append(
         spreadsheetId=sheet_id,
         range=f"'{LONG_TAB}'!A1",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
-    ).execute()
+    ))
     log.info(persona.step(f"Long 탭 append [{view}]: {len(rows)}행"))
     return len(rows)
 
@@ -286,12 +310,12 @@ def read_day_long(
       {"ts": "YYYY-MM-DDTHH:MM:00", "view": str, "goods_no": str, "rank": int,
        "brand": str, "product_name": str, "is_hero": bool}
     """
-    resp = sheets_service.spreadsheets().values().get(
+    resp = _execute(sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id,
         range=f"'{LONG_TAB}'!A2:H",  # 헤더 제외, 8컬럼
         valueRenderOption="UNFORMATTED_VALUE",
         dateTimeRenderOption="FORMATTED_STRING",
-    ).execute()
+    ))
     raw = resp.get("values", [])
 
     day_str = target_day.isoformat()
@@ -401,13 +425,13 @@ def append_day_wide(
     if not wide_data:
         return 0
 
-    sheets_service.spreadsheets().values().append(
+    _execute(sheets_service.spreadsheets().values().append(
         spreadsheetId=sheet_id,
         range=f"'{WIDE_TAB}'!A1",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": wide_data},
-    ).execute()
+    ))
     log.info(persona.step(f"Wide 탭 append [{view}]: {len(wide_data)}행"))
     return len(wide_data)
 
@@ -426,12 +450,12 @@ def has_day_wide(
     빈 뷰 셀은 DEFAULT_VIEW_LABEL("전체")로 간주 — 기존 데이터 호환.
     """
     try:
-        resp = sheets_service.spreadsheets().values().get(
+        resp = _execute(sheets_service.spreadsheets().values().get(
             spreadsheetId=sheet_id,
             range=f"'{WIDE_TAB}'!A2:B",
             valueRenderOption="UNFORMATTED_VALUE",
             dateTimeRenderOption="FORMATTED_STRING",
-        ).execute()
+        ))
     except Exception:
         return False
     rows = resp.get("values", [])
