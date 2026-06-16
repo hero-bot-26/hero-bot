@@ -94,6 +94,11 @@ else:
     print(f"PLM 소스(드라이브, 데이터브릭스버전 탭): {meta['name']} (수정 {meta['modifiedTime']})")
 plm = {rec.style_no: rec for rec in recs}
 
+# 앱 "완료 클릭" 기록(단계완료 탭) — 수동 단계 done 판정에 반영(재생성해도 유지).
+from soo.hero_ops.triggers import load_completions
+completions = load_completions(sheets)
+print(f"완료 클릭 기록: {len(completions)}건")
+
 def rollup(matched, stage_n):
     """matched: list of plm rec. stage status + 대표 날짜."""
     mil = STAGE_PLM[stage_n]
@@ -152,6 +157,8 @@ for i, series in enumerate(series_order, 1):
             cell = rec.stages.get(n) if rec else None
             base = bl.get(n)
             actual = cell.actual if cell else None
+            if (row["style"], n) in completions and not (actual and len(actual) == 10):
+                sst.append("done"); sdt.append("완료 (앱 입력)"); continue
             if actual and len(actual) == 10:
                 dd = (_d(actual) - _d(base)).days if base else None
                 tag = f" (기준 {base}, {'+' if (dd or 0) > 0 else ''}{dd}일)" if dd is not None else ""
