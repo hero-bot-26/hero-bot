@@ -12,7 +12,7 @@
 dbutils.library.restartPython()
 
 # COMMAND ----------
-import json, os, uuid
+import json, os, uuid, gc
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from decimal import Decimal
@@ -44,8 +44,12 @@ def _cell(v):
         return str(v)
 
 
-def insert_query_result(sheet_name, sdf, label=""):
-    """탭에 기록: R1=라벨, R2=헤더, R3~=데이터. (생성기 read_tab 이 헤더=2행 기준으로 읽음)"""
+def insert_query_result(sheet_name, sdf, label="", chunk_rows=20000):
+    """탭에 기록: R1=라벨, R2=헤더, R3~=데이터. (생성기 read_tab 이 헤더=2행 기준으로 읽음)
+
+    드라이버 OOM(='드라이버에 연결할 수 없습니다') 방지: 결과 전체를 한 번에 들고/보내지 않고,
+    중간 복사본을 만들지 않으며 데이터는 chunk_rows 단위로 나눠 기록한다.
+    """
     import pandas as pd
     pdf = sdf.toPandas().astype(object).where(lambda x: pd.notna(x), None)
     try:
@@ -53,12 +57,22 @@ def insert_query_result(sheet_name, sdf, label=""):
     except gs.WorksheetNotFound:
         ws = _book.add_worksheet(title=sheet_name, rows=10, cols=30)
     header = pdf.columns.tolist()
-    rows = [[_cell(v) for v in row] for row in pdf.values.tolist()]
+    nrows = len(pdf)
     ncols = max(len(header), 1)
     ws.clear()
-    ws.resize(rows=max(len(rows) + 2, 2), cols=ncols)     # 라벨1 + 헤더1 + 데이터
-    ws.update(values=[[label] + [""] * (ncols - 1)] + [header] + rows, value_input_option="RAW")
-    print(f"[OK] {sheet_name}: {len(rows)} rows x {ncols} cols")
+    ws.resize(rows=max(nrows + 2, 2), cols=ncols)         # 라벨1 + 헤더1 + 데이터
+
+    # 라벨(1행)·헤더(2행) 먼저 기록
+    ws.update(range_name="A1", values=[[label] + [""] * (ncols - 1), header], value_input_option="RAW")
+
+    # 데이터(3행~)는 청크로 나눠 기록 — 한 번에 들고 보내는 양을 줄여 드라이버 메모리 피크를 낮춘다
+    for start in range(0, nrows, chunk_rows):
+        block = [[_cell(v) for v in row] for row in pdf.iloc[start:start + chunk_rows].values.tolist()]
+        ws.update(range_name=f"A{start + 3}", values=block, value_input_option="RAW")
+        del block
+    del pdf
+    gc.collect()
+    print(f"[OK] {sheet_name}: {nrows} rows x {ncols} cols")
 
 
 # COMMAND ----------
@@ -306,6 +320,8 @@ final_union AS (
 SELECT * FROM final_union ORDER BY channel, brand, goods_no, goods_opt LIMIT 200000
 """
     insert_query_result(f_name, spark.sql(query), label=f"매출 {f_name} {start_date}~{end_date}")
+    spark.catalog.clearCache()   # 기간 간 누적 캐시 정리 — 드라이버/익스큐터 메모리 회수
+    gc.collect()
 
 # COMMAND ----------
 # ── 잔여재고 (어제 스냅샷) ──
