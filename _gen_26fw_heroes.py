@@ -103,13 +103,13 @@ print(f"완료 클릭 기록: {len(completions)}건")
 qinputs = load_quantity_inputs(sheets)
 print(f"1차수량 입력: {sum(len(v) for v in qinputs.values())}건 ({len(qinputs)} 히어로)")
 
-# PO수량(발주량) — MD투입 시트에서 스타일별 {po:{t,o,f}, po_no, sourcing}
+# PO수량(발주량) — MD투입 시트에서 스타일별 {po:{4채널,t}, colors:{...}} (타겟시즌=2026FW 필터)
 try:
-    from soo.hero_ops.po_ingest import parse_po_qty
-    po_qty = parse_po_qty(sheets)
-    print(f"PO수량: {sum(1 for v in po_qty.values() if v['po']['t'])} 스타일")
+    from soo.hero_ops.po_ingest import parse_po_qty, CHANNELS as PO_CH
+    po_qty = parse_po_qty(sheets, "2026FW")
+    print(f"PO수량: {sum(1 for v in po_qty.values() if v['po']['t'])} 스타일 (2026FW)")
 except Exception as e:
-    po_qty = {}
+    po_qty, PO_CH = {}, ("dom_on", "dom_off", "chn_on", "chn_off")
     print(f"[주의] PO수량 주입 실패 — 빈 값 유지: {type(e).__name__}: {e}")
 
 _QROLES = ("planning_md", "online_sales", "offline_sales")
@@ -235,16 +235,15 @@ for i, series in enumerate(series_order, 1):
     s5_inputs = {r: roles[r]["qty"] for r in _QROLES if r in roles}
     s5_meta = {r: {"by": roles[r]["by"], "at": roles[r]["at"]} for r in roles}
 
-    # PO수량 주입 — 스타일별 {t,o,f, po_no, sourcing} + 히어로 합계
-    po_q, po_tot = {}, {"t": 0, "o": 0, "f": 0}
+    # PO수량 주입 — 스타일별 {4채널,t, colors} + 히어로 합계 (내수온/내수오프/차이나온/차이나오프)
+    po_q, po_tot = {}, {c: 0 for c in PO_CH}; po_tot["t"] = 0
     for s in styles:
         pv = po_qty.get(s)
         if not pv:
             continue
-        po_q[s] = {"t": pv["po"]["t"], "o": pv["po"]["o"], "f": pv["po"]["f"],
-                   "po_no": pv["po_no"], "sourcing": pv["sourcing"]}
-        for k in ("t", "o", "f"):
-            po_tot[k] += pv["po"][k]
+        po_q[s] = {**pv["po"], "colors": pv["colors"]}
+        for k in po_tot:
+            po_tot[k] += pv["po"].get(k, 0)
 
     heroes.append({
         "id": f"26FW_{i:03d}", "season": "26FW", "track": track,
