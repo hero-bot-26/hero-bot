@@ -161,6 +161,7 @@ def aggregate_stock(sheets, sheet_id, goods_to_hero):
     hero_stock = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0,
                                       "by_type": {t: 0.0 for t in STOCK_TYPES}})
     sty_stock = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})
+    color_stock = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})  # (hero, base, color)
     for row in read_tab(sheets, sheet_id, "잔여재고"):
         try:
             gid = int(row.get("goods_no"))
@@ -178,7 +179,10 @@ def aggregate_stock(sheets, sheet_id, goods_to_hero):
             H["by_type"][st] += q
         S = sty_stock[(hero, base)]
         S["qty"] += q; S["amt_normal"] += an; S["amt_wonga"] += aw
-    return hero_stock, sty_stock
+        # 컬러별: 잔여재고 style_no는 '-BK' suffix 보유 → _color()가 매출과 동일 컬러명 산출
+        C = color_stock[(hero, base, _color(row))]
+        C["qty"] += q; C["amt_normal"] += an; C["amt_wonga"] += aw
+    return hero_stock, sty_stock, color_stock
 
 
 def aggregate_inbound(sheets, sheet_id, goods_to_hero):
@@ -239,7 +243,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
     from soo.hero_ops.hero_goods_map import build_maps
     g2h, s2h = build_maps(sheets)
     heroes, stats = aggregate(sheets, sheet_id, g2h)
-    hero_stock, sty_stock = aggregate_stock(sheets, sheet_id, g2h)
+    hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h)
     hero_in, sty_in = aggregate_inbound(sheets, sheet_id, g2h)
     targets = parse_targets(sheets, as_of)   # 기간별(YTD/MTD/WEEK/DAY) 누적 목표
 
@@ -291,6 +295,14 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
         return {"qty": round(d["qty"]), "amt_normal": round(d["amt_normal"]),
                 "amt_wonga": round(d["amt_wonga"])} if d["qty"] else None
 
+    def _color_obj(col, cp, hero, base):
+        o = {"color": col, "v": _per_color(cp)}
+        cs = color_stock.get((hero, base, col))
+        s = _stock(cs) if cs else None
+        if s:
+            o["stock"] = s
+        return o
+
     out_heroes = []
     order = sorted(heroes, key=lambda h: -_ytd_gmv(heroes[h]["periods"]))
     for hero in order:
@@ -308,7 +320,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
                 "stock": _stock(sty_stock.get((hero, base))) if (hero, base) in sty_stock else None,
                 "inbound": _inb(sty_in.get((hero, base))) if (hero, base) in sty_in else None,
                 "target": _tgt_or_none(sty_target.get(base)),
-                "colors": [{"color": col, "v": _per_color(cp)} for col, cp in cols],
+                "colors": [_color_obj(col, cp, hero, base) for col, cp in cols],
             })
         out_heroes.append({
             "name": hero,
