@@ -46,14 +46,13 @@ def _cell(v):
 
 def insert_query_result(sheet_name, sdf, label=""):
     """탭에 기록: R1=라벨, R2=헤더, R3~=데이터. (생성기 read_tab 이 헤더=2행 기준으로 읽음)"""
-    import pandas as pd
-    pdf = sdf.toPandas().astype(object).where(lambda x: pd.notna(x), None)
+    # 메모리 절감: toPandas(astype/where/values.tolist = ~4중 드라이버 복사) 대신 collect() 단일 패스 → 드라이버 OOM 방지
+    header = list(sdf.columns)
+    rows = [[_cell(v) for v in r] for r in sdf.collect()]
     try:
         ws = _book.worksheet(sheet_name)
     except gs.WorksheetNotFound:
         ws = _book.add_worksheet(title=sheet_name, rows=10, cols=30)
-    header = pdf.columns.tolist()
-    rows = [[_cell(v) for v in row] for row in pdf.values.tolist()]
     ncols = max(len(header), 1)
     ws.clear()
     ws.resize(rows=max(len(rows) + 2, 2), cols=ncols)     # 라벨1 + 헤더1 + 데이터
@@ -201,30 +200,29 @@ GOODS_FILTER = """
 """
 
 # COMMAND ----------
+# ── 공통 빌딩블록을 1회만 계산+캐시 (8기간 루프가 매번 재계산하던 것 → 8x를 1x로: pos_fee 전체 MAX·meta 윈도우 등) ──
+spark.sql(f"CREATE OR REPLACE TEMP VIEW v_goods_filter AS SELECT goods_no FROM (VALUES {GOODS_FILTER}) AS t(goods_no)")
+spark.sql("CREATE OR REPLACE TEMP VIEW v_goods_base AS SELECT g.goods_no, g.wonga, g.normal_price FROM datamart.datamart.goods g JOIN v_goods_filter gf ON g.goods_no = gf.goods_no")
+spark.sql("""CREATE OR REPLACE TEMP VIEW v_meta AS
+  SELECT goods_no, team, goods_gender_cd AS gender_line, category_nm_1depth AS category1, category_nm_2depth AS category2,
+         md_nm AS md_name, release_season_type AS release_season, season AS sell_season, style_no
+  FROM (SELECT goods_no, team, goods_gender_cd, category_nm_1depth, category_nm_2depth, md_nm, release_season_type, season, style_no,
+               ROW_NUMBER() OVER (PARTITION BY goods_no ORDER BY md_nm, team) rn
+        FROM gspread.musinsastandard.mutandard_goods_meta_v2 WHERE goods_no IS NOT NULL) x WHERE rn = 1""")
+spark.sql("CREATE OR REPLACE TEMP VIEW v_shop_list AS SELECT DISTINCT shop_no FROM musinsa.order_group.shop WHERE LOWER(shop_type)='offline' OR shop_no=68")
+spark.sql("CREATE OR REPLACE TEMP VIEW v_pos_fee AS SELECT sales_key, MAX(fee_amount) fee_amount FROM musinsa.order_group.pos_settlement_item GROUP BY sales_key")
+for _v in ["v_goods_filter", "v_goods_base", "v_meta", "v_shop_list", "v_pos_fee"]:
+    spark.sql(f"CACHE TABLE {_v}")
+print("공통 뷰 캐시 완료 (goods_filter/goods_base/meta/shop_list/pos_fee)")
+
+# COMMAND ----------
 # ── 매출 8기간 (Online=orders_merged + Offline=pos_order_sales UNION) ──
 for start_date, end_date, f_name in zip(params["start_dt"], params["end_dt"], params["file_nm"]):
     query = f"""
-WITH goods_filter AS (
-  SELECT goods_no FROM (VALUES {GOODS_FILTER}) AS t(goods_no)
-),
-date_range AS (
+WITH date_range AS (
   SELECT DISTINCT cal.dt, TO_DATE(cal.dt,'yyyyMMdd') AS date
   FROM datamart.datamart.calendar cal
   WHERE cal.dt BETWEEN '{start_date}' AND '{end_date}'
-),
-goods_base AS (
-  SELECT g.goods_no, g.wonga, g.normal_price
-  FROM datamart.datamart.goods g JOIN goods_filter gf ON g.goods_no = gf.goods_no
-),
-meta AS (
-  SELECT goods_no, team, goods_gender_cd AS gender_line,
-         category_nm_1depth AS category1, category_nm_2depth AS category2,
-         md_nm AS md_name, release_season_type AS release_season, season AS sell_season, style_no
-  FROM (SELECT goods_no, team, goods_gender_cd, category_nm_1depth, category_nm_2depth, md_nm,
-               release_season_type, season, style_no,
-               ROW_NUMBER() OVER (PARTITION BY goods_no ORDER BY md_nm, team) rn
-        FROM gspread.musinsastandard.mutandard_goods_meta_v2 WHERE goods_no IS NOT NULL) x
-  WHERE rn = 1
 ),
 online_base AS (
   SELECT om.goods_no, om.goods_opt, LOWER(om.brand) brand, om.normal_price,
@@ -232,7 +230,7 @@ online_base AS (
          om.recv_amt, om.gmv_state, om.ord_com_type
   FROM datamart.datamart.orders_merged om
   JOIN date_range dr ON om.ord_state_date = dr.dt
-  JOIN goods_filter gf ON om.goods_no = gf.goods_no
+  JOIN v_goods_filter gf ON om.goods_no = gf.goods_no
   WHERE om.state_order = TRUE
     AND LOWER(om.brand) IN ('musinsastandard','musinsastandardhome','musinsastandardwoman','musinsastandardkids')
     AND om.com_id NOT IN ('musinsa','musinsa_event')
@@ -243,7 +241,7 @@ online_processed AS (
          ob.normal_price * ob.sell_sub_clm_qty tag_gmv, ob.sell_sub_clm_amt gmv, ob.sell_sub_clm_qty qty,
          ob.sell_sub_clm_amt - IF(ob.gmv_state IN ('1000','5000'), ob.recv_amt, -1*ob.recv_amt) total_discount,
          ob.partner_sale_fee + IF(ob.ord_com_type =1, ob.sell_sub_clm_amt - ob.head_wonga, 0) gross_take
-  FROM online_base ob LEFT JOIN meta m ON ob.goods_no = m.goods_no
+  FROM online_base ob LEFT JOIN v_meta m ON ob.goods_no = m.goods_no
 ),
 online_aggregated AS (
   SELECT channel, goods_no, goods_opt, brand,
@@ -254,12 +252,6 @@ online_aggregated AS (
          SUM(gross_take) gross_take, (SUM(gross_take)-SUM(total_discount))/1.1 net_take
   FROM online_processed GROUP BY channel, goods_no, goods_opt, brand
 ),
-shop_list AS (
-  SELECT DISTINCT shop_no FROM musinsa.order_group.shop WHERE LOWER(shop_type)='offline' OR shop_no=68
-),
-pos_fee AS (
-  SELECT sales_key, MAX(fee_amount) fee_amount FROM musinsa.order_group.pos_settlement_item GROUP BY sales_key
-),
 offline_base AS (
   SELECT pos.goods_no, pos.goods_opt, LOWER(pos.brand_id) brand, pos.sales_type, pos.normal_price,
          pos.raw_price, pos.sales_price, pos.pay_amount, pf.fee_amount, pos.qty,
@@ -267,9 +259,9 @@ offline_base AS (
          IF(pos.sales_type='SALE',1,-1) np, IF(pos.product_type='100','3P','1P') com_type
   FROM musinsa.order_group.pos_order_sales pos
   JOIN date_range dr ON DATE(pos.sales_date)=dr.date
-  JOIN goods_filter gf ON pos.goods_no = gf.goods_no
-  JOIN shop_list sl ON pos.shop_no = sl.shop_no
-  JOIN pos_fee pf ON pos.sales_key = pf.sales_key
+  JOIN v_goods_filter gf ON pos.goods_no = gf.goods_no
+  JOIN v_shop_list sl ON pos.shop_no = sl.shop_no
+  JOIN v_pos_fee pf ON pos.sales_key = pf.sales_key
   WHERE LOWER(pos.brand_id) IN ('musinsastandard','musinsastandardhome','musinsastandardwoman','musinsastandardkids')
 ),
 offline_processed AS (
@@ -283,7 +275,7 @@ offline_processed AS (
                                             IFNULL(gb.wonga,0), ob.raw_price)*ob.qty
               ELSE (ob.sales_price-ob.fee_amount) END*ob.np cogs,
          ob.np*(ob.coupon_partner_amount+ob.cart_discount_partner_amount+ob.order_sheet_promotion_brand) brand_dc_amt
-  FROM offline_base ob LEFT JOIN goods_base gb ON ob.goods_no = gb.goods_no LEFT JOIN meta m ON ob.goods_no = m.goods_no
+  FROM offline_base ob LEFT JOIN v_goods_base gb ON ob.goods_no = gb.goods_no LEFT JOIN v_meta m ON ob.goods_no = m.goods_no
 ),
 offline_aggregated AS (
   SELECT channel, goods_no, goods_opt, brand,
