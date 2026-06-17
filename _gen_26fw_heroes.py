@@ -95,9 +95,24 @@ else:
 plm = {rec.style_no: rec for rec in recs}
 
 # 앱 "완료 클릭" 기록(단계완료 탭) — 수동 단계 done 판정에 반영(재생성해도 유지).
-from soo.hero_ops.triggers import load_completions
+from soo.hero_ops.triggers import load_completions, load_quantity_inputs
 completions = load_completions(sheets)
 print(f"완료 클릭 기록: {len(completions)}건")
+
+# 1차수량(앱 입력) — 히어로명 기준 {role: {qty,by,at}}
+qinputs = load_quantity_inputs(sheets)
+print(f"1차수량 입력: {sum(len(v) for v in qinputs.values())}건 ({len(qinputs)} 히어로)")
+
+# PO수량(발주량) — MD투입 시트에서 스타일별 {po:{t,o,f}, po_no, sourcing}
+try:
+    from soo.hero_ops.po_ingest import parse_po_qty
+    po_qty = parse_po_qty(sheets)
+    print(f"PO수량: {sum(1 for v in po_qty.values() if v['po']['t'])} 스타일")
+except Exception as e:
+    po_qty = {}
+    print(f"[주의] PO수량 주입 실패 — 빈 값 유지: {type(e).__name__}: {e}")
+
+_QROLES = ("planning_md", "online_sales", "offline_sales")
 
 def rollup(matched, stage_n):
     """matched: list of plm rec. stage status + 대표 날짜."""
@@ -215,15 +230,31 @@ for i, series in enumerate(series_order, 1):
         return Counter(vals).most_common(1)[0][0] if vals else "미지정"
     owner_md, owner_ds = _top("md_nm"), _top("ds_nm")
 
+    # 1차수량(앱 입력) 주입 — 히어로명 기준, 역할별 수량 + 입력자/일시
+    roles = qinputs.get(series, {})
+    s5_inputs = {r: roles[r]["qty"] for r in _QROLES if r in roles}
+    s5_meta = {r: {"by": roles[r]["by"], "at": roles[r]["at"]} for r in roles}
+
+    # PO수량 주입 — 스타일별 {t,o,f, po_no, sourcing} + 히어로 합계
+    po_q, po_tot = {}, {"t": 0, "o": 0, "f": 0}
+    for s in styles:
+        pv = po_qty.get(s)
+        if not pv:
+            continue
+        po_q[s] = {"t": pv["po"]["t"], "o": pv["po"]["o"], "f": pv["po"]["f"],
+                   "po_no": pv["po_no"], "sourcing": pv["sourcing"]}
+        for k in ("t", "o", "f"):
+            po_tot[k] += pv["po"][k]
+
     heroes.append({
         "id": f"26FW_{i:03d}", "season": "26FW", "track": track,
         "name": series, "category": category,
         "ownerMD": owner_md, "ownerDesigner": owner_ds,
         "styles": styles,
         "stages": stages, "dates": dates,
-        "stage5": {"tentativeColors": [], "inputs": {},
+        "stage5": {"tentativeColors": [], "inputs": s5_inputs, "meta": s5_meta,
                    "confirmed": {"online_sales": None, "offline_sales": None}, "completedAt": None},
-        "stage8": {"sentAt": None, "poQuantities": {}},
+        "stage8": {"sentAt": None, "poQuantities": po_q, "po": po_tot},
         "stys": stys,
         "_plmMatched": len(matched), "_styleCount": len(styles),
     })

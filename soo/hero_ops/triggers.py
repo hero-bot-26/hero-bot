@@ -144,6 +144,37 @@ def load_completions(sheets, sheet_id: str = DBX_SHEET_ID) -> set[tuple[str, int
     return out
 
 
+QUANTITY_TAB = "1차수량"   # SA 시트(DBX_SHEET_ID): hero(히어로명), role, qty, by, at — append 순서라 마지막=최신
+
+
+def load_quantity_inputs(sheets, sheet_id: str = DBX_SHEET_ID) -> dict:
+    """1차수량 탭 → {hero_name: {role: {qty:int, by:str, at:str}}}. 같은 (hero,role) 중복이면 최신(마지막) 우선.
+
+    key=히어로명(series). 위치기반 id는 매 생성마다 바뀌므로 안정 키로 히어로명을 쓴다.
+    role ∈ {planning_md, online_sales, offline_sales}.
+    """
+    try:
+        res = sheets.spreadsheets().values().get(
+            spreadsheetId=sheet_id, range=f"{QUANTITY_TAB}!A2:E").execute()
+    except Exception:
+        return {}
+    out: dict = {}
+    for r in res.get("values", []):
+        if len(r) < 3:
+            continue
+        hero, role = str(r[0]).strip(), str(r[1]).strip()
+        if not hero or not role:
+            continue
+        try:
+            qty = int(round(float(str(r[2]).replace(",", "").strip())))
+        except (TypeError, ValueError):
+            continue
+        by = str(r[3]).strip() if len(r) > 3 else ""
+        at = str(r[4]).strip() if len(r) > 4 else ""
+        out.setdefault(hero, {})[role] = {"qty": qty, "by": by, "at": at}
+    return out
+
+
 def done_floor(rec) -> int:
     """이 단계 이하는 날짜 없어도 완료 간주 (생성기 규칙 A/B/C)."""
     if rec is None:
