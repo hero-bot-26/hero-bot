@@ -128,10 +128,6 @@ def aggregate(sheets, sheet_id, goods_to_hero):
         }),
     })
     stats = {"rows": 0, "mapped": 0, "unmapped_goods": set()}
-    # 입고(goods_no만 있음)를 컬러로 매핑하는 용도. ⚠️ 통합 UID = 1 goods_no에 여러 컬러 →
-    # goods_no만으로 컬러 못 가림. 컬러가 '유일'할 때만 지정, 여러 개면 None(컬러 미지정).
-    _goods_base = {}                  # gid -> base
-    _goods_colors = defaultdict(set)  # gid -> {colors}
 
     for period, (cur_tab, prev_tab) in PERIOD_TABS.items():
         for when, tab in (("cur", cur_tab), ("prev", prev_tab)):
@@ -147,8 +143,6 @@ def aggregate(sheets, sheet_id, goods_to_hero):
                     continue
                 stats["mapped"] += 1
                 base = _base(row.get("style_no") or "")
-                _goods_base.setdefault(gid, base)
-                _goods_colors[gid].add(_color(row))
                 ch = "online" if str(row.get("channel")).strip().lower() == "online" else "offline"
                 H = heroes[hero]
                 _add(H["periods"][period][when], ch, row)
@@ -159,10 +153,7 @@ def aggregate(sheets, sheet_id, goods_to_hero):
                     S["md_name"] = S["md_name"] or str(row.get("md_name") or "")
                 _add(S["periods"][period][when], ch, row)
                 _add(S["colors"][_color(row)][period][when], ch, row)
-    # 컬러 유일 goods_no만 (base, color), 통합 UID(여러 컬러)는 (base, None)
-    goods_meta = {gid: (_goods_base[gid], next(iter(cs)) if len(cs) == 1 else None)
-                  for gid, cs in _goods_colors.items()}
-    return heroes, stats, goods_meta
+    return heroes, stats
 
 
 # ── 잔여재고 / 입고 집계 (히어로·스타일별) ──────────────────────────────────
@@ -194,8 +185,7 @@ def aggregate_stock(sheets, sheet_id, goods_to_hero):
     return hero_stock, sty_stock, color_stock
 
 
-def aggregate_inbound(sheets, sheet_id, goods_to_hero, goods_meta=None):
-    goods_meta = goods_meta or {}   # gid -> (base, color|None) : 매출에서 만든 컬러 맵
+def aggregate_inbound(sheets, sheet_id, goods_to_hero):
     hero_in = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})
     sty_in = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})
     color_in = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})  # (hero, base, color)
@@ -211,10 +201,10 @@ def aggregate_inbound(sheets, sheet_id, goods_to_hero, goods_meta=None):
         q, an, aw = _f(row.get("inbound_qty")), _f(row.get("normal_price_amt")), _f(row.get("wonga_amt"))
         for D in (hero_in[hero], sty_in[(hero, base)]):
             D["qty"] += q; D["amt_normal"] += an; D["amt_wonga"] += aw
-        # 컬러별: goods_no가 단일 컬러로 확정될 때만 (통합 UID=여러 컬러/미매핑은 스킵 → 스타일 합계엔 유지)
-        meta = goods_meta.get(gid)
-        if meta and meta[1]:
-            C = color_in[(hero, meta[0], meta[1])]
+        # 컬러별: style_no '-컬러' suffix로 매출과 동일 컬러명 산출(95%). 통합UID(suffix無)는 '기타'→실컬러 미매칭(스킵).
+        col = _color(row)
+        if col and col != "기타":
+            C = color_in[(hero, base, col)]
             C["qty"] += q; C["amt_normal"] += an; C["amt_wonga"] += aw
     return hero_in, sty_in, color_in
 
@@ -258,9 +248,9 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
     """앱이 읽을 DASHBOARD dict (raw 합계; 비율은 JS에서 계산)."""
     from soo.hero_ops.hero_goods_map import build_maps
     g2h, s2h = build_maps(sheets)
-    heroes, stats, goods_meta = aggregate(sheets, sheet_id, g2h)
+    heroes, stats = aggregate(sheets, sheet_id, g2h)
     hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h)
-    hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h, goods_meta)
+    hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h)
     targets = parse_targets(sheets, as_of)   # 기간별(YTD/MTD/WEEK/DAY) 누적 목표
 
     # 히어로명 → 시즌 (g2h 값에서)
@@ -388,7 +378,7 @@ if __name__ == "__main__":
     from soo.hero_ops.hero_goods_map import build_maps
     g2h, s2h = build_maps(sheets)
     print(f"매핑: goods_no→hero {len(g2h)} / 신품번→hero {len(s2h)}")
-    heroes, stats, _ = aggregate(sheets, DEV_SHEET_ID, g2h)
+    heroes, stats = aggregate(sheets, DEV_SHEET_ID, g2h)
     print(f"매출 행 {stats['rows']} (매핑 {stats['mapped']}, 미매핑 goods {len(stats['unmapped_goods'])}종)")
 
     def 억(v):
