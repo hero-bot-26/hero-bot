@@ -66,3 +66,13 @@ jobs:
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
           SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
         run: python -m soo.hero_ops.triggers --sheet --send
+
+      # IMC-3 발매 노출 스킴 알람 (뒷단). TEST_ONLY=True → 본인 DM. 앞단과 동일 dedup/토큰.
+      - name: IMC 발매 노출 알람 (테스트)
+        if: always()
+        continue-on-error: true
+        env:
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+        run: python -m soo.hero_ops.imc_triggers --send
