@@ -231,9 +231,15 @@ def _per_full(per):
 
 
 def _per_color(per):
-    """컬러용(경량): {기간:[gmv, qty]} (당기 total만)."""
-    return {p: [round(per[p]["cur"]["total"]["gmv"]), round(per[p]["cur"]["total"]["qty"])]
-            for p in PERIODS if per[p]["cur"]["total"]["gmv"] or per[p]["cur"]["total"]["qty"]}
+    """컬러용(경량): {기간:[gmv, qty, prev_gmv, revenue, net_take]} (당기 total + YoY/매총율용)."""
+    out = {}
+    for p in PERIODS:
+        cur, prev = per[p]["cur"]["total"], per[p]["prev"]["total"]
+        if not (cur["gmv"] or cur["qty"]):
+            continue
+        out[p] = [round(cur["gmv"]), round(cur["qty"]), round(prev["gmv"]),
+                  round(cur["revenue"]), round(cur["net_take"])]
+    return out
 
 
 def _nonzero(per):
