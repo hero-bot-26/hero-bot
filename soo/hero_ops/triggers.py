@@ -30,34 +30,91 @@ from soo.hero_ops.plm_ingest import (
 ROOT = Path(__file__).resolve().parents[2]   # hero_bot/
 HERO_SHEET = "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"
 TEST_DM_SLACK_ID = "U09BU1F85TR"  # sooyoung.moon
+TEST_CHANNEL = ""  # "히어로봇(슈퍼맨) 앱" 테스트 채널 ID. 비면 본인 DM 으로 테스트.
+
+
+def _test_target() -> str:
+    """TEST_ONLY 발송 목적지 — 히어로봇 테스트 채널 있으면 거기, 없으면 본인 DM."""
+    return TEST_CHANNEL or TEST_DM_SLACK_ID
 
 # ⚠️ 안전 하드락 — 절대 실제 담당자에게 발송하지 않음. 모든 발송은 본인 DM 테스트로만.
 #    실운영 전환은 (1) TEST_ONLY=False (2) OWNER_SLACK_IDS 채움 둘 다 명시적으로 해야 함.
 #    사용자 지시(2026-06-16): "슬랙 실제 실행은 절대 돌리지않고 나한테만 테스트로".
 TEST_ONLY = True
 
-# 담당자 실명 → Slack member ID. (users:read.email scope 없어 자동 lookup 불가 → 수기 등록.)
-#   실운영 시 여기에 담당자 ID를 채우면 resolve_target 이 자동 라우팅.
-#   현재는 본인만 등록 — TEST_ONLY 라 어차피 전부 본인 DM으로 감.
-OWNER_SLACK_IDS: dict[str, str] = {
-    "문수영": TEST_DM_SLACK_ID,
-    "Sooyoung Moon": TEST_DM_SLACK_ID,
-    # "홍유석": "U...", "박은진": "U...",  ← 실운영 시 채움
+# 수신자/팀장 매핑은 SA 시트 '담당자매핑' 탭에서 로드 (코드 수정 없이 시트만 채우면 됨).
+OWNER_MAP_TAB = "담당자매핑"   # 컬럼: name/role/kind(담당자|팀장)/category/slack_id/sty_count/note
+TEAM_CHANNEL = ""              # scope='all' 전체 공지 채널 (placeholder). 비면 미설정.
+STAGE_SCOPE_ALL: set[int] = set()   # 전체 공지로 보낼 단계(예 {5}). 현재 비움 = 전부 담당자.
+
+# 정적 시드(본인). 실담당자/팀장 Slack ID 는 load_owner_map 이 시트에서 채움.
+OWNER_SLACK_IDS: dict[str, str] = {"문수영": TEST_DM_SLACK_ID, "Sooyoung Moon": TEST_DM_SLACK_ID}
+TEAM_LEADS: list[dict] = []    # [{name, role, category, slack_id}] — load_owner_map 가 채움
+
+# 상품MD 세부 카테고리 (히어로 item/series → 팀장 라우팅). 카테고리 팀장 없으면 전체 팀장(김병관).
+CATEGORY_KEYS = {
+    "언더웨어": ["underwear", "언더웨어", "이너", "심리스", "브라", "힛탠"],
+    "ACC": ["acc", "액세서리", "양말", "벨트", "sock", "belt"],
+    "키즈": ["kids", "키즈"],
 }
 
 
-def resolve_target(owner: str) -> tuple[str, str]:
-    """담당자 → (실제 발송 target, 라우팅 설명).
+def category_of(item: str, series: str = "") -> str:
+    s = (str(item) + " " + str(series)).lower()
+    for cat, keys in CATEGORY_KEYS.items():
+        if any(k.lower() in s for k in keys):
+            return cat
+    return "전체"
 
-    TEST_ONLY 면 무조건 본인 DM. 아니면 OWNER_SLACK_IDS 매핑(없으면 본인 DM 폴백).
-    """
-    mapped = OWNER_SLACK_IDS.get(owner)
-    if TEST_ONLY:
-        note = f"테스트 → 본인 DM (원래 수신자: {owner}{'·매핑됨' if mapped else '·미매핑'})"
-        return TEST_DM_SLACK_ID, note
-    if mapped:
-        return mapped, f"→ {owner}"
-    return TEST_DM_SLACK_ID, f"미매핑({owner}) → 본인 DM 폴백"
+
+def load_owner_map(sheets, sheet_id: str = DBX_SHEET_ID):
+    """담당자매핑 탭 → OWNER_SLACK_IDS(담당자 중 slack_id 채워진 것) + TEAM_LEADS 갱신."""
+    global TEAM_LEADS
+    try:
+        res = sheets.spreadsheets().values().get(
+            spreadsheetId=sheet_id, range=f"{OWNER_MAP_TAB}!A2:E").execute()
+    except Exception:
+        return
+    leads = []
+    for r in res.get("values", []):
+        def c(i): return (str(r[i]).strip() if i < len(r) and r[i] is not None else "")
+        name, role, kind, cat, sid = c(0), c(1), c(2), c(3) or "전체", c(4)
+        if not name:
+            continue
+        if kind == "팀장":
+            leads.append({"name": name, "role": role, "category": cat, "slack_id": sid})
+        elif sid:
+            OWNER_SLACK_IDS[name] = sid
+    TEAM_LEADS = leads
+
+
+def team_leads_for(role: str, category: str = "전체") -> list[dict]:
+    """역할(상품MD는 카테고리 우선)에 해당하는 팀장. 카테고리 팀장 없으면 전체 팀장."""
+    same = [l for l in TEAM_LEADS if l["role"] == role]
+    if role == "md" and category != "전체":
+        cat = [l for l in same if l["category"] == category]
+        if cat:
+            return cat
+    return [l for l in same if l["category"] == "전체"] or same
+
+
+def route_recipients(owner: str, role: str, category: str, has_dday: bool) -> list[tuple[str | None, str]]:
+    """(a)에스컬레이션 + (b)미매칭 폴백 라우팅. 반환 list[(slack_id|None, 라벨)] = 의도된 수신자.
+    실제 발송 target 은 send 단계서 TEST_ONLY 면 본인 DM 으로 치환되고, 라벨은 메시지에 표기."""
+    recips: list[tuple[str | None, str]] = []
+    osid = OWNER_SLACK_IDS.get(owner)
+    leads = team_leads_for(role, category)
+    if osid:
+        recips.append((osid, owner))
+        if has_dday:                                    # (a) D-DAY 에스컬레이션 → 팀장 추가
+            for l in leads:
+                recips.append((l["slack_id"] or None, f"{l['name']} 팀장(에스컬레이션)"))
+    elif leads:                                          # (b) 담당자 미매칭 → 팀장 폴백
+        for l in leads:
+            recips.append((l["slack_id"] or None, f"{l['name']} 팀장(폴백·{owner} 미매칭)"))
+    else:
+        recips.append((None, f"{owner}(미매칭·팀장없음)"))
+    return recips
 
 import re
 STYLE_RE = re.compile(r"^M[A-Z0-9]{8}$")
@@ -122,8 +179,9 @@ def load_styles(sheets, use_sheet: bool):
         style = c(2) or c(0)
         if not STYLE_RE.match(style) or not c(3):
             continue
-        out.append({"style": style, "cls": c(1), "team": c(6),
-                    "season": c(9), "name": c(12), "series": c(3)})
+        out.append({"style": style, "cls": c(1), "team": c(6), "item": c(7),
+                    "season": c(9), "name": c(12), "series": c(3),
+                    "category": category_of(c(7), c(3))})
     return out
 
 
@@ -232,35 +290,64 @@ def compute_alarms(styles, plm, as_of: datetime.date, completions: set | None = 
         cell13 = rec.stages.get(13)
         if cell13 and cell13.actual and _d(cell13.actual) == as_of:
             owner = getattr(rec, ROLE_ATTR[STAGES[13][1]], None) or "미지정"
-            inbound.append({"owner": owner, "style": row["style"],
-                            "series": row["series"], "actual": cell13.actual})
+            inbound.append({"owner": owner, "role": STAGES[13][1],
+                            "category": row.get("category", "전체"),
+                            "style": row["style"], "series": row["series"],
+                            "actual": cell13.actual})
 
     countdown = []
     for (owner, n, dN), stys in sorted(groups.items(), key=lambda kv: (kv[0][2], kv[0][1])):
         label, role, _ = STAGES[n]
-        track_base = None  # 같은 단계라도 트랙별 base 다를 수 있어 메시지엔 단계명만
+        cats = [s.get("category", "전체") for s in stys]
+        category = max(set(cats), key=cats.count) if cats else "전체"
         countdown.append({
             "owner": owner, "role": role, "stage_n": n, "label": label,
-            "dN": dN, "dlabel": DDAYS[dN],
+            "dN": dN, "dlabel": DDAYS[dN], "category": category,
+            "scope": "all" if n in STAGE_SCOPE_ALL else "owner",
             "stys": [{"style": s["style"], "series": s["series"]} for s in stys],
         })
     return countdown, inbound
 
 
 def format_messages(countdown, inbound):
-    """담당자별로 묶어 슬랙 메시지 텍스트 리스트 생성. 반환 [(owner, text)]."""
-    by_owner: dict[str, list[str]] = defaultdict(list)
-    for g in countdown:
+    """담당자별/전체로 묶어 메시지 생성.
+    반환 list[dict]: {kind:'owner'|'all', owner, role, category, has_dday, text}."""
+    def cd_line(g):
         stys = ", ".join(f"{s['style']}({s['series']})" for s in g["stys"])
-        by_owner[g["owner"]].append(
-            f":alarm_clock: *{g['label']} {g['dlabel']}* — {len(g['stys'])} STY 미완\n>{stys}")
+        return f":alarm_clock: *{g['label']} {g['dlabel']}* — {len(g['stys'])} STY 미완\n>{stys}"
+
+    owner_lines: dict[str, list[str]] = defaultdict(list)
+    owner_meta: dict[str, dict] = {}
+    all_lines: list[str] = []   # scope='all' 전체 공지
+
+    for g in countdown:
+        if g.get("scope") == "all":
+            all_lines.append(cd_line(g))
+            continue
+        o = g["owner"]
+        owner_lines[o].append(cd_line(g))
+        m = owner_meta.setdefault(o, {"role": g["role"], "category": "전체", "has_dday": False})
+        if g["dN"] == 0:
+            m["has_dday"] = True
+        if m["category"] == "전체" and g["category"] != "전체":
+            m["category"] = g["category"]
     for ib in inbound:
-        by_owner[ib["owner"]].append(
+        o = ib["owner"]
+        owner_lines[o].append(
             f":package: *입고 시작* — {ib['style']}({ib['series']}) 물류 입고 진행 ({ib['actual']})")
+        owner_meta.setdefault(o, {"role": ib.get("role", "sc"),
+                                  "category": ib.get("category", "전체"), "has_dday": False})
+
     out = []
-    for owner, lines in by_owner.items():
-        head = f"*[히어로 단계 알람] {owner}님*\n"
-        out.append((owner, head + "\n".join(lines)))
+    for owner, lines in owner_lines.items():
+        m = owner_meta[owner]
+        out.append({"kind": "owner", "owner": owner, "role": m["role"],
+                    "category": m["category"], "has_dday": m["has_dday"],
+                    "text": f"*[히어로 단계 알람] {owner}님*\n" + "\n".join(lines)})
+    if all_lines:
+        out.append({"kind": "all", "owner": "전체", "role": "", "category": "전체",
+                    "has_dday": False,
+                    "text": "*[히어로 단계 알람 · 전체 공지]*\n" + "\n".join(all_lines)})
     return out
 
 
@@ -291,34 +378,57 @@ def main() -> int:
         _, recs = parse_milestone_dbx_from_drive(drive)
     plm = {r.style_no: r for r in recs}
     completions = load_completions(sheets)
+    load_owner_map(sheets)
+    matched = sum(1 for v in OWNER_SLACK_IDS.values() if v != TEST_DM_SLACK_ID)
     print(f"기준일 {as_of} · STY {len(styles)} · PLM {len(plm)} · 완료기록 {len(completions)}")
+    print(f"담당자 매핑 {matched}명(slack_id 채움) · 팀장 {len(TEAM_LEADS)}명 · TEST_ONLY={TEST_ONLY}")
 
     countdown, inbound = compute_alarms(styles, plm, as_of, completions)
     msgs = format_messages(countdown, inbound)
 
     n_alarm = sum(len(g["stys"]) for g in countdown)
     print(f"카운트다운 그룹 {len(countdown)} (STY발화 {n_alarm}) · 입고이벤트 {len(inbound)} · 담당자 {len(msgs)}명")
-    for owner, text in msgs:
+    for m in msgs:
         print("\n" + "─" * 50)
-        print(text)
+        if m["kind"] == "all":
+            note = "전체 공지" + ("" if TEAM_CHANNEL else "(채널 미설정)")
+        else:
+            note = " / ".join(lbl for _, lbl in route_recipients(
+                m["owner"], m["role"], m["category"], m["has_dday"]))
+        print(f"[라우팅 → {note}]")
+        print(m["text"])
 
     if do_send:
-        import yaml
         from soo import persona
         from soo.secrets import load_secrets
         log = persona.setup_logger(ROOT / "logs", dry_run=False)
         bot_token = load_secrets(ROOT / "secrets.yaml")["slack_bot_token"]
         sent = 0
-        for owner, text in msgs:
-            target, note = resolve_target(owner)
-            prefix = f":test_tube: *[{note}]*\n" if TEST_ONLY else ""
-            ts = persona.send_slack(prefix + text, bot_token=bot_token,
-                                    target=target, persona=persona.RANKING_BOT, log=log)
-            print(f"  {owner}: {note} — {'OK' if ts else '실패'}")
-            if ts:
-                sent += 1
-        mode = "테스트(본인 DM 전용)" if TEST_ONLY else "운영"
-        print(f"\n[발송·{mode}] {sent}/{len(msgs)}")
+        for m in msgs:
+            if m["kind"] == "all":
+                recips = [(TEAM_CHANNEL or None, "전체 공지" + ("" if TEAM_CHANNEL else "(채널 미설정)"))]
+            else:
+                recips = route_recipients(m["owner"], m["role"], m["category"], m["has_dday"])
+            labels = " / ".join(lbl for _, lbl in recips)
+            if TEST_ONLY:
+                dest = "히어로봇 채널" if TEST_CHANNEL else "본인 DM"
+                prefix = f":test_tube: *[테스트 → {dest} | 원래 수신: {labels}]*\n"
+                ts = persona.send_slack(prefix + m["text"], bot_token=bot_token,
+                                        target=_test_target(), persona=persona.RANKING_BOT, log=log)
+                print(f"  {m['owner']}: 테스트 → {labels} — {'OK' if ts else '실패'}")
+                if ts:
+                    sent += 1
+            else:
+                for sid, lbl in recips:
+                    tgt = sid or _test_target()
+                    note = lbl if sid else f"{lbl}·미매핑→본인DM폴백"
+                    ts = persona.send_slack(f":bell: *[{note}]*\n" + m["text"], bot_token=bot_token,
+                                            target=tgt, persona=persona.RANKING_BOT, log=log)
+                    print(f"  → {note} — {'OK' if ts else '실패'}")
+                    if ts:
+                        sent += 1
+        mode = f"테스트({'히어로봇 채널' if TEST_CHANNEL else '본인 DM'} 전용)" if TEST_ONLY else "운영"
+        print(f"\n[발송·{mode}] 발송 {sent}건")
     else:
         print("\n(dry-run — 실제 발송하려면 --send)")
     return 0
