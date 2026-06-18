@@ -20,7 +20,22 @@ _USER_AGENT = (
 _RANKING_URL_TEMPLATE = (
     "https://www.musinsa.com/main/musinsa/ranking"
     "?storeCode=musinsa&sectionId={section_id}&categoryCode=000&gf={gf}&ageBand=AGE_BAND_ALL"
+    # skip_bf=Y: 무진장(블랙프라이데이) 행사 기간엔 랭킹 URL이 mujinjangIndex 인트로
+    # 스플래쉬로 리다이렉트되어 랭킹 대신 행사 배너가 캡처됨. 이 파라미터는 무신사가
+    # 스플래쉬 '닫기'에 쓰는 자체 우회 플래그라 행사 종료 후엔 무해하게 무시됨 (2026-06-18).
+    "&skip_bf=Y"
 )
+
+# 혹시 skip_bf가 안 먹혀 스플래쉬가 그래도 뜨면, 무신사 자체 닫기 버튼을 눌러 제거하는 방어막.
+_DISMISS_SPLASH_JS = r"""
+() => {
+    const splash = document.querySelector('[class*="mujinjangIndex-page__Container"]');
+    if (!splash) return false;
+    const close = document.querySelector('[class*="LocalAppBar__CloseButton"]');
+    if (close) { close.click(); return true; }
+    return false;
+}
+"""
 
 # lazy-load된 product 카드들이 모두 그려지도록 한 번 끝까지 스크롤 → 위로 → 이미지 onload 대기.
 _TRIGGER_LAZY_LOAD_JS = r"""
@@ -95,6 +110,13 @@ def screenshot_ranking_full_page(
             page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             # 동적 로드되는 상품 카드들이 그려질 시간 확보 (networkidle은 광고 등으로 안 끝날 때 있음)
             page.wait_for_timeout(2500)
+
+            # 행사 스플래쉬가 (skip_bf 우회 실패로) 떠 있으면 닫고 랭킹 페이지 재안정화
+            try:
+                if page.evaluate(_DISMISS_SPLASH_JS):
+                    page.wait_for_timeout(2000)
+            except Exception:
+                pass
 
             if not crop_to_rank or crop_to_rank <= 0:
                 return page.screenshot(full_page=True, type="png")
