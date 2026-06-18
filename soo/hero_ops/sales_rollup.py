@@ -51,18 +51,33 @@ COLOR_KO = {
     "BR": "브라운", "RD": "레드", "OR": "오렌지", "YL": "옐로우", "PP": "퍼플", "UM": "물색",
     "MT": "민트", "SB": "스카이블루", "WI": "와인",
 }
+COLOR_KO_INV = {v: k for k, v in COLOR_KO.items()}   # 한글→코드 (goods_opt 한글명에 코드 부착용)
 
 
-def _color(row) -> str:
-    """행의 대표 컬러(공백 제거 한글명/코드). 통합 UID=goods_opt 'NN.컬러^사이즈', 컬러별 UID=style suffix."""
+def color_display(code, korean, code2kor=None, kor2code=None) -> str:
+    """컬러 표시명을 '한글(코드)'로 통일. 한글 없으면 코드만, 코드 없으면 한글만.
+    code2kor/kor2code = 오더시트 '컬러구분' 크로스워크(없으면 COLOR_KO만). 같은 색은 동일 문자열로 수렴→병합."""
+    code = (code or "").strip().upper()
+    kor = (korean or "").replace(" ", "").strip()
+    if not kor and code:
+        kor = COLOR_KO.get(code) or (code2kor or {}).get(code, "")
+    if not code and kor:
+        code = COLOR_KO_INV.get(kor) or (kor2code or {}).get(kor, "")
+    if kor and code:
+        return f"{kor}({code})"
+    return kor or code or "기타"
+
+
+def _color(row, code2kor=None, kor2code=None) -> str:
+    """행의 대표 컬러('한글(코드)'). 통합 UID=goods_opt 'NN.컬러^사이즈', 컬러별 UID=style suffix."""
     opt = str(row.get("goods_opt") or "")
-    if "^" in opt:                                   # 통합 UID: '01.블랙^L'
-        nm = re.sub(r"^\s*\d+[.\s]*", "", opt.split("^")[0])
-        return nm.replace(" ", "") or "기타"
+    if "^" in opt:                                   # 통합 UID: '01.딥인디고^L'
+        nm = re.sub(r"^\s*\d+[.\s]*", "", opt.split("^")[0]).replace(" ", "")
+        return color_display("", nm, code2kor, kor2code) if nm else "기타"
     style = str(row.get("style_no") or "")
     if "-" in style:                                 # 컬러별 UID: 'MWFUR0C03-BK'
         code = style.rsplit("-", 1)[-1].strip()
-        return COLOR_KO.get(code, code)
+        return color_display(code, "", code2kor, kor2code)
     return "기타"
 
 
@@ -117,7 +132,7 @@ def _add(dst, ch, row):
 
 
 # ── 매출 집계: 히어로/스타일/컬러 × 기간 × 채널 ──────────────────────────────
-def aggregate(sheets, sheet_id, goods_to_hero):
+def aggregate(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None):
     # hero -> {periods:{P:{cur:channels, prev:channels}}, stys:{base:{name, periods, colors:{opt:periods}}}}
     heroes = defaultdict(lambda: {
         "periods": {p: {"cur": _blank_channels(), "prev": _blank_channels()} for p in PERIODS},
@@ -152,12 +167,12 @@ def aggregate(sheets, sheet_id, goods_to_hero):
                     S["category1"] = S["category1"] or str(row.get("category1") or "")
                     S["md_name"] = S["md_name"] or str(row.get("md_name") or "")
                 _add(S["periods"][period][when], ch, row)
-                _add(S["colors"][_color(row)][period][when], ch, row)
+                _add(S["colors"][_color(row, code2kor, kor2code)][period][when], ch, row)
     return heroes, stats
 
 
 # ── 잔여재고 / 입고 집계 (히어로·스타일별) ──────────────────────────────────
-def aggregate_stock(sheets, sheet_id, goods_to_hero):
+def aggregate_stock(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None):
     hero_stock = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0,
                                       "by_type": {t: 0.0 for t in STOCK_TYPES}})
     sty_stock = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})
@@ -180,12 +195,12 @@ def aggregate_stock(sheets, sheet_id, goods_to_hero):
         S = sty_stock[(hero, base)]
         S["qty"] += q; S["amt_normal"] += an; S["amt_wonga"] += aw
         # 컬러별: 잔여재고 style_no는 '-BK' suffix 보유 → _color()가 매출과 동일 컬러명 산출
-        C = color_stock[(hero, base, _color(row))]
+        C = color_stock[(hero, base, _color(row, code2kor, kor2code))]
         C["qty"] += q; C["amt_normal"] += an; C["amt_wonga"] += aw
     return hero_stock, sty_stock, color_stock
 
 
-def aggregate_inbound(sheets, sheet_id, goods_to_hero):
+def aggregate_inbound(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None):
     hero_in = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})
     sty_in = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})
     color_in = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})  # (hero, base, color)
@@ -202,7 +217,7 @@ def aggregate_inbound(sheets, sheet_id, goods_to_hero):
         for D in (hero_in[hero], sty_in[(hero, base)]):
             D["qty"] += q; D["amt_normal"] += an; D["amt_wonga"] += aw
         # 컬러별: style_no '-컬러' suffix로 매출과 동일 컬러명 산출(95%). 통합UID(suffix無)는 '기타'→실컬러 미매칭(스킵).
-        col = _color(row)
+        col = _color(row, code2kor, kor2code)
         if col and col != "기타":
             C = color_in[(hero, base, col)]
             C["qty"] += q; C["amt_normal"] += an; C["amt_wonga"] += aw
@@ -253,10 +268,18 @@ def _ytd_gmv(per):
 def build_dashboard(sheets, drive, sheet_id, as_of):
     """앱이 읽을 DASHBOARD dict (raw 합계; 비율은 JS에서 계산)."""
     from soo.hero_ops.hero_goods_map import build_maps
+    from soo.hero_ops.order_ingest import load_color_maps, parse_orders
     g2h, s2h = build_maps(sheets)
-    heroes, stats = aggregate(sheets, sheet_id, g2h)
-    hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h)
-    hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h)
+    # 컬러 크로스워크(코드↔한글) — 컬러명 '한글(코드)' 통일 + 오더 매칭용
+    try:
+        code2kor, kor2code = load_color_maps(sheets)
+        color_prep, style_prep = parse_orders(sheets, code2kor, kor2code)
+    except Exception as e:                      # 오더시트 접근 실패해도 대시보드는 생성
+        print(f"[order_ingest] 스킵: {e}")
+        code2kor, kor2code, color_prep, style_prep = {}, {}, {}, {}
+    heroes, stats = aggregate(sheets, sheet_id, g2h, code2kor, kor2code)
+    hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h, code2kor, kor2code)
+    hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h, code2kor, kor2code)
     targets = parse_targets(sheets, as_of)   # 기간별(YTD/MTD/WEEK/DAY) 누적 목표
 
     # 히어로명 → 시즌 (g2h 값에서)
@@ -308,7 +331,21 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
                 "amt_wonga": round(d["amt_wonga"])} if d["qty"] else None
 
     def _color_obj(col, cp, hero, base):
-        o = {"color": col, "v": _per_color(cp)}
+        v = _per_color(cp)                          # {기간:[gmv,qty,prev_gmv,rev,net]}
+        # 컬러 준비물량(=오더 발주수량) + 안분 목표(스타일목표×발주비중)
+        cprep = color_prep.get((base, col))
+        sprep = style_prep.get(base) or 0
+        st = sty_target.get(base)
+        weight = (cprep / sprep) if (cprep and sprep) else None
+        for p, arr in v.items():
+            tgt = 0.0
+            if weight and st:
+                tq = (st.get("tq") or {}).get(p) or {}
+                tgt = (tq.get("t") or 0) * weight
+            arr.append(round(tgt))                  # 6번째 = 컬러 안분목표(기간, total채널)
+        o = {"color": col, "v": v}
+        if cprep:
+            o["prep"] = round(cprep)                # 컬러 준비물량 — 소진율 분모
         cs = color_stock.get((hero, base, col))
         s = _stock(cs) if cs else None
         if s:
