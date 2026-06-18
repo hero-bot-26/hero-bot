@@ -177,6 +177,64 @@ def format_campaign(groups):
     return out
 
 
+# ── IMC-6: 오프라인 조닝 시즌전환/빅캠페인 게이트 알람 ────────────────────────
+OFFLINE_SHEET = "1YkJchgCn7B5LCjbNFU5-Fg7LrjIscIkEff9N7PHl8bY"   # ★MSTRD_26FW 오프라인 VM 플랜
+OFFLINE_TAB = "오프라인 조닝 플랜"
+OFFLINE_OWNER = "오프라인VMD"
+GATE_DDAYS = {7: "D-7", 1: "D-1", 0: "D-DAY"}
+
+
+def load_offline_gates(sheets) -> list[dict]:
+    """조닝 플랜 'Big Campaign' 행 → [{label, date, season_gate}]. 셀 텍스트 '라벨(M/D…)' 파싱.
+    season_gate=True 면 시즌전환(FA/WI, 매장 존 전체 교체)."""
+    res = sheets.spreadsheets().values().get(
+        spreadsheetId=OFFLINE_SHEET, range=f"'{OFFLINE_TAB}'!A7:BD22",
+        valueRenderOption="FORMATTED_VALUE").execute()
+    rows = res.get("values", [])
+    row = next((r for r in rows if any("Big Campaign" in str(c) for c in r[:4])), None)
+    if not row:
+        return []
+    out = []
+    for cell in row:
+        s = str(cell or "").strip()
+        if not s or "Big Campaign" in s:
+            continue
+        m = re.search(r"(\d{1,2})\s*/\s*(\d{1,2})", s)   # 첫 M/D = 게이트일
+        if not m:
+            continue
+        label = re.split(r"[(（]", s)[0].strip()
+        try:
+            d = datetime.date(SEASON_YEAR, int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            continue
+        out.append({"label": label, "date": d, "season_gate": ("시즌변경" in s or "시즌전환" in s)})
+    return out
+
+
+def compute_offline_alarms(gates, as_of: datetime.date):
+    """게이트 카운트다운(D-7/D-1/D-DAY). 반환 (dN) → [gate]."""
+    groups: dict[int, list] = defaultdict(list)
+    for g in gates:
+        dN = (g["date"] - as_of).days
+        if dN in GATE_DDAYS:
+            groups[dN].append(g)
+    return groups
+
+
+def format_offline(groups):
+    """반환 list[dict]: {owner, dN, key, text}."""
+    out = []
+    for dN, gates in sorted(groups.items()):
+        lines = [f":department_store: *오프라인 게이트 {GATE_DDAYS[dN]}* — {len(gates)}건"]
+        for g in sorted(gates, key=lambda x: x["date"]):
+            mark = ":rotating_light: " if g["season_gate"] else "• "
+            note = " (존 전체 교체)" if g["season_gate"] else ""
+            lines.append(f"{mark}{g['label']} — {g['date']}{note}")
+        out.append({"owner": OFFLINE_OWNER, "dN": dN, "key": f"imc6:{dN}",
+                    "text": f"*[IMC 오프라인 게이트] {OFFLINE_OWNER}*\n" + "\n".join(lines)})
+    return out
+
+
 def _imc_route(owner: str) -> tuple[str, str]:
     """IMC 온라인 담당 라우팅 (앞단 MD/디자인/소싱 팀장 폴백과 무관).
     담당자매핑에 온라인 담당 Slack ID 있으면 그쪽, 없으면 본인 DM(테스트) 폴백."""
@@ -208,8 +266,10 @@ def main() -> int:
     msgs3 = format_imc(compute_imc(releases, as_of))           # IMC-3 발매 노출
     camps = load_campaigns(sheets)
     msgs4 = format_campaign(compute_campaign_alarms(camps, as_of))  # IMC-4 캠페인 역산
-    msgs = msgs3 + msgs4
-    print(f"기준일 {as_of} · 발매 {len(releases)}건/노출알람 {len(msgs3)} · 캠페인 {len(camps)}건/역산알람 {len(msgs4)} · TEST_ONLY={T.TEST_ONLY}")
+    gates = load_offline_gates(sheets)
+    msgs6 = format_offline(compute_offline_alarms(gates, as_of))    # IMC-6 오프라인 게이트
+    msgs = msgs3 + msgs4 + msgs6
+    print(f"기준일 {as_of} · 발매 {len(releases)}/노출 {len(msgs3)} · 캠페인 {len(camps)}/역산 {len(msgs4)} · 오프라인게이트 {len(gates)}/{len(msgs6)} · TEST_ONLY={T.TEST_ONLY}")
     for m in msgs:
         print("\n" + "─" * 50)
         _, lbl = _imc_route(m["owner"])
