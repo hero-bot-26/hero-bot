@@ -283,6 +283,37 @@ try:
 except Exception as e:
     print(f"[주의] DASHBOARD 주입 실패 — 실적 대시보드는 기존값 유지: {type(e).__name__}: {e}")
 
+# ── IMC 일정 주입 (뒷단: 발매/캠페인/오프라인게이트/발매이슈/기획전 → const IMC) ──
+# 슬랙 알람(imc_triggers)과 동일 소스. 향후 120일 윈도우만 앱에 노출.
+nimc = 0
+try:
+    import datetime as _dt
+    from soo.hero_ops import imc_triggers as _IMCT
+    _hz = (TODAY + _dt.timedelta(days=120)).isoformat()
+    _items = []
+    for r in _IMCT.load_releases(sheets):
+        _items.append({"type": "발매", "date": r["release"].isoformat(), "title": r["name"],
+                       "sub": f"{r['series']}/{r['grade']}", "owner": ""})
+    for c in _IMCT.load_campaigns(sheets):
+        _items.append({"type": "캠페인", "date": c["start"].isoformat(), "title": c["name"],
+                       "sub": c["gubun"], "owner": c["owner"]})
+    for g in _IMCT.load_offline_gates(sheets):
+        _items.append({"type": "오프라인", "date": g["date"].isoformat(), "title": g["label"],
+                       "sub": g["kind"], "owner": "", "season_gate": g["season_gate"]})
+    for it in _IMCT.load_release_issues(sheets):
+        _items.append({"type": "발매이슈", "date": it["when"].isoformat(), "title": it["issue"],
+                       "sub": it["brand"], "owner": it["owner"]})
+    for p in _IMCT.load_general_promos(sheets):
+        _items.append({"type": "기획전", "date": p["start"].isoformat(), "title": p["title"],
+                       "sub": "", "owner": p["owner"]})
+    _items = sorted((x for x in _items if TODAY.isoformat() <= x["date"] <= _hz), key=lambda x: x["date"])
+    imc_block = "const IMC = " + json.dumps({"as_of": TODAY.isoformat(), "items": _items}, ensure_ascii=False) + ";"
+    html2, nimc = re.subn(r"const IMC = \{.*?\};", imc_block, html2, count=1, flags=re.DOTALL)
+    assert nimc == 1, f"IMC 교체 실패 (matched {nimc})"
+    print(f"IMC 주입: {len(_items)}건 (~{_hz})")
+except Exception as e:
+    print(f"[주의] IMC 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
+
 # ── 27SS 진척 카드 주입 (기획 관리판 #.상세일정 → SEASON_27SS_PROGRESS) ──
 # 품평회 일자는 소스에 없어 제외, GO-DROP을 앵커로. 봄=G·여름=J(좌측 블록). 트랙별 D-day 자동.
 n27 = 0
