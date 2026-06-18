@@ -182,32 +182,35 @@ OFFLINE_SHEET = "1YkJchgCn7B5LCjbNFU5-Fg7LrjIscIkEff9N7PHl8bY"   # ★MSTRD_26FW
 OFFLINE_TAB = "오프라인 조닝 플랜"
 OFFLINE_OWNER = "오프라인VMD"
 GATE_DDAYS = {7: "D-7", 1: "D-1", 0: "D-DAY"}
+OFFLINE_ROWS = {"Big Campaign": "빅캠페인", "Holyday": "명절", "New Open": "신규오픈", "Re New": "리뉴얼"}
 
 
 def load_offline_gates(sheets) -> list[dict]:
-    """조닝 플랜 'Big Campaign' 행 → [{label, date, season_gate}]. 셀 텍스트 '라벨(M/D…)' 파싱.
-    season_gate=True 면 시즌전환(FA/WI, 매장 존 전체 교체)."""
+    """조닝 플랜의 캠페인/명절/매장오픈 행 → [{label, date, kind, season_gate}].
+    셀 텍스트 '라벨(M/D…)' 파싱. season_gate=시즌전환(FA/WI, 매장 존 전체 교체)."""
     res = sheets.spreadsheets().values().get(
         spreadsheetId=OFFLINE_SHEET, range=f"'{OFFLINE_TAB}'!A7:BD22",
         valueRenderOption="FORMATTED_VALUE").execute()
     rows = res.get("values", [])
-    row = next((r for r in rows if any("Big Campaign" in str(c) for c in r[:4])), None)
-    if not row:
-        return []
     out = []
-    for cell in row:
-        s = str(cell or "").strip()
-        if not s or "Big Campaign" in s:
+    for key, kind in OFFLINE_ROWS.items():
+        row = next((r for r in rows if any(key in str(c) for c in r[:4])), None)
+        if not row:
             continue
-        m = re.search(r"(\d{1,2})\s*/\s*(\d{1,2})", s)   # 첫 M/D = 게이트일
-        if not m:
-            continue
-        label = re.split(r"[(（]", s)[0].strip()
-        try:
-            d = datetime.date(SEASON_YEAR, int(m.group(1)), int(m.group(2)))
-        except ValueError:
-            continue
-        out.append({"label": label, "date": d, "season_gate": ("시즌변경" in s or "시즌전환" in s)})
+        for cell in row:
+            s = str(cell or "").strip()
+            if not s or key in s:
+                continue
+            m = re.search(r"(\d{1,2})\s*/\s*(\d{1,2})", s)   # 첫 M/D = 게이트일
+            if not m:
+                continue
+            label = re.split(r"[(（\n]", s)[0].strip()
+            try:
+                d = datetime.date(SEASON_YEAR, int(m.group(1)), int(m.group(2)))
+            except ValueError:
+                continue
+            out.append({"label": label, "date": d, "kind": kind,
+                        "season_gate": ("시즌변경" in s or "시즌전환" in s)})
     return out
 
 
@@ -227,11 +230,103 @@ def format_offline(groups):
     for dN, gates in sorted(groups.items()):
         lines = [f":department_store: *오프라인 게이트 {GATE_DDAYS[dN]}* — {len(gates)}건"]
         for g in sorted(gates, key=lambda x: x["date"]):
-            mark = ":rotating_light: " if g["season_gate"] else "• "
-            note = " (존 전체 교체)" if g["season_gate"] else ""
-            lines.append(f"{mark}{g['label']} — {g['date']}{note}")
+            if g["season_gate"]:
+                lines.append(f":rotating_light: {g['label']} — {g['date']} (존 전체 교체)")
+            else:
+                lines.append(f"• [{g['kind']}] {g['label']} — {g['date']}")
         out.append({"owner": OFFLINE_OWNER, "dN": dN, "key": f"imc6:{dN}",
                     "text": f"*[IMC 오프라인 게이트] {OFFLINE_OWNER}*\n" + "\n".join(lines)})
+    return out
+
+
+# ── IMC-7: 발매이슈(D-4 공유) + 일반기획전(작성 D-1) 역산 ─────────────────────
+ISSUE_TAB = "발매 이슈"
+ISSUE_LEADS = {"맨": "유다휘", "우먼": "전혜미", "키즈": "이지현", "전체": "김민수"}
+ISSUE_DDAYS = {4: "공유 마감 D-4", 1: "진행 D-1", 0: "진행 D-DAY"}
+PROMO_TAB = "26년 프로모션 경로"
+PROMO_DDAYS = {1: "작성 마감 D-1", 0: "시작 D-DAY"}
+
+
+def _any_date(v) -> datetime.date | None:
+    s = str(v or "").strip()
+    try:
+        return datetime.date.fromisoformat(s[:10])        # "2026-09-12"
+    except ValueError:
+        return _md_to_date(s)                              # "9/12"
+
+
+def load_release_issues(sheets) -> list[dict]:
+    """발매 이슈 → [{issue, brand, owner, when}]. 진행일자 기준, 담당=브랜드 키워드."""
+    res = sheets.spreadsheets().values().get(
+        spreadsheetId=CAMPAIGN_SHEET, range=f"'{ISSUE_TAB}'!A8:L500",
+        valueRenderOption="FORMATTED_VALUE").execute()
+    out = []
+    for r in res.get("values", []):
+        def c(i): return str(r[i]).strip() if i < len(r) and r[i] is not None else ""
+        issue, brand, when = c(2), c(3), _any_date(c(7))   # C이슈, D브랜드, H진행일자
+        if not issue or not when:
+            continue
+        owner = next((v for k, v in ISSUE_LEADS.items() if k in brand), "온라인MD")
+        out.append({"issue": issue, "brand": brand, "owner": owner, "when": when})
+    return out
+
+
+def compute_issue_alarms(issues, as_of: datetime.date):
+    groups: dict[tuple, list] = defaultdict(list)
+    for it in issues:
+        dN = (it["when"] - as_of).days
+        if dN in ISSUE_DDAYS:
+            groups[(it["owner"], dN)].append(it)
+    return groups
+
+
+def format_issue(groups):
+    out = []
+    for (owner, dN), its in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        lines = [f":truck: *발매이슈 {ISSUE_DDAYS[dN]}* — {len(its)}건"]
+        for it in sorted(its, key=lambda x: x["when"]):
+            lines.append(f"• {it['issue']} ({it['brand']}) — 진행 {it['when']}")
+        out.append({"owner": owner, "dN": dN, "key": f"imc7i:{owner}:{dN}",
+                    "text": f"*[IMC 발매이슈 알람] {owner}님*\n" + "\n".join(lines)})
+    return out
+
+
+def load_general_promos(sheets) -> list[dict]:
+    """26년 프로모션 경로 → [{title, owner, start}]. 형태=일반 기획전 + 시작일·제목 有."""
+    res = sheets.spreadsheets().values().get(
+        spreadsheetId=CAMPAIGN_SHEET, range=f"'{PROMO_TAB}'!A8:T400",
+        valueRenderOption="FORMATTED_VALUE").execute()
+    out = []
+    for r in res.get("values", []):
+        def c(i): return str(r[i]).strip() if i < len(r) and r[i] is not None else ""
+        if "일반 기획전" not in c(6):           # G형태
+            continue
+        start = _md_to_date(c(7))               # H시작일
+        title = c(12)                            # M제목
+        if not start or not title:
+            continue
+        owner = _kor_name(c(17).split(",")[0]) or "온라인MD"   # R담당자(첫 명)
+        out.append({"title": title.splitlines()[0][:30], "owner": owner, "start": start})
+    return out
+
+
+def compute_promo_alarms(promos, as_of: datetime.date):
+    groups: dict[tuple, list] = defaultdict(list)
+    for p in promos:
+        dN = (p["start"] - as_of).days
+        if dN in PROMO_DDAYS:
+            groups[(p["owner"], dN)].append(p)
+    return groups
+
+
+def format_promo(groups):
+    out = []
+    for (owner, dN), ps in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        lines = [f":calendar: *일반기획전 {PROMO_DDAYS[dN]}* — {len(ps)}건"]
+        for p in sorted(ps, key=lambda x: x["start"]):
+            lines.append(f"• {p['title']} — 시작 {p['start']}")
+        out.append({"owner": owner, "dN": dN, "key": f"imc7p:{owner}:{dN}",
+                    "text": f"*[IMC 일반기획전 알람] {owner}님*\n" + "\n".join(lines)})
     return out
 
 
@@ -267,9 +362,14 @@ def main() -> int:
     camps = load_campaigns(sheets)
     msgs4 = format_campaign(compute_campaign_alarms(camps, as_of))  # IMC-4 캠페인 역산
     gates = load_offline_gates(sheets)
-    msgs6 = format_offline(compute_offline_alarms(gates, as_of))    # IMC-6 오프라인 게이트
-    msgs = msgs3 + msgs4 + msgs6
-    print(f"기준일 {as_of} · 발매 {len(releases)}/노출 {len(msgs3)} · 캠페인 {len(camps)}/역산 {len(msgs4)} · 오프라인게이트 {len(gates)}/{len(msgs6)} · TEST_ONLY={T.TEST_ONLY}")
+    msgs6 = format_offline(compute_offline_alarms(gates, as_of))    # IMC-6 오프라인 게이트(+명절/매장오픈)
+    issues = load_release_issues(sheets)
+    msgs7i = format_issue(compute_issue_alarms(issues, as_of))      # IMC-7 발매이슈 D-4
+    promos = load_general_promos(sheets)
+    msgs7p = format_promo(compute_promo_alarms(promos, as_of))      # IMC-7 일반기획전 D-1
+    msgs = msgs3 + msgs4 + msgs6 + msgs7i + msgs7p
+    print(f"기준일 {as_of} · 발매 {len(releases)}/노출 {len(msgs3)} · 캠페인 {len(camps)}/역산 {len(msgs4)} · "
+          f"오프라인게이트 {len(gates)}/{len(msgs6)} · 발매이슈 {len(issues)}/{len(msgs7i)} · 일반기획전 {len(promos)}/{len(msgs7p)} · TEST_ONLY={T.TEST_ONLY}")
     for m in msgs:
         print("\n" + "─" * 50)
         _, lbl = _imc_route(m["owner"])
