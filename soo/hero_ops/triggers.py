@@ -351,6 +351,44 @@ def format_messages(countdown, inbound):
     return out
 
 
+ALARM_LOG_TAB = "알람발송로그"   # 중복발송 방지(dedup): (sent_date, key) — 하루 1회/수신단위.
+
+
+def load_sent_today(sheets, as_of: datetime.date, sheet_id: str = DBX_SHEET_ID) -> set[str]:
+    """오늘(as_of) 이미 발송된 key 집합. (같은 날 재실행 시 중복 방지.)"""
+    try:
+        res = sheets.spreadsheets().values().get(
+            spreadsheetId=sheet_id, range=f"{ALARM_LOG_TAB}!A2:B").execute()
+    except Exception:
+        return set()
+    d = as_of.isoformat()
+    return {str(r[1]).strip() for r in res.get("values", [])
+            if len(r) >= 2 and str(r[0]).strip() == d}
+
+
+def record_sent(sheets, as_of: datetime.date, key: str, labels: str, sheet_id: str = DBX_SHEET_ID):
+    try:
+        sheets.spreadsheets().values().append(
+            spreadsheetId=sheet_id, range=f"{ALARM_LOG_TAB}!A:D", valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [[as_of.isoformat(), key, labels, as_of.isoformat()]]}).execute()
+    except Exception as e:
+        print(f"  ⚠️ dedup 기록 실패({key}): {e}")
+
+
+def _slack_token():
+    """Slack 봇 토큰 — CI는 env SLACK_BOT_TOKEN, 로컬은 secrets.yaml."""
+    import os
+    t = os.environ.get("SLACK_BOT_TOKEN")
+    if t:
+        return t.strip()
+    try:
+        from soo.secrets import load_secrets
+        return load_secrets(ROOT / "secrets.yaml").get("slack_bot_token")
+    except Exception:
+        return None
+
+
 def _utf8():
     """Windows 콘솔 cp949 → UTF-8 (이모지/em-dash 출력 시 UnicodeEncodeError 회피)."""
     import io
@@ -400,24 +438,31 @@ def main() -> int:
 
     if do_send:
         from soo import persona
-        from soo.secrets import load_secrets
+        bot_token = _slack_token()
+        if not bot_token:
+            print("⚠️ Slack 봇 토큰 없음(env SLACK_BOT_TOKEN/secrets.yaml) — 발송 스킵")
+            return 0
         log = persona.setup_logger(ROOT / "logs", dry_run=False)
-        bot_token = load_secrets(ROOT / "secrets.yaml")["slack_bot_token"]
+        sent_keys = load_sent_today(sheets, as_of)   # dedup: 오늘 이미 보낸 것
         sent = 0
         for m in msgs:
+            key = m["owner"]
+            if key in sent_keys:
+                print(f"  {key}: 오늘 이미 발송 — 스킵(dedup)")
+                continue
             if m["kind"] == "all":
                 recips = [(TEAM_CHANNEL or None, "전체 공지" + ("" if TEAM_CHANNEL else "(채널 미설정)"))]
             else:
                 recips = route_recipients(m["owner"], m["role"], m["category"], m["has_dday"])
             labels = " / ".join(lbl for _, lbl in recips)
+            ok = False
             if TEST_ONLY:
                 dest = "히어로봇 채널" if TEST_CHANNEL else "본인 DM"
                 prefix = f":test_tube: *[테스트 → {dest} | 원래 수신: {labels}]*\n"
                 ts = persona.send_slack(prefix + m["text"], bot_token=bot_token,
                                         target=_test_target(), persona=persona.RANKING_BOT, log=log)
-                print(f"  {m['owner']}: 테스트 → {labels} — {'OK' if ts else '실패'}")
-                if ts:
-                    sent += 1
+                print(f"  {key}: 테스트 → {labels} — {'OK' if ts else '실패'}")
+                ok = bool(ts)
             else:
                 for sid, lbl in recips:
                     tgt = sid or _test_target()
@@ -425,10 +470,13 @@ def main() -> int:
                     ts = persona.send_slack(f":bell: *[{note}]*\n" + m["text"], bot_token=bot_token,
                                             target=tgt, persona=persona.RANKING_BOT, log=log)
                     print(f"  → {note} — {'OK' if ts else '실패'}")
-                    if ts:
-                        sent += 1
+                    ok = ok or bool(ts)
+            if ok:
+                record_sent(sheets, as_of, key, labels)   # dedup 기록
+                sent_keys.add(key)
+                sent += 1
         mode = f"테스트({'히어로봇 채널' if TEST_CHANNEL else '본인 DM'} 전용)" if TEST_ONLY else "운영"
-        print(f"\n[발송·{mode}] 발송 {sent}건")
+        print(f"\n[발송·{mode}] 발송 {sent}건 (dedup으로 스킵 제외)")
     else:
         print("\n(dry-run — 실제 발송하려면 --send)")
     return 0

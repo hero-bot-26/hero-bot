@@ -55,3 +55,13 @@ jobs:
             git commit -m "데이터 갱신 (자동) $(date -u +%Y-%m-%d)"
             git push
           fi
+
+      # 히어로 단계 카운트다운 슬랙 알람 (TEST_ONLY=True → 본인 DM 테스트만).
+      # SLACK_BOT_TOKEN 시크릿 없으면 triggers 가 자동 스킵. 실패해도 위 app.html 작업엔 영향 X.
+      - name: 히어로 단계 알람 (테스트)
+        continue-on-error: true
+        env:
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+        run: python -m soo.hero_ops.triggers --sheet --send
