@@ -292,7 +292,11 @@ try:
     from soo.hero_ops import imc_triggers as _IMCT
     _hz = (TODAY + _dt.timedelta(days=120)).isoformat()
     _items = []
+    # 앱 캘린더는 히어로 가시성 도구 → 발매는 HERO·HERO SUB만 (핵심상품 제외).
+    # 슬랙 알람(imc_triggers)은 온라인MD용이라 GRADES 셋 다 그대로 유지.
     for r in _IMCT.load_releases(sheets):
+        if r["grade"] not in ("HERO", "HERO SUB"):
+            continue
         _items.append({"type": "발매", "date": r["release"].isoformat(), "title": r["name"],
                        "sub": f"{r['series']}/{r['grade']}", "owner": ""})
     for c in _IMCT.load_campaigns(sheets):
