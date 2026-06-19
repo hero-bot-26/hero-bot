@@ -552,11 +552,75 @@ try:
         _HEALTH.append("예산 Hero 행 못 찾음")
 
     highlights = sorted(tops_off + tops_wm, key=lambda x: -x["views"])[:10]
-    perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget, "highlights": highlights}
+
+    # 히어로별 PMKT 성과 — 캠페인 트래커 [히어로 PDP](PDP 조회) + [히어로 Convs](거래) 품목별 집계.
+    # 주차 컬럼이 반복돼 헤더명이 여러 번 나오므로 '모든 매칭 컬럼' 합산. 그룹 집계행(품목 有·브랜드 空)만 사용.
+    def _raw(tab, sid, last_col="BZ", max_row=400):
+        try:
+            return sheets.spreadsheets().values().get(
+                spreadsheetId=sid, range=f"'{tab}'!A1:{last_col}{max_row}",
+                valueRenderOption="FORMATTED_VALUE").execute().get("values", [])
+        except Exception:
+            return []
+
+    def _g2(r, j):
+        return str(r[j]).strip() if 0 <= j < len(r) and r[j] is not None else ""
+
+    def _hdr_idx(rows, must):
+        for i, r in enumerate(rows[:25]):
+            cells = [str(c or "") for c in r]
+            if all(any(k in c for c in cells) for k in must):
+                return i
+        return -1
+
+    def _cols_with(hdr, kw):
+        return [j for j, c in enumerate(hdr) if kw in str(c or "")]
+
+    hero_perf = {}
+    try:
+        _pr = _raw("[히어로 PDP]", TRACKER_SHEET_ID)
+        _hi = _hdr_idx(_pr, ["HERO 품목", "실 PDP 조회"])
+        if _hi >= 0:
+            _h = _pr[_hi]
+            _ji = next((j for j, c in enumerate(_h) if "HERO 품목" in str(c)), 1)
+            _jb = next((j for j, c in enumerate(_h) if "브랜드" in str(c)), 2)
+            _cr, _ca = _cols_with(_h, "실 PDP 조회"), _cols_with(_h, "광고 PDP 조회")
+            for r in _pr[_hi + 1:]:
+                it = _g2(r, _ji)
+                if not it or it.startswith("무신사 스탠다드") or _g2(r, _jb):
+                    continue
+                hero_perf.setdefault(it, {})
+                hero_perf[it]["pdp_real"] = sum(_n(_g2(r, j)) for j in _cr)
+                hero_perf[it]["pdp_ad"] = sum(_n(_g2(r, j)) for j in _ca)
+        _cv = _raw("[히어로 Convs]", TRACKER_SHEET_ID)
+        _hi = _hdr_idx(_cv, ["HERO 품목", "실 거래액"])
+        if _hi >= 0:
+            _h = _cv[_hi]
+            _ji = next((j for j, c in enumerate(_h) if "HERO 품목" in str(c)), 1)
+            _jb = next((j for j, c in enumerate(_h) if "브랜드" in str(c)), 2)
+            _cc, _cg = _cols_with(_h, "실 거래수"), _cols_with(_h, "실 거래액")
+            for r in _cv[_hi + 1:]:
+                it = _g2(r, _ji)
+                if not it or it.startswith("무신사 스탠다드") or _g2(r, _jb):
+                    continue
+                hero_perf.setdefault(it, {})
+                hero_perf[it]["conv"] = sum(_n(_g2(r, j)) for j in _cc)
+                hero_perf[it]["gmv"] = sum(_n(_g2(r, j)) for j in _cg)
+    except Exception as _eh:
+        _HEALTH.append(f"히어로 PMKT 성과 로드 실패: {type(_eh).__name__}")
+    hero_list = sorted(
+        [{"name": k, "pdp_real": v.get("pdp_real", 0), "pdp_ad": v.get("pdp_ad", 0),
+          "gmv": v.get("gmv", 0), "conv": v.get("conv", 0)} for k, v in hero_perf.items()],
+        key=lambda x: -x["gmv"])
+    if not hero_list:
+        _HEALTH.append("히어로 PMKT 성과 0건 — 트래커 구조 확인")
+
+    perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget,
+            "highlights": highlights, "hero": hero_list}
     perf_block = "const IMC_PERF = " + json.dumps(perf, ensure_ascii=False) + ";"
     html2, nperf = re.subn(r"const IMC_PERF = \{.*?\};", perf_block, html2, count=1, flags=re.DOTALL)
     assert nperf == 1, f"IMC_PERF 교체 실패 (matched {nperf})"
-    print(f"IMC_PERF 주입: 오피셜 {agg_off['posts']}건(히어로 {agg_off['hero']})·우먼 {agg_wm['posts']}건 · CRM {crm['count']}건 GMV {crm['gmv']:,}")
+    print(f"IMC_PERF 주입: 오피셜 {agg_off['posts']}·우먼 {agg_wm['posts']} · CRM {crm['count']} · 히어로PMKT {len(hero_list)}종")
 except Exception as e:
     _HEALTH.append(f"IMC_PERF 주입 예외: {type(e).__name__}")
     print(f"[주의] IMC_PERF 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
