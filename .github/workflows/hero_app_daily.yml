@@ -39,6 +39,7 @@ jobs:
 
       - name: Generate app.html (구글시트 → app.html)
         env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}   # 서비스계정(있으면 우선·토큰만료 없음)
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
           APP_REPO_PATH:            ${{ github.workspace }}/hero-master-app
@@ -63,6 +64,7 @@ jobs:
         if: always()           # app.html 생성이 transient 실패해도 알람은 독립 실행
         continue-on-error: true
         env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
           SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
@@ -73,7 +75,16 @@ jobs:
         if: always()
         continue-on-error: true
         env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
           SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
         run: python -m soo.hero_ops.imc_triggers --send
+
+      # 갱신 실패 시 슬랙 DM 알림 — 토큰 만료/시트 권한·구조 문제로 조용히 멈추는 것 방지.
+      - name: 실패 알림 (슬랙 DM)
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: python -m soo.hero_ops.notify "⚠️ 히어로 마스터앱 daily 갱신 실패 ($(date -u +%Y-%m-%d)) — Actions 로그 확인. 단골 원인: GOOGLE_OAUTH_TOKEN 만료(→서비스계정 전환 권장) / 시트 권한 / 시트 구조 변경."

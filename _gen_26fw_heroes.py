@@ -284,9 +284,52 @@ try:
 except Exception as e:
     print(f"[주의] DASHBOARD 주입 실패 — 실적 대시보드는 기존값 유지: {type(e).__name__}: {e}")
 
+# ── 데이터 갱신 헬스체크 수집 (비어있음/구조변경 등 '조용한 실패' 가시화) ──
+_HEALTH = []
+SNS_SHEET_ID = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"  # [무탠다드] SNS/CRM 콘텐츠 통합 관리
+
+
+def _sns_table(tab, keys, last_col="AB", max_row=900, scan=20, optional=()):
+    """탭을 읽어 (데이터행, {key: colidx}) 반환. keys={key:[헤더 별칭...]}.
+    헤더행은 별칭 매칭 수가 가장 많은 행으로 자동 탐색 → 컬럼 이동/삽입·헤더행 위치 변경에 강건(#4).
+    optional: 시트마다 있을 수도/없을 수도 있는 컬럼(없어도 경고 안 함)."""
+    try:
+        rows = sheets.spreadsheets().values().get(
+            spreadsheetId=SNS_SHEET_ID, range=f"'{tab}'!A1:{last_col}{max_row}",
+            valueRenderOption="FORMATTED_VALUE").execute().get("values", [])
+    except Exception as _e:
+        _HEALTH.append(f"'{tab}' 읽기 실패({type(_e).__name__}) — 권한/이름 확인")
+        return [], {}
+    best_i, best_hits = None, 0
+    for i, r in enumerate(rows[:scan]):
+        cells = [str(c or "") for c in r]
+        hits = sum(1 for al in keys.values() if any(any(a in c for a in al) for c in cells))
+        if hits > best_hits:
+            best_hits, best_i = hits, i
+    if best_i is None or best_hits < 2:
+        _HEALTH.append(f"'{tab}' 헤더 인식 실패 — 시트 구조 변경 의심")
+        return [], {}
+    hdr = [str(c or "").strip() for c in rows[best_i]]
+    cmap = {}
+    for k, al in keys.items():
+        for j, c in enumerate(hdr):
+            if any(a in c for a in al):
+                cmap[k] = j
+                break
+    missing = [k for k in keys if k not in cmap and k not in optional]
+    if missing:
+        _HEALTH.append(f"'{tab}' 컬럼 못 찾음: {missing}")
+    return rows[best_i + 1:], cmap
+
+
+def _gv(row, cmap, k):
+    j = cmap.get(k)
+    return str(row[j]).strip() if j is not None and j < len(row) and row[j] is not None else ""
+
+
 # ── IMC 통합(과거·현재·미래) 주입 → const IMC ──
 # 소스: 발매/캠페인/오프라인/발매이슈/기획전(imc_triggers, 별도 파일) + SNS/CRM 콘텐츠 통합 관리 시트
-#       (온사이트/PR/IG광고). 각 액션에 status(past/today/future)·channel 부여. 윈도우 TODAY-180~+150.
+#       (온사이트/PR/IG광고). 각 액션에 status(past/today/future)·channel 부여. 윈도우 TODAY-365~+150.
 # 슬랙 알람(imc_triggers)은 온라인MD용이라 GRADES 셋 다 유지, 앱은 발매를 HERO·HERO SUB만(핵심상품 제외).
 nimc = 0
 try:
@@ -300,10 +343,11 @@ try:
     def _add(type_, channel, date_, title, sub="", owner="", **extra):
         title = str(title or "").strip()
         if not date_ or not title:
-            return
+            return False
         d = {"type": type_, "channel": channel, "date": date_, "title": title[:60], "sub": sub, "owner": owner}
         d.update(extra)
         _items.append(d)
+        return True
 
     # 1) 기존 IMC 소스 (발매스케줄/캠페인/오프라인/발매이슈/일반기획전)
     for r in _IMCT.load_releases(sheets):
@@ -319,17 +363,7 @@ try:
     for p in _IMCT.load_general_promos(sheets):
         _add("기획전", "기획전", p["start"].isoformat(), p["title"], "", p["owner"])
 
-    # 2) SNS/CRM 브랜드 콘텐츠 통합 관리 시트 (별개 파일) — 온사이트/PR/IG광고
-    _SNS = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"
-
-    def _read(tab, rng):
-        return sheets.spreadsheets().values().get(
-            spreadsheetId=_SNS, range=f"'{tab}'!{rng}", valueRenderOption="FORMATTED_VALUE"
-        ).execute().get("values", [])
-
-    def _cell(row, i):
-        return str(row[i]).strip() if i < len(row) and row[i] is not None else ""
-
+    # 2) SNS/CRM 브랜드 콘텐츠 통합 관리 시트 (별개 파일) — 온사이트/PR/IG광고. 헤더명 기반 파싱(#4).
     def _date_ymd(s):       # "2025/9/4" · "2025.09.04"
         m = _re2.findall(r"\d+", str(s or ""))
         if len(m) >= 3 and 2024 <= int(m[0]) <= 2027:
@@ -349,18 +383,28 @@ try:
         return None
 
     try:
-        for r in _read("5)온사이트", "A4:F200"):           # B발행일 C유형 D타이틀
-            _add("온사이트", "온사이트", _date_ymd(_cell(r, 1)), _cell(r, 3), _cell(r, 2), "권정은")
-        for r in _read("6)PR", "A7:E100"):                 # B요청자 C발행일자 D유형 E타이틀
-            _add("PR", "PR", _date_ymd(_cell(r, 2)), _cell(r, 4), _cell(r, 3), _cell(r, 1))
-        for r in _read("4)인스타그램 게시물 광고", "A6:Q200"):  # D광고시작 H세트명 K계정 L유형 M요청자
-            t = _cell(r, 7)
-            if not t or "예산" in t or "총 금액" in t or _cell(r, 3).lower().startswith("ex"):
+        n_os = n_pr = n_ig = 0
+        rows, cm = _sns_table("5)온사이트", {"date": ["발행일"], "type": ["유형"], "title": ["타이틀", "제목"]})
+        for r in rows:
+            n_os += _add("온사이트", "온사이트", _date_ymd(_gv(r, cm, "date")), _gv(r, cm, "title"), _gv(r, cm, "type"), "권정은")
+        rows, cm = _sns_table("6)PR", {"owner": ["요청자"], "date": ["발행 일자", "발행일자", "발행 일"], "type": ["유형"], "title": ["타이틀", "제목"]})
+        for r in rows:
+            n_pr += _add("PR", "PR", _date_ymd(_gv(r, cm, "date")), _gv(r, cm, "title"), _gv(r, cm, "type"), _gv(r, cm, "owner"))
+        rows, cm = _sns_table("4)인스타그램 게시물 광고",
+                              {"start": ["광고시작", "시작일"], "title": ["세트명", "광고 세트", "세트"],
+                               "acct": ["게재 계정", "계정"], "form": ["유형"], "req": ["요청자"]})
+        for r in rows:
+            t = _gv(r, cm, "title")
+            if not t or "예산" in t or "총 금액" in t or _gv(r, cm, "start").lower().startswith("ex"):
                 continue
-            _add("SNS", "SNS광고", _date_yymmdd(_cell(r, 3)), t,
-                 "/".join(x for x in [_cell(r, 10), _cell(r, 11)] if x), _cell(r, 12))
-        print("IMC SNS/CRM 콘텐츠 로드 OK")
+            n_ig += _add("SNS", "SNS광고", _date_yymmdd(_gv(r, cm, "start")), t,
+                         "/".join(x for x in [_gv(r, cm, "acct"), _gv(r, cm, "form")] if x), _gv(r, cm, "req"))
+        for nm, cnt in [("온사이트", n_os), ("PR", n_pr), ("IG광고", n_ig)]:
+            if cnt == 0:
+                _HEALTH.append(f"SNS/CRM {nm} 0건 — 윈도우 밖이거나 파싱 실패")
+        print(f"IMC SNS/CRM 콘텐츠 로드: 온사이트 {n_os}·PR {n_pr}·IG광고 {n_ig}")
     except Exception as e2:
+        _HEALTH.append(f"SNS/CRM 콘텐츠 로드 예외: {type(e2).__name__}")
         print(f"[주의] SNS/CRM 콘텐츠 로드 실패(기존 소스만 유지): {type(e2).__name__}: {e2}")
 
     # 3) 윈도우 필터 + status 부여
@@ -373,7 +417,28 @@ try:
     assert nimc == 1, f"IMC 교체 실패 (matched {nimc})"
     _np = sum(1 for x in _items if x["status"] == "past")
     print(f"IMC 주입: {len(_items)}건 (과거 {_np}/미래 {len(_items) - _np}, {_back}~{_fwd})")
+
+    # 히어로별 IMC 매칭 별칭 자동생성(#4) — 히어로 품목이 바뀌면 자동 반영. 까다로운 건만 수동 override.
+    _ALIAS_OVERRIDE = {
+        "커브드팬츠": ["커브드팬츠", "커브드 팬츠", "커브드 데님"],
+        "그리드/메시 플리스": ["그리드", "메시 플리스", "플리스"],
+        "에센셜 플리스": ["에센셜 플리스", "플리스"],
+        "심리스 브라": ["심리스 브라", "심리스브라"],
+        "라이트다운": ["라이트다운", "라이트 다운"],
+        "헤비다운": ["헤비다운", "헤비 다운"],
+    }
+    _hero_alias = {}
+    for _h in heroes:
+        _nm = _h["name"]
+        _hero_alias[_nm] = _ALIAS_OVERRIDE.get(_nm) or sorted({_nm, _nm.replace(" ", "")}, key=len, reverse=True)
+    _alias_block = "const HERO_IMC_ALIASES = " + json.dumps(_hero_alias, ensure_ascii=False) + ";"
+    html2, _na = re.subn(r"const HERO_IMC_ALIASES = \{.*?\};", _alias_block, html2, count=1, flags=re.DOTALL)
+    if _na != 1:
+        _HEALTH.append("HERO_IMC_ALIASES 교체 실패(앱 플레이스홀더 확인)")
+    else:
+        print(f"히어로 IMC 별칭 주입: {len(_hero_alias)}개")
 except Exception as e:
+    _HEALTH.append(f"IMC 주입 예외: {type(e).__name__}")
     print(f"[주의] IMC 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
 # ── IMC 채널별 성과(과거 회고) 주입 → const IMC_PERF ──
@@ -381,66 +446,72 @@ except Exception as e:
 nperf = 0
 try:
     import re as _re3
-    _SNS2 = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"
-
-    def _r(tab, rng):
-        return sheets.spreadsheets().values().get(
-            spreadsheetId=_SNS2, range=f"'{tab}'!{rng}", valueRenderOption="FORMATTED_VALUE"
-        ).execute().get("values", [])
-
-    def _c(row, i):
-        return str(row[i]).strip() if i < len(row) and row[i] is not None else ""
 
     def _n(s):
         d = _re3.sub(r"[^\d]", "", str(s or ""))
         return int(d) if d else 0
 
-    def _agg_ig(tab, ch):
-        # 컬럼: 2발행월 3발행일 4소재 7분류 8유형 10조회 11도달 12좋아요 19인기게시물 20히어로콘텐츠
+    def _agg_ig(tab, ch):  # 헤더명 기반(#4)
+        # 우먼(4-2)은 유형·인기게시물·히어로콘텐츠 컬럼이 없음 → optional 처리(오탐 방지)
+        rows, cm = _sns_table(tab, {"date": ["발행일"], "title": ["소재"], "form": ["유형"],
+                                    "views": ["조회"], "reach": ["도달"], "likes": ["좋아요"],
+                                    "popular": ["인기게시물", "인기 게시물"], "hero": ["히어로콘텐츠", "히어로 콘텐츠"]},
+                              optional=("form", "popular", "hero"))
         agg = {"posts": 0, "views": 0, "reach": 0, "likes": 0, "hero": 0, "popular": 0}
         tops = []
-        for r in _r(tab, "A6:U800"):
-            title, v = _c(r, 4), _n(_c(r, 10))
-            if not title or (v == 0 and _n(_c(r, 11)) == 0):
+        for r in rows:
+            title, v = _gv(r, cm, "title"), _n(_gv(r, cm, "views"))
+            if not title or (v == 0 and _n(_gv(r, cm, "reach")) == 0):
                 continue
             agg["posts"] += 1
             agg["views"] += v
-            agg["reach"] += _n(_c(r, 11))
-            agg["likes"] += _n(_c(r, 12))
-            if _c(r, 19).upper() == "O":
+            agg["reach"] += _n(_gv(r, cm, "reach"))
+            agg["likes"] += _n(_gv(r, cm, "likes"))
+            if _gv(r, cm, "popular").upper() == "O":
                 agg["popular"] += 1
-            if _c(r, 20).upper() == "O":
+            if _gv(r, cm, "hero").upper() == "O":
                 agg["hero"] += 1
-                tops.append({"ch": ch, "title": title[:40], "date": _c(r, 3), "views": v, "type": _c(r, 8)})
+                tops.append({"ch": ch, "title": title[:40], "date": _gv(r, cm, "date"), "views": v, "type": _gv(r, cm, "form")})
+        if agg["posts"] == 0:
+            _HEALTH.append(f"성과 '{tab}' 0건")
         return agg, tops
 
     agg_off, tops_off = _agg_ig("4-1)성과_오피셜 IG", "오피셜")
     agg_wm, tops_wm = _agg_ig("4-2)성과_우먼 IG", "우먼")
 
-    # CRM(시트16): 1채널 11발송수 15GMV 20ROAS
+    # CRM(시트16): 채널/발송수/GMV/ROAS (헤더명 기반)
     crm = {"count": 0, "sends": 0, "gmv": 0, "roas": 0}
     _ro_sum = _ro_n = 0
-    for r in _r("시트16", "A3:U600"):
-        g = _n(_c(r, 15))
+    rows, cm = _sns_table("시트16", {"ch": ["채널"], "sends": ["발송수"], "gmv": ["GMV"], "roas": ["ROAS"]})
+    for r in rows:
+        g = _n(_gv(r, cm, "gmv"))
         if g == 0:
             continue
         crm["count"] += 1
         crm["gmv"] += g
-        crm["sends"] += _n(_c(r, 11))
+        crm["sends"] += _n(_gv(r, cm, "sends"))
         try:
-            _ro_sum += float(_c(r, 20).replace("%", "").replace(",", "")); _ro_n += 1
+            _ro_sum += float(_gv(r, cm, "roas").replace("%", "").replace(",", "")); _ro_n += 1
         except ValueError:
             pass
     crm["roas"] = round(_ro_sum / _ro_n) if _ro_n else 0
+    if crm["count"] == 0:
+        _HEALTH.append("CRM(시트16) 성과 0건")
 
-    # 예산(PMKT/CRM 예산): 1구분 / 5~10 = 2026/01~06
-    budget = {"months": ["2026/01", "2026/02", "2026/03", "2026/04", "2026/05", "2026/06"], "hero": [], "perf": []}
-    _brows = _r("PMKT/CRM 예산", "A2:K20")
-    _hrow = next((r for r in _brows if _c(r, 1) == "Hero"), None)
-    _prow = next((r for r in _brows if "퍼포먼스" in _c(r, 1)), None)
-    for i in range(5, 11):
-        budget["hero"].append(_n(_c(_hrow, i)) if _hrow else 0)
-        budget["perf"].append(_n(_c(_prow, i)) if _prow else 0)
+    # 예산(PMKT/CRM 예산): 구분 라벨 행 × 월 컬럼 (헤더명 기반)
+    _mlbl = ["2026/01", "2026/02", "2026/03", "2026/04", "2026/05", "2026/06"]
+    _mkey = ["m1", "m2", "m3", "m4", "m5", "m6"]
+    budget = {"months": _mlbl, "hero": [], "perf": []}
+    _bkeys = {"gubun": ["구분"]}
+    _bkeys.update({k: [lbl] for k, lbl in zip(_mkey, _mlbl)})
+    rows, cm = _sns_table("PMKT/CRM 예산", _bkeys, last_col="P", max_row=40)
+    _hrow = next((r for r in rows if _gv(r, cm, "gubun") == "Hero"), None)
+    _prow = next((r for r in rows if "퍼포먼스" in _gv(r, cm, "gubun")), None)
+    for k in _mkey:
+        budget["hero"].append(_n(_gv(_hrow, cm, k)) if _hrow else 0)
+        budget["perf"].append(_n(_gv(_prow, cm, k)) if _prow else 0)
+    if not _hrow:
+        _HEALTH.append("예산 Hero 행 못 찾음")
 
     highlights = sorted(tops_off + tops_wm, key=lambda x: -x["views"])[:10]
     perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget, "highlights": highlights}
@@ -449,7 +520,26 @@ try:
     assert nperf == 1, f"IMC_PERF 교체 실패 (matched {nperf})"
     print(f"IMC_PERF 주입: 오피셜 {agg_off['posts']}건(히어로 {agg_off['hero']})·우먼 {agg_wm['posts']}건 · CRM {crm['count']}건 GMV {crm['gmv']:,}")
 except Exception as e:
+    _HEALTH.append(f"IMC_PERF 주입 예외: {type(e).__name__}")
     print(f"[주의] IMC_PERF 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
+
+# ── 데이터 갱신 헬스체크 (조용한 실패 가시화: #3 권한 / #4 구조변경) ──
+# 핵심 데이터가 비었으면 경고. CI에서 SLACK_BOT_TOKEN 있으면 슬랙 DM으로도 통지.
+try:
+    if _HEALTH:
+        print("\n[HEALTHCHECK] 경고 " + str(len(_HEALTH)) + "건:")
+        for w in _HEALTH:
+            print("  - " + w)
+        if os.environ.get("SLACK_BOT_TOKEN"):
+            try:
+                from soo.hero_ops import notify as _notify
+                _notify.send("⚠️ 히어로 앱 데이터 갱신 경고 (" + TODAY.isoformat() + ")\n- " + "\n- ".join(_HEALTH[:12]))
+            except Exception:
+                pass
+    else:
+        print("\n[HEALTHCHECK] 정상 (모든 IMC 소스 로드됨)")
+except Exception:
+    pass
 
 # ── 27SS 진척 카드 주입 (기획 관리판 #.상세일정 → SEASON_27SS_PROGRESS) ──
 # 품평회 일자는 소스에 없어 제외, GO-DROP을 앵커로. 봄=G·여름=J(좌측 블록). 트랙별 D-day 자동.

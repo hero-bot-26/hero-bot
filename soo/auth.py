@@ -23,6 +23,40 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
+# 서비스 계정은 sheets/drive만 (gmail/slides는 도메인 위임 없으면 호출 불가 — 생성기는 미사용).
+_SA_SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets",
+]
+
+
+def _service_account_credentials():
+    """서비스 계정 자격증명 — 있으면 OAuth보다 우선.
+    refresh_token 만료가 없어 daily CI가 토큰 만료로 멈추는 문제를 근본 해결한다.
+    env GOOGLE_SA_JSON(JSON 문자열) 또는 hero_bot/service_account.json 파일에서 로드.
+    대상 시트들을 이 SA 이메일(client_email)에 '뷰어'로 공유해야 읽을 수 있다."""
+    from google.oauth2 import service_account
+    raw = os.environ.get("GOOGLE_SA_JSON", "").strip()
+    info = None
+    if raw:
+        try:
+            info = json.loads(raw)
+        except Exception:
+            info = None
+    else:
+        p = Path(__file__).resolve().parent.parent / "service_account.json"
+        if p.exists():
+            try:
+                info = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                info = None
+    if not info:
+        return None
+    try:
+        return service_account.Credentials.from_service_account_info(info, scopes=_SA_SCOPES)
+    except Exception:
+        return None
+
 
 def _load_token_from_env_or_file(token_path: Path) -> Credentials | None:
     raw = os.environ.get("GOOGLE_OAUTH_TOKEN", "").strip()
@@ -44,6 +78,11 @@ def get_credentials(
     credentials_path: Path,
     token_path: Path,
 ) -> Credentials:
+    # 서비스 계정이 있으면 최우선 (토큰 만료 없음). 없으면 기존 OAuth 사용자 토큰 플로우.
+    sa = _service_account_credentials()
+    if sa is not None:
+        return sa
+
     creds = _load_token_from_env_or_file(token_path)
 
     # 만료된 경우 refresh 시도
