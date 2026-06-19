@@ -407,18 +407,9 @@ try:
         _HEALTH.append(f"SNS/CRM 콘텐츠 로드 예외: {type(e2).__name__}")
         print(f"[주의] SNS/CRM 콘텐츠 로드 실패(기존 소스만 유지): {type(e2).__name__}: {e2}")
 
-    # 3) 윈도우 필터 + status 부여
-    _t = TODAY.isoformat()
-    _items = sorted((x for x in _items if _back <= x["date"] <= _fwd), key=lambda x: x["date"])
-    for x in _items:
-        x["status"] = "past" if x["date"] < _t else ("today" if x["date"] == _t else "future")
-    imc_block = "const IMC = " + json.dumps({"as_of": _t, "items": _items}, ensure_ascii=False) + ";"
-    html2, nimc = re.subn(r"const IMC = \{.*?\};", imc_block, html2, count=1, flags=re.DOTALL)
-    assert nimc == 1, f"IMC 교체 실패 (matched {nimc})"
-    _np = sum(1 for x in _items if x["status"] == "past")
-    print(f"IMC 주입: {len(_items)}건 (과거 {_np}/미래 {len(_items) - _np}, {_back}~{_fwd})")
-
-    # 히어로별 IMC 매칭 별칭 자동생성(#4) — 히어로 품목이 바뀌면 자동 반영. 까다로운 건만 수동 override.
+    # 3) 히어로 별칭 자동생성(#4) + 각 항목 hero_related 태깅
+    #    판별: 발매(정의상 히어로) / 제목에 '히어로' 명시(2)일정의 '히어로_' 프리픽스 등) / 26FW 제품명 키워드.
+    #    까다로운 품목만 수동 override, 나머지는 히어로명에서 자동 생성 → 품목 바뀌면 자동 반영.
     _ALIAS_OVERRIDE = {
         "커브드팬츠": ["커브드팬츠", "커브드 팬츠", "커브드 데님"],
         "그리드/메시 플리스": ["그리드", "메시 플리스", "플리스"],
@@ -431,6 +422,31 @@ try:
     for _h in heroes:
         _nm = _h["name"]
         _hero_alias[_nm] = _ALIAS_OVERRIDE.get(_nm) or sorted({_nm, _nm.replace(" ", "")}, key=len, reverse=True)
+    _alias_norm = [a.replace(" ", "") for al in _hero_alias.values() for a in al]
+
+    def _hero_related(it):
+        if it["channel"] == "발매":
+            return True
+        blob = (it["title"] + " " + it.get("sub", "")).replace(" ", "")
+        if "히어로" in blob:
+            return True
+        return any(a in blob for a in _alias_norm)
+
+    for x in _items:
+        x["hero_related"] = _hero_related(x)
+
+    # 4) 윈도우 필터 + status 부여
+    _t = TODAY.isoformat()
+    _items = sorted((x for x in _items if _back <= x["date"] <= _fwd), key=lambda x: x["date"])
+    for x in _items:
+        x["status"] = "past" if x["date"] < _t else ("today" if x["date"] == _t else "future")
+    imc_block = "const IMC = " + json.dumps({"as_of": _t, "items": _items}, ensure_ascii=False) + ";"
+    html2, nimc = re.subn(r"const IMC = \{.*?\};", imc_block, html2, count=1, flags=re.DOTALL)
+    assert nimc == 1, f"IMC 교체 실패 (matched {nimc})"
+    _np = sum(1 for x in _items if x["status"] == "past")
+    _nh = sum(1 for x in _items if x["hero_related"])
+    print(f"IMC 주입: {len(_items)}건 (과거 {_np}/미래 {len(_items) - _np} · 히어로관련 {_nh}/{len(_items)})")
+
     _alias_block = "const HERO_IMC_ALIASES = " + json.dumps(_hero_alias, ensure_ascii=False) + ";"
     html2, _na = re.subn(r"const HERO_IMC_ALIASES = \{.*?\};", _alias_block, html2, count=1, flags=re.DOTALL)
     if _na != 1:
