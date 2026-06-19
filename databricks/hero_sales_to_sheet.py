@@ -209,7 +209,7 @@ spark.sql("""CREATE OR REPLACE TEMP VIEW v_meta AS
   FROM (SELECT goods_no, team, goods_gender_cd, category_nm_1depth, category_nm_2depth, md_nm, release_season_type, season, style_no,
                ROW_NUMBER() OVER (PARTITION BY goods_no ORDER BY md_nm, team) rn
         FROM gspread.musinsastandard.mutandard_goods_meta_v2 WHERE goods_no IS NOT NULL) x WHERE rn = 1""")
-spark.sql("CREATE OR REPLACE TEMP VIEW v_shop_list AS SELECT DISTINCT shop_no FROM musinsa.order_group.shop WHERE LOWER(shop_type)='offline' OR shop_no=68")
+spark.sql("CREATE OR REPLACE TEMP VIEW v_shop_list AS SELECT DISTINCT shop_no FROM musinsa.order_group.shop WHERE LOWER(shop_type) IN ('offline','selectshop') OR shop_no=68")   -- selectshop(편집샵)도 오프라인 매출 — 누락 시 전사 대비 ~3-5% 과소(검증: NEW티 offline+selectshop=전사 원단위 일치)
 spark.sql("CREATE OR REPLACE TEMP VIEW v_pos_fee AS SELECT sales_key, MAX(fee_amount) fee_amount FROM musinsa.order_group.pos_settlement_item GROUP BY sales_key")
 for _v in ["v_goods_filter", "v_goods_base", "v_meta", "v_shop_list", "v_pos_fee"]:
     spark.sql(f"CACHE TABLE {_v}")
@@ -254,14 +254,14 @@ online_aggregated AS (
 ),
 offline_base AS (
   SELECT pos.goods_no, pos.goods_opt, LOWER(pos.brand_id) brand, pos.sales_type, pos.normal_price,
-         pos.raw_price, pos.sales_price, pos.pay_amount, pf.fee_amount, pos.qty,
+         pos.raw_price, pos.sales_price, pos.pay_amount, IFNULL(pf.fee_amount, 0) fee_amount, pos.qty,
          pos.coupon_partner_amount, pos.cart_discount_partner_amount, pos.order_sheet_promotion_brand,
          IF(pos.sales_type='SALE',1,-1) np, IF(pos.product_type='100','3P','1P') com_type
   FROM musinsa.order_group.pos_order_sales pos
   JOIN date_range dr ON DATE(pos.sales_date)=dr.date
   JOIN v_goods_filter gf ON pos.goods_no = gf.goods_no
   JOIN v_shop_list sl ON pos.shop_no = sl.shop_no
-  JOIN v_pos_fee pf ON pos.sales_key = pf.sales_key
+  LEFT JOIN v_pos_fee pf ON pos.sales_key = pf.sales_key   -- 정산 미완료 매출도 보존(INNER면 라인 드롭→Offline 과소집계). fee 없으면 0(정산 후 익일 보정)
   WHERE LOWER(pos.brand_id) IN ('musinsastandard','musinsastandardhome','musinsastandardwoman','musinsastandardkids')
 ),
 offline_processed AS (
