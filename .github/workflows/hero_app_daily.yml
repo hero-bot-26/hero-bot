@@ -87,4 +87,7 @@ jobs:
         continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-        run: python -m soo.hero_ops.notify "⚠️ 히어로 마스터앱 daily 갱신 실패 ($(date -u +%Y-%m-%d)) — Actions 로그 확인. 단골 원인: GOOGLE_OAUTH_TOKEN 만료(→서비스계정 전환 권장) / 시트 권한 / 시트 구조 변경."
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 히어로 마스터앱 daily 갱신 실패 ($(date -u +%Y-%m-%d)) — Actions 로그 확인.
+          단골 원인 GOOGLE_OAUTH_TOKEN 만료(서비스계정 전환 권장), 시트 권한, 시트 구조 변경."
