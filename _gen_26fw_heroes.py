@@ -284,38 +284,95 @@ try:
 except Exception as e:
     print(f"[주의] DASHBOARD 주입 실패 — 실적 대시보드는 기존값 유지: {type(e).__name__}: {e}")
 
-# ── IMC 일정 주입 (뒷단: 발매/캠페인/오프라인게이트/발매이슈/기획전 → const IMC) ──
-# 슬랙 알람(imc_triggers)과 동일 소스. 향후 120일 윈도우만 앱에 노출.
+# ── IMC 통합(과거·현재·미래) 주입 → const IMC ──
+# 소스: 발매/캠페인/오프라인/발매이슈/기획전(imc_triggers, 별도 파일) + SNS/CRM 콘텐츠 통합 관리 시트
+#       (온사이트/PR/IG광고). 각 액션에 status(past/today/future)·channel 부여. 윈도우 TODAY-180~+150.
+# 슬랙 알람(imc_triggers)은 온라인MD용이라 GRADES 셋 다 유지, 앱은 발매를 HERO·HERO SUB만(핵심상품 제외).
 nimc = 0
 try:
     import datetime as _dt
+    import re as _re2
     from soo.hero_ops import imc_triggers as _IMCT
-    _hz = (TODAY + _dt.timedelta(days=120)).isoformat()
+    _back = (TODAY - _dt.timedelta(days=365)).isoformat()
+    _fwd = (TODAY + _dt.timedelta(days=150)).isoformat()
     _items = []
-    # 앱 캘린더는 히어로 가시성 도구 → 발매는 HERO·HERO SUB만 (핵심상품 제외).
-    # 슬랙 알람(imc_triggers)은 온라인MD용이라 GRADES 셋 다 그대로 유지.
+
+    def _add(type_, channel, date_, title, sub="", owner="", **extra):
+        title = str(title or "").strip()
+        if not date_ or not title:
+            return
+        d = {"type": type_, "channel": channel, "date": date_, "title": title[:60], "sub": sub, "owner": owner}
+        d.update(extra)
+        _items.append(d)
+
+    # 1) 기존 IMC 소스 (발매스케줄/캠페인/오프라인/발매이슈/일반기획전)
     for r in _IMCT.load_releases(sheets):
         if r["grade"] not in ("HERO", "HERO SUB"):
             continue
-        _items.append({"type": "발매", "date": r["release"].isoformat(), "title": r["name"],
-                       "sub": f"{r['series']}/{r['grade']}", "owner": ""})
+        _add("발매", "발매", r["release"].isoformat(), r["name"], f"{r['series']}/{r['grade']}")
     for c in _IMCT.load_campaigns(sheets):
-        _items.append({"type": "캠페인", "date": c["start"].isoformat(), "title": c["name"],
-                       "sub": c["gubun"], "owner": c["owner"]})
+        _add("캠페인", "캠페인", c["start"].isoformat(), c["name"], c["gubun"], c["owner"])
     for g in _IMCT.load_offline_gates(sheets):
-        _items.append({"type": "오프라인", "date": g["date"].isoformat(), "title": g["label"],
-                       "sub": g["kind"], "owner": "", "season_gate": g["season_gate"]})
+        _add("오프라인", "오프라인", g["date"].isoformat(), g["label"], g["kind"], season_gate=g["season_gate"])
     for it in _IMCT.load_release_issues(sheets):
-        _items.append({"type": "발매이슈", "date": it["when"].isoformat(), "title": it["issue"],
-                       "sub": it["brand"], "owner": it["owner"]})
+        _add("발매이슈", "발매이슈", it["when"].isoformat(), it["issue"], it["brand"], it["owner"])
     for p in _IMCT.load_general_promos(sheets):
-        _items.append({"type": "기획전", "date": p["start"].isoformat(), "title": p["title"],
-                       "sub": "", "owner": p["owner"]})
-    _items = sorted((x for x in _items if TODAY.isoformat() <= x["date"] <= _hz), key=lambda x: x["date"])
-    imc_block = "const IMC = " + json.dumps({"as_of": TODAY.isoformat(), "items": _items}, ensure_ascii=False) + ";"
+        _add("기획전", "기획전", p["start"].isoformat(), p["title"], "", p["owner"])
+
+    # 2) SNS/CRM 브랜드 콘텐츠 통합 관리 시트 (별개 파일) — 온사이트/PR/IG광고
+    _SNS = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"
+
+    def _read(tab, rng):
+        return sheets.spreadsheets().values().get(
+            spreadsheetId=_SNS, range=f"'{tab}'!{rng}", valueRenderOption="FORMATTED_VALUE"
+        ).execute().get("values", [])
+
+    def _cell(row, i):
+        return str(row[i]).strip() if i < len(row) and row[i] is not None else ""
+
+    def _date_ymd(s):       # "2025/9/4" · "2025.09.04"
+        m = _re2.findall(r"\d+", str(s or ""))
+        if len(m) >= 3 and 2024 <= int(m[0]) <= 2027:
+            try:
+                return _dt.date(int(m[0]), int(m[1]), int(m[2])).isoformat()
+            except ValueError:
+                return None
+        return None
+
+    def _date_yymmdd(s):    # "260611"
+        s = _re2.sub(r"\D", "", str(s or ""))
+        if len(s) == 6:
+            try:
+                return _dt.date(2000 + int(s[:2]), int(s[2:4]), int(s[4:6])).isoformat()
+            except ValueError:
+                return None
+        return None
+
+    try:
+        for r in _read("5)온사이트", "A4:F200"):           # B발행일 C유형 D타이틀
+            _add("온사이트", "온사이트", _date_ymd(_cell(r, 1)), _cell(r, 3), _cell(r, 2), "권정은")
+        for r in _read("6)PR", "A7:E100"):                 # B요청자 C발행일자 D유형 E타이틀
+            _add("PR", "PR", _date_ymd(_cell(r, 2)), _cell(r, 4), _cell(r, 3), _cell(r, 1))
+        for r in _read("4)인스타그램 게시물 광고", "A6:Q200"):  # D광고시작 H세트명 K계정 L유형 M요청자
+            t = _cell(r, 7)
+            if not t or "예산" in t or "총 금액" in t or _cell(r, 3).lower().startswith("ex"):
+                continue
+            _add("SNS", "SNS광고", _date_yymmdd(_cell(r, 3)), t,
+                 "/".join(x for x in [_cell(r, 10), _cell(r, 11)] if x), _cell(r, 12))
+        print("IMC SNS/CRM 콘텐츠 로드 OK")
+    except Exception as e2:
+        print(f"[주의] SNS/CRM 콘텐츠 로드 실패(기존 소스만 유지): {type(e2).__name__}: {e2}")
+
+    # 3) 윈도우 필터 + status 부여
+    _t = TODAY.isoformat()
+    _items = sorted((x for x in _items if _back <= x["date"] <= _fwd), key=lambda x: x["date"])
+    for x in _items:
+        x["status"] = "past" if x["date"] < _t else ("today" if x["date"] == _t else "future")
+    imc_block = "const IMC = " + json.dumps({"as_of": _t, "items": _items}, ensure_ascii=False) + ";"
     html2, nimc = re.subn(r"const IMC = \{.*?\};", imc_block, html2, count=1, flags=re.DOTALL)
     assert nimc == 1, f"IMC 교체 실패 (matched {nimc})"
-    print(f"IMC 주입: {len(_items)}건 (~{_hz})")
+    _np = sum(1 for x in _items if x["status"] == "past")
+    print(f"IMC 주입: {len(_items)}건 (과거 {_np}/미래 {len(_items) - _np}, {_back}~{_fwd})")
 except Exception as e:
     print(f"[주의] IMC 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
