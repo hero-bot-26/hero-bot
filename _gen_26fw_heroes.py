@@ -287,15 +287,16 @@ except Exception as e:
 # ── 데이터 갱신 헬스체크 수집 (비어있음/구조변경 등 '조용한 실패' 가시화) ──
 _HEALTH = []
 SNS_SHEET_ID = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"  # [무탠다드] SNS/CRM 콘텐츠 통합 관리
+TRACKER_SHEET_ID = "1oz6zM-x2nqaDSAufWJ2a-QZh-1F6LQipttNkVKoFAn8"  # 캠페인 운영관리 트래커([히어로 PDP]에 운영 히어로 품목)
 
 
-def _sns_table(tab, keys, last_col="AB", max_row=900, scan=20, optional=()):
+def _sns_table(tab, keys, last_col="AB", max_row=900, scan=20, optional=(), sid=None):
     """탭을 읽어 (데이터행, {key: colidx}) 반환. keys={key:[헤더 별칭...]}.
     헤더행은 별칭 매칭 수가 가장 많은 행으로 자동 탐색 → 컬럼 이동/삽입·헤더행 위치 변경에 강건(#4).
-    optional: 시트마다 있을 수도/없을 수도 있는 컬럼(없어도 경고 안 함)."""
+    optional: 시트마다 있을 수도/없을 수도 있는 컬럼(없어도 경고 안 함). sid: 다른 스프레드시트도 가능."""
     try:
         rows = sheets.spreadsheets().values().get(
-            spreadsheetId=SNS_SHEET_ID, range=f"'{tab}'!A1:{last_col}{max_row}",
+            spreadsheetId=sid or SNS_SHEET_ID, range=f"'{tab}'!A1:{last_col}{max_row}",
             valueRenderOption="FORMATTED_VALUE").execute().get("values", [])
     except Exception as _e:
         _HEALTH.append(f"'{tab}' 읽기 실패({type(_e).__name__}) — 권한/이름 확인")
@@ -422,7 +423,28 @@ try:
     for _h in heroes:
         _nm = _h["name"]
         _hero_alias[_nm] = _ALIAS_OVERRIDE.get(_nm) or sorted({_nm, _nm.replace(" ", "")}, key=len, reverse=True)
-    _alias_norm = [a.replace(" ", "") for al in _hero_alias.values() for a in al]
+
+    # 현재 운영 중인 히어로 품목 — 캠페인 운영관리 트래커 [히어로 PDP]의 정답 레지스트리에서.
+    # 앱 26FW 기획 히어로 ∪ 현재 운영 히어로 = "히어로" 정의(합집합). 마케팅 가시성 목적.
+    _cur_heroes = []
+    try:
+        _rows, _cm = _sns_table("[히어로 PDP]", {"item": ["HERO 품목"], "brand": ["브랜드"], "sty": ["STY_No"]},
+                                sid=TRACKER_SHEET_ID)
+        _seen = set()
+        for _r in _rows:
+            _it = _gv(_r, _cm, "item")
+            if _it and not _it.startswith("무신사 스탠다드") and _it not in _seen:
+                _seen.add(_it)
+                _cur_heroes.append(_it)
+        if not _cur_heroes:
+            _HEALTH.append("캠페인 트래커 [히어로 PDP] 품목 0건 — 권한/구조 확인")
+    except Exception as _e:
+        _HEALTH.append(f"캠페인 트래커 히어로 로드 실패: {type(_e).__name__}")
+
+    # 매칭 키워드 = 26FW 별칭 ∪ 현재 운영 히어로 품목 (공백 제거 정규화)
+    _alias_norm = {a.replace(" ", "") for al in _hero_alias.values() for a in al}
+    _alias_norm |= {h.replace(" ", "") for h in _cur_heroes if len(h.replace(" ", "")) >= 2}
+    _alias_norm = list(_alias_norm)
 
     def _hero_related(it):
         if it["channel"] == "발매":
@@ -445,7 +467,7 @@ try:
     assert nimc == 1, f"IMC 교체 실패 (matched {nimc})"
     _np = sum(1 for x in _items if x["status"] == "past")
     _nh = sum(1 for x in _items if x["hero_related"])
-    print(f"IMC 주입: {len(_items)}건 (과거 {_np}/미래 {len(_items) - _np} · 히어로관련 {_nh}/{len(_items)})")
+    print(f"IMC 주입: {len(_items)}건 (과거 {_np}/미래 {len(_items) - _np} · 히어로관련 {_nh}/{len(_items)} · 운영히어로 {len(_cur_heroes)}종: {_cur_heroes})")
 
     _alias_block = "const HERO_IMC_ALIASES = " + json.dumps(_hero_alias, ensure_ascii=False) + ";"
     html2, _na = re.subn(r"const HERO_IMC_ALIASES = \{.*?\};", _alias_block, html2, count=1, flags=re.DOTALL)
