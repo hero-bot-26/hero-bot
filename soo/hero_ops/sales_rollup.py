@@ -421,7 +421,7 @@ if __name__ == "__main__":
     from soo.hero_ops.hero_goods_map import build_maps
     g2h, s2h = build_maps(sheets)
     print(f"매핑: goods_no→hero {len(g2h)} / 신품번→hero {len(s2h)}")
-    heroes, stats = aggregate(sheets, DEV_SHEET_ID, g2h)
+    heroes, stats = aggregate(sheets, SALES_SHEET_ID, g2h)
     print(f"매출 행 {stats['rows']} (매핑 {stats['mapped']}, 미매핑 goods {len(stats['unmapped_goods'])}종)")
 
     def 억(v):
@@ -443,7 +443,7 @@ if __name__ == "__main__":
 
     # DASHBOARD 조립 테스트
     import json
-    dash = build_dashboard(sheets, drive, DEV_SHEET_ID, "2026-06-10")
+    dash = build_dashboard(sheets, drive, SALES_SHEET_ID, "2026-06-10")
     js = json.dumps(dash, ensure_ascii=False)
     print(f"\n[DASHBOARD] 히어로 {len(dash['heroes'])}개 · JSON {len(js)/1024:.0f}KB · metrics={dash['metrics']}")
     for h in dash["heroes"][:4]:

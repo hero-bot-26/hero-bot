@@ -1,10 +1,11 @@
 name: Hero master app daily update
 
-# 매일 PLM 구글시트(데이터브릭스 자동출력)를 읽어 app.html 재생성 → hero-master-app에 push → Vercel 재배포.
-# 랩탑 무관(클라우드 실행). 데이터브릭스 잡이 새벽(예 06:00 KST)에 시트를 채운 뒤 돌도록 스케줄.
+# 매일 PLM·실적 구글시트(데이터브릭스 자동출력)를 읽어 app.html 재생성 → hero-master-app에 push → Vercel 재배포.
+# 랩탑 무관(클라우드 실행). 데이터브릭스 잡이 새벽에 시트를 채운 뒤 돌도록 스케줄.
+#   PLM 잡 06:00 KST · 실적 잡 07:00 KST 시작(전용 클러스터 ~2h, ~09:00 완료) → 여유 두고 10:00 KST 실행.
 on:
   schedule:
-    - cron: "0 22 * * *"   # 07:00 KST (Databricks 06:00 이후)
+    - cron: "0 1 * * *"    # 10:00 KST (Databricks 실적 잡 ~09:00 완료 후)
   workflow_dispatch: {}     # 수동 실행 버튼
 
 concurrency:

@@ -271,11 +271,12 @@ html2, nsa = re.subn(r"const SALES_AS_OF = '[^']*';",
                      f"const SALES_AS_OF = '{TODAY.isoformat()}';", html2, count=1)
 
 # ── 실적 대시보드 데이터 주입 (build_dashboard) ──
-# 소스 시트: 전환기엔 전사 대시보드(DEV_SHEET_ID, 동일 raw 탭 보유). 운영 시 SA 시트로 교체.
+# 소스 시트: SALES_SHEET(Databricks 잡이 매일 07:00 KST에 채우는 전용 SA 시트). raw 탭만 사용.
+# goods→hero 매핑은 build_maps 가 내부 DEV_SHEET_ID(26SS 탭)에서 별도로 읽음(sheet_id 무관).
 nd = 0
 try:
-    from soo.hero_ops.sales_rollup import build_dashboard, DEV_SHEET_ID
-    dash = build_dashboard(sheets, drive, DEV_SHEET_ID, TODAY.isoformat())
+    from soo.hero_ops.sales_rollup import build_dashboard, SALES_SHEET_ID
+    dash = build_dashboard(sheets, drive, SALES_SHEET_ID, TODAY.isoformat())
     dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
     html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
     assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
