@@ -376,6 +376,81 @@ try:
 except Exception as e:
     print(f"[주의] IMC 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
+# ── IMC 채널별 성과(과거 회고) 주입 → const IMC_PERF ──
+# SNS/CRM 통합 관리 시트의 성과 탭(4-1/4-2 IG, 시트16 CRM) + 예산 탭 집계.
+nperf = 0
+try:
+    import re as _re3
+    _SNS2 = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"
+
+    def _r(tab, rng):
+        return sheets.spreadsheets().values().get(
+            spreadsheetId=_SNS2, range=f"'{tab}'!{rng}", valueRenderOption="FORMATTED_VALUE"
+        ).execute().get("values", [])
+
+    def _c(row, i):
+        return str(row[i]).strip() if i < len(row) and row[i] is not None else ""
+
+    def _n(s):
+        d = _re3.sub(r"[^\d]", "", str(s or ""))
+        return int(d) if d else 0
+
+    def _agg_ig(tab, ch):
+        # 컬럼: 2발행월 3발행일 4소재 7분류 8유형 10조회 11도달 12좋아요 19인기게시물 20히어로콘텐츠
+        agg = {"posts": 0, "views": 0, "reach": 0, "likes": 0, "hero": 0, "popular": 0}
+        tops = []
+        for r in _r(tab, "A6:U800"):
+            title, v = _c(r, 4), _n(_c(r, 10))
+            if not title or (v == 0 and _n(_c(r, 11)) == 0):
+                continue
+            agg["posts"] += 1
+            agg["views"] += v
+            agg["reach"] += _n(_c(r, 11))
+            agg["likes"] += _n(_c(r, 12))
+            if _c(r, 19).upper() == "O":
+                agg["popular"] += 1
+            if _c(r, 20).upper() == "O":
+                agg["hero"] += 1
+                tops.append({"ch": ch, "title": title[:40], "date": _c(r, 3), "views": v, "type": _c(r, 8)})
+        return agg, tops
+
+    agg_off, tops_off = _agg_ig("4-1)성과_오피셜 IG", "오피셜")
+    agg_wm, tops_wm = _agg_ig("4-2)성과_우먼 IG", "우먼")
+
+    # CRM(시트16): 1채널 11발송수 15GMV 20ROAS
+    crm = {"count": 0, "sends": 0, "gmv": 0, "roas": 0}
+    _ro_sum = _ro_n = 0
+    for r in _r("시트16", "A3:U600"):
+        g = _n(_c(r, 15))
+        if g == 0:
+            continue
+        crm["count"] += 1
+        crm["gmv"] += g
+        crm["sends"] += _n(_c(r, 11))
+        try:
+            _ro_sum += float(_c(r, 20).replace("%", "").replace(",", "")); _ro_n += 1
+        except ValueError:
+            pass
+    crm["roas"] = round(_ro_sum / _ro_n) if _ro_n else 0
+
+    # 예산(PMKT/CRM 예산): 1구분 / 5~10 = 2026/01~06
+    budget = {"months": ["2026/01", "2026/02", "2026/03", "2026/04", "2026/05", "2026/06"], "hero": [], "perf": []}
+    _brows = _r("PMKT/CRM 예산", "A2:K20")
+    _hrow = next((r for r in _brows if _c(r, 1) == "Hero"), None)
+    _prow = next((r for r in _brows if "퍼포먼스" in _c(r, 1)), None)
+    for i in range(5, 11):
+        budget["hero"].append(_n(_c(_hrow, i)) if _hrow else 0)
+        budget["perf"].append(_n(_c(_prow, i)) if _prow else 0)
+
+    highlights = sorted(tops_off + tops_wm, key=lambda x: -x["views"])[:10]
+    perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget, "highlights": highlights}
+    perf_block = "const IMC_PERF = " + json.dumps(perf, ensure_ascii=False) + ";"
+    html2, nperf = re.subn(r"const IMC_PERF = \{.*?\};", perf_block, html2, count=1, flags=re.DOTALL)
+    assert nperf == 1, f"IMC_PERF 교체 실패 (matched {nperf})"
+    print(f"IMC_PERF 주입: 오피셜 {agg_off['posts']}건(히어로 {agg_off['hero']})·우먼 {agg_wm['posts']}건 · CRM {crm['count']}건 GMV {crm['gmv']:,}")
+except Exception as e:
+    print(f"[주의] IMC_PERF 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
+
 # ── 27SS 진척 카드 주입 (기획 관리판 #.상세일정 → SEASON_27SS_PROGRESS) ──
 # 품평회 일자는 소스에 없어 제외, GO-DROP을 앵커로. 봄=G·여름=J(좌측 블록). 트랙별 D-day 자동.
 n27 = 0
