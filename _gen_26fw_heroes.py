@@ -288,6 +288,8 @@ except Exception as e:
 _HEALTH = []
 SNS_SHEET_ID = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"  # [무탠다드] SNS/CRM 콘텐츠 통합 관리
 TRACKER_SHEET_ID = "1oz6zM-x2nqaDSAufWJ2a-QZh-1F6LQipttNkVKoFAn8"  # 캠페인 운영관리 트래커([히어로 PDP]에 운영 히어로 품목)
+GOAL_SHEET_ID = "1_tZDl-heZyWT4VQYIAT3ZHFeMoQlK2FSOpEMyZjqvm0"  # PLM 시트(사용자 소유), '히어로 마케팅 목표' 탭=마케팅 입력란
+GOAL_TAB = "히어로 마케팅 목표"
 
 
 def _sns_table(tab, keys, last_col="AB", max_row=900, scan=20, optional=(), sid=None):
@@ -691,10 +693,32 @@ try:
                 hero_perf[it]["wk"] = [_n(_g2(r, j)) for j in _cg]   # 주차별 실거래액(추세)
     except Exception as _eh:
         _HEALTH.append(f"히어로 PMKT 성과 로드 실패: {type(_eh).__name__}")
+
+    # 히어로 마케팅 목표(사람이 입력) — PLM 시트의 '히어로 마케팅 목표' 탭. 비면 목표 미설정.
+    # 목표를 자동 산출하지 않음(억지 목표 금지). 마케팅팀이 입력하면 앱에 달성율 자동 표시.
+    _goals = {}
+    try:
+        _gr = _raw(GOAL_TAB, GOAL_SHEET_ID, last_col="E", max_row=60)
+        _ghi = _hdr_idx(_gr, ["히어로 품목", "목표 GMV"])
+        if _ghi >= 0:
+            _gh = _gr[_ghi]
+            _gpj = next((j for j, c in enumerate(_gh) if "품목" in str(c)), 0)
+            _ggj = next((j for j, c in enumerate(_gh) if "목표 GMV" in str(c)), 1)
+            _grj = next((j for j, c in enumerate(_gh) if "ROAS" in str(c)), None)
+            for r in _gr[_ghi + 1:]:
+                _gn = _g2(r, _gpj)
+                if not _gn:
+                    continue
+                _goals[_gn] = {"gmv": _n(_g2(r, _ggj)),
+                               "roas": _g2(r, _grj) if _grj is not None else ""}
+    except Exception as _eg:
+        _HEALTH.append(f"히어로 마케팅 목표 로드 실패: {type(_eg).__name__}")
+
     hero_list = sorted(
         [{"name": k, "pdp_real": v.get("pdp_real", 0), "pdp_ad": v.get("pdp_ad", 0),
           "gmv": v.get("gmv", 0), "conv": v.get("conv", 0), "ad_gmv": v.get("ad_gmv", 0),
-          "wk": v.get("wk", [])} for k, v in hero_perf.items()],
+          "wk": v.get("wk", []), "goal": _goals.get(k, {}).get("gmv", 0),
+          "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in hero_perf.items()],
         key=lambda x: -x["gmv"])
     if not hero_list:
         _HEALTH.append("히어로 PMKT 성과 0건 — 트래커 구조 확인")
