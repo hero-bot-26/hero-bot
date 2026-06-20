@@ -599,6 +599,8 @@ try:
             _ji = next((j for j, c in enumerate(_h) if "HERO 품목" in str(c)), 1)
             _jb = next((j for j, c in enumerate(_h) if "브랜드" in str(c)), 2)
             _cc, _cg = _cols_with(_h, "실 거래수"), _cols_with(_h, "실 거래액")
+            # 광고 기여 거래액 = 바로 "거래액"(PMKT)+"거래액"(상품광고) 컬럼. "실 거래액"은 정확일치로 제외.
+            _cag = [j for j, c in enumerate(_h) if str(c or "").strip() == "거래액"]
             for r in _cv[_hi + 1:]:
                 it = _g2(r, _ji)
                 if not it or it.startswith("무신사 스탠다드") or _g2(r, _jb):
@@ -606,11 +608,12 @@ try:
                 hero_perf.setdefault(it, {})
                 hero_perf[it]["conv"] = sum(_n(_g2(r, j)) for j in _cc)
                 hero_perf[it]["gmv"] = sum(_n(_g2(r, j)) for j in _cg)
+                hero_perf[it]["ad_gmv"] = sum(_n(_g2(r, j)) for j in _cag)
     except Exception as _eh:
         _HEALTH.append(f"히어로 PMKT 성과 로드 실패: {type(_eh).__name__}")
     hero_list = sorted(
         [{"name": k, "pdp_real": v.get("pdp_real", 0), "pdp_ad": v.get("pdp_ad", 0),
-          "gmv": v.get("gmv", 0), "conv": v.get("conv", 0)} for k, v in hero_perf.items()],
+          "gmv": v.get("gmv", 0), "conv": v.get("conv", 0), "ad_gmv": v.get("ad_gmv", 0)} for k, v in hero_perf.items()],
         key=lambda x: -x["gmv"])
     if not hero_list:
         _HEALTH.append("히어로 PMKT 성과 0건 — 트래커 구조 확인")
