@@ -408,6 +408,66 @@ try:
         _HEALTH.append(f"SNS/CRM 콘텐츠 로드 예외: {type(e2).__name__}")
         print(f"[주의] SNS/CRM 콘텐츠 로드 실패(기존 소스만 유지): {type(e2).__name__}: {e2}")
 
+    # 2.5) SNS/CRM 마스터 캘린더 '2)일정' — 주(週)밴드 × 가로 13개월(9월~익년9월) 그리드.
+    #   레이아웃: C열=채널(병합셀, 아래로 carry-forward) · 날짜밴드행(요일별 M/D, ≥5개)이 컬럼→날짜 정의.
+    #   소셜 실행 레이어(촬영/IG오피셜/IG글로벌)+포워드 CRM(앱푸시/인앱/카카오)만 추출.
+    #   이슈행(공통캠페인/기획전/오프라인/글로벌/PRODUCT/PR/매거진)은 imc_triggers·6)PR 권위소스와
+    #   중복이라 제외. 셀의 'OOO_' 프리픽스=포맷(피드/릴스/스토리), '히어로_'=SNS팀 정답 히어로태그.
+    try:
+        _CH_MAP = {  # C열 채널값 → (IMC type, sub). 여기 없는 채널은 스킵.
+            "SHOOTING": ("촬영", "촬영"), "IG_OFFICIAL": ("IG", "오피셜"),
+            "IG_GLOBAL": ("IG", "글로벌"), "CRM": ("CRM", "CRM"),
+            "인앱메시지": ("CRM", "인앱"), "KKO": ("CRM", "카카오"),
+        }
+
+        def _is_date_cell(s):
+            return bool(_re2.fullmatch(r"\d{1,2}/\d{1,2}", str(s or "").strip()))
+
+        _svals = sheets.spreadsheets().values().get(
+            spreadsheetId=SNS_SHEET_ID, range="'2)일정'!A1:DB200",
+            valueRenderOption="FORMATTED_VALUE").execute().get("values", [])
+        _col2date, _cur_C, _seen_m = {}, None, set()
+        _cnt = {"IG": 0, "촬영": 0, "CRM": 0}
+        for _row in _svals:
+            _dh = [(j, str(c).strip()) for j, c in enumerate(_row) if _is_date_cell(c)]
+            if len(_dh) >= 5:  # 날짜밴드행 → 컬럼→날짜 재설정(좌→우 월 감소 시 연도+1: 9~12=2025, 1~9=2026)
+                _col2date, _cur_C, _yr, _pmo = {}, None, 2025, 0
+                for j, md in _dh:
+                    _mo, _da = (int(x) for x in md.split("/"))
+                    if _pmo and _mo < _pmo:
+                        _yr += 1
+                    _pmo = _mo
+                    try:
+                        _col2date[j] = _dt.date(_yr, _mo, _da).isoformat()
+                    except ValueError:
+                        pass
+                continue
+            _c2 = str(_row[2]).strip() if len(_row) > 2 and _row[2] else ""
+            if _c2:
+                _cur_C = _c2
+            _tt = _CH_MAP.get(_cur_C)
+            if not _tt or not _col2date:
+                continue
+            _type_, _sub_ = _tt
+            for j, _cell in enumerate(_row):
+                if j < 3 or j not in _col2date:
+                    continue
+                _ttl = str(_cell or "").strip()
+                if not _ttl or _is_date_cell(_ttl):
+                    continue
+                _k = (_col2date[j], _type_, _re2.sub(r"\s+", "", _ttl))
+                if _k in _seen_m:
+                    continue
+                _seen_m.add(_k)
+                if _add(_type_, _type_, _col2date[j], _ttl, _sub_, source="일정"):
+                    _cnt[_type_] += 1
+        if sum(_cnt.values()) == 0:
+            _HEALTH.append("2)일정 마스터 0건 — 구조변경/권한 확인")
+        print(f"IMC 마스터일정(2)일정) 로드: IG {_cnt['IG']}·촬영 {_cnt['촬영']}·CRM {_cnt['CRM']}")
+    except Exception as _es:
+        _HEALTH.append(f"2)일정 마스터 로드 예외: {type(_es).__name__}")
+        print(f"[주의] 2)일정 마스터 로드 실패(기존 소스만 유지): {type(_es).__name__}: {_es}")
+
     # 3) 히어로 별칭 자동생성(#4) + 각 항목 hero_related 태깅
     #    판별: 발매(정의상 히어로) / 제목에 '히어로' 명시(2)일정의 '히어로_' 프리픽스 등) / 26FW 제품명 키워드.
     #    까다로운 품목만 수동 override, 나머지는 히어로명에서 자동 생성 → 품목 바뀌면 자동 반영.
@@ -458,8 +518,15 @@ try:
         x["hero_related"] = _hero_related(x)
 
     # 4) 윈도우 필터 + status 부여
+    #    '2)일정' 마스터 항목(source="일정")은 hero_related인 것만 유지 — 앱 히어로 중심 성격 유지,
+    #    비히어로 일반 콘텐츠(일반 IG/CRM) 노이즈 제외. 그 외 소스는 전부 유지(hero 토글로 가림).
     _t = TODAY.isoformat()
+    _n_master_raw = sum(1 for x in _items if x.get("source") == "일정")
+    _items = [x for x in _items
+              if not (x.get("source") == "일정" and not x["hero_related"])]
+    _n_master_kept = sum(1 for x in _items if x.get("source") == "일정")
     _items = sorted((x for x in _items if _back <= x["date"] <= _fwd), key=lambda x: x["date"])
+    print(f"2)일정 마스터 필터: {_n_master_raw}건 중 히어로관련 {_n_master_kept}건 유지")
     for x in _items:
         x["status"] = "past" if x["date"] < _t else ("today" if x["date"] == _t else "future")
     imc_block = "const IMC = " + json.dumps({"as_of": _t, "items": _items}, ensure_ascii=False) + ";"
