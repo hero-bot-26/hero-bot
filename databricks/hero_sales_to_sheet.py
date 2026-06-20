@@ -209,7 +209,7 @@ spark.sql("""CREATE OR REPLACE TEMP VIEW v_meta AS
   FROM (SELECT goods_no, team, goods_gender_cd, category_nm_1depth, category_nm_2depth, md_nm, release_season_type, season, style_no,
                ROW_NUMBER() OVER (PARTITION BY goods_no ORDER BY md_nm, team) rn
         FROM gspread.musinsastandard.mutandard_goods_meta_v2 WHERE goods_no IS NOT NULL) x WHERE rn = 1""")
-spark.sql("CREATE OR REPLACE TEMP VIEW v_shop_list AS SELECT DISTINCT shop_no FROM musinsa.order_group.shop WHERE LOWER(shop_type) IN ('offline','selectshop') OR shop_no=68")   -- selectshop(편집샵)도 오프라인 매출 — 누락 시 전사 대비 ~3-5% 과소(검증: NEW티 offline+selectshop=전사 원단위 일치)
+spark.sql("CREATE OR REPLACE TEMP VIEW v_shop_list AS SELECT DISTINCT shop_no FROM musinsa.order_group.shop WHERE LOWER(shop_type) IN ('offline','selectshop') OR shop_no=68")   # selectshop(편집샵)도 오프라인 매출 — 누락 시 전사 대비 ~3-5% 과소(검증: NEW티 offline+selectshop=전사 원단위 일치)
 spark.sql("CREATE OR REPLACE TEMP VIEW v_pos_fee AS SELECT sales_key, MAX(fee_amount) fee_amount FROM musinsa.order_group.pos_settlement_item GROUP BY sales_key")
 for _v in ["v_goods_filter", "v_goods_base", "v_meta", "v_shop_list", "v_pos_fee"]:
     spark.sql(f"CACHE TABLE {_v}")
@@ -362,4 +362,24 @@ ORDER BY plant_nm, brand_nm, team, goods_no, style_no, barcode
 insert_query_result("입고현황", spark.sql(inbound_query), label="25년 11월 1일부터 전일자 누적 입고")
 
 # COMMAND ----------
-print("완료 — 10개 탭 기록. 생성기(_gen_26fw_heroes.py --sheet)가 이 시트를 읽어 app.html 갱신.")
+# ── PDP 유입 → 구매전환 퍼널 (team.sales.pdp_path_daily_summary_v) ──
+# 한 탭 'PDP퍼널'에 기간(YTD/MTD/WEEK/DAY) × goods_no 별 유입(pdp_uv)·구매전환자(purchase_uv)·수량·gmv 기록.
+# ★path_type='direct' 하나만 — direct/indirect는 같은 UV를 2가지로 분해한 복제라 둘 다 더하면 2배(검증됨).
+# 생성기가 goods_no로 히어로/스타일/컬러에 부착·롤업, 전환율 = purchase_uv / pdp_uv.
+_funnel_periods = [("YTD", params["start_dt"][0], params["end_dt"][0]),
+                   ("MTD", mtd_start, mtd_end), ("WEEK", week_start, week_end), ("DAY", day_start, day_end)]
+_funnel_union = " UNION ALL ".join(f"""
+  SELECT '{nm}' AS period, CAST(p.goods_no AS STRING) AS goods_no, m.style_no AS style_no,
+         SUM(p.pdp_uv_cnt) AS pdp_uv, SUM(p.purchase_uv_cnt) AS purchase_uv,
+         SUM(p.qty) AS qty, SUM(p.gmv) AS gmv
+  FROM team.sales.pdp_path_daily_summary_v p
+  JOIN v_goods_filter gf ON CAST(p.goods_no AS STRING) = CAST(gf.goods_no AS STRING)
+  LEFT JOIN v_meta m ON CAST(p.goods_no AS STRING) = CAST(m.goods_no AS STRING)
+  WHERE p.dt BETWEEN '{s}' AND '{e}' AND p.path_type = 'direct'
+    AND LOWER(p.brand) IN ('musinsastandard','musinsastandardwoman','musinsastandardkids','musinsastandardhome')
+    AND LOWER(p.com_id) NOT IN ('musinsa','musinsa_event')
+  GROUP BY CAST(p.goods_no AS STRING), m.style_no""" for nm, s, e in _funnel_periods)
+insert_query_result("PDP퍼널", spark.sql(_funnel_union), label=f"PDP 유입->구매전환 (direct path, 이중계상 방지) ~{date}")
+
+# COMMAND ----------
+print("완료 — 11개 탭 기록(매출8·재고·입고·PDP퍼널). 생성기(_gen_26fw_heroes.py --sheet)가 이 시트를 읽어 app.html 갱신.")

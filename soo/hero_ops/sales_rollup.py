@@ -224,6 +224,35 @@ def aggregate_inbound(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=N
     return hero_in, sty_in, color_in
 
 
+# ── PDP 유입→구매전환 퍼널 집계 (히어로·스타일별 × 기간) ──────────────────────
+def aggregate_funnel(sheets, sheet_id, goods_to_hero):
+    """'PDP퍼널' 탭(goods_no별 유입pdp_uv·구매purchase_uv) → 히어로/스타일 롤업.
+    탭 없으면 빈 dict(퍼널 데이터 미반영, 앱은 '데이터 없음'). 전환율은 앱에서 buy/pdp."""
+    hero_fn = defaultdict(lambda: {p: {"pdp": 0.0, "buy": 0.0} for p in PERIODS})
+    sty_fn = defaultdict(lambda: {p: {"pdp": 0.0, "buy": 0.0} for p in PERIODS})
+    try:
+        rows = read_tab(sheets, sheet_id, "PDP퍼널")
+    except Exception as e:
+        print(f"[funnel] 'PDP퍼널' 탭 읽기 스킵: {e}")
+        return {}, {}
+    for row in rows:
+        p = str(row.get("period") or "").strip()
+        if p not in PERIODS:
+            continue
+        try:
+            gid = int(row.get("goods_no"))
+        except (TypeError, ValueError):
+            continue
+        hero = (goods_to_hero.get(gid) or {}).get("hero")
+        if not hero:
+            continue
+        base = _base(row.get("style_no") or "")
+        pdp, buy = _f(row.get("pdp_uv")), _f(row.get("purchase_uv"))
+        hero_fn[hero][p]["pdp"] += pdp; hero_fn[hero][p]["buy"] += buy
+        sty_fn[(hero, base)][p]["pdp"] += pdp; sty_fn[(hero, base)][p]["buy"] += buy
+    return hero_fn, sty_fn
+
+
 # ── DASHBOARD 조립 (앱용 JSON 구조) ─────────────────────────────────────────
 # 압축: 지표는 SALES_METRICS 순서의 배열. 채널 t/o/f, cur=c/prev=p.
 _GI, _QI = SALES_METRICS.index("gmv"), SALES_METRICS.index("qty")
@@ -280,6 +309,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
     heroes, stats = aggregate(sheets, sheet_id, g2h, code2kor, kor2code)
     hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h, code2kor, kor2code)
     hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h, code2kor, kor2code)
+    hero_funnel, sty_funnel = aggregate_funnel(sheets, sheet_id, g2h)   # PDP 유입→구매전환
     targets = parse_targets(sheets, as_of)   # 기간별(YTD/MTD/WEEK/DAY) 누적 목표
 
     # 히어로명 → 시즌 (g2h 값에서)
@@ -330,6 +360,18 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
         return {"qty": round(d["qty"]), "amt_normal": round(d["amt_normal"]),
                 "amt_wonga": round(d["amt_wonga"])} if d["qty"] else None
 
+    def _funnel(fn):
+        # {기간:[유입pdp_uv, 구매purchase_uv]} (둘 다 0인 기간 생략). 전환율은 앱에서 buy/pdp.
+        if not fn:
+            return None
+        out = {}
+        for p in PERIODS:
+            d = fn.get(p) or {}
+            pdp, buy = round(d.get("pdp", 0)), round(d.get("buy", 0))
+            if pdp or buy:
+                out[p] = [pdp, buy]
+        return out or None
+
     def _color_obj(col, cp, hero, base):
         v = _per_color(cp)                          # {기간:[gmv,qty,prev_gmv,rev,net]}
         # 컬러 준비물량(=오더 발주수량) + 안분 목표(스타일목표×발주비중)
@@ -373,6 +415,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
                 "stock": _stock(sty_stock.get((hero, base))) if (hero, base) in sty_stock else None,
                 "inbound": _inb(sty_in.get((hero, base))) if (hero, base) in sty_in else None,
                 "target": _tgt_or_none(sty_target.get(base)),
+                "funnel": _funnel(sty_funnel.get((hero, base))),
                 "colors": [_color_obj(col, cp, hero, base) for col, cp in cols],
             })
         out_heroes.append({
@@ -382,6 +425,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
             "target": _tgt(hero_target[hero]) if hero in hero_target else None,
             "stock": _stock(hero_stock[hero]) if hero in hero_stock else None,
             "inbound": _inb(hero_in[hero]) if hero in hero_in else None,
+            "funnel": _funnel(hero_funnel.get(hero)),
             "stys": stys,
         })
     return {
