@@ -647,6 +647,7 @@ try:
 
     hero_perf = {}
     _wk_labels = []   # 주차별 추세용 라벨(W2..W10), [히어로 Convs] 실거래액 컬럼과 1:1
+    _pdp_wk_labels = []   # 주차별 추세용 라벨, [히어로 PDP] 실 PDP 조회 컬럼과 1:1
     try:
         _pr = _raw("[히어로 PDP]", TRACKER_SHEET_ID)
         _hi = _hdr_idx(_pr, ["HERO 품목", "실 PDP 조회"])
@@ -655,6 +656,17 @@ try:
             _ji = next((j for j, c in enumerate(_h) if "HERO 품목" in str(c)), 1)
             _jb = next((j for j, c in enumerate(_h) if "브랜드" in str(c)), 2)
             _cr, _ca = _cols_with(_h, "실 PDP 조회"), _cols_with(_h, "광고 PDP 조회")
+            # 주차 라벨 행(헤더 위 4행 내, 'W2 (날짜~)' 형태) → '실 PDP 조회' 컬럼은 이미 주차 순서
+            _pwrow = next((_pr[_ri] for _ri in range(max(0, _hi - 4), _hi)
+                           if any(_re3.match(r"\s*W\d+", str(c or "")) for c in _pr[_ri])), None)
+            _pdp_wk_labels = []
+            if _pwrow is not None:
+                _panch = sorted((j, _re3.match(r"\s*(W\d+)", str(c)).group(1))
+                                for j, c in enumerate(_pwrow) if _re3.match(r"\s*W\d+", str(c or "")))
+                for j in _cr:
+                    _pdp_wk_labels.append(next((al for ac, al in reversed(_panch) if ac <= j), ""))
+            else:
+                _pdp_wk_labels = [f"W{i + 2}" for i in range(len(_cr))]
             for r in _pr[_hi + 1:]:
                 it = _g2(r, _ji)
                 if not it or it.startswith("무신사 스탠다드") or _g2(r, _jb):
@@ -662,6 +674,7 @@ try:
                 hero_perf.setdefault(it, {})
                 hero_perf[it]["pdp_real"] = sum(_n(_g2(r, j)) for j in _cr)
                 hero_perf[it]["pdp_ad"] = sum(_n(_g2(r, j)) for j in _ca)
+                hero_perf[it]["pdp_wk"] = [_n(_g2(r, j)) for j in _cr]   # 주차별 실 PDP 조회(추세)
         _cv = _raw("[히어로 Convs]", TRACKER_SHEET_ID)
         _hi = _hdr_idx(_cv, ["HERO 품목", "실 거래액"])
         if _hi >= 0:
@@ -717,14 +730,16 @@ try:
     hero_list = sorted(
         [{"name": k, "pdp_real": v.get("pdp_real", 0), "pdp_ad": v.get("pdp_ad", 0),
           "gmv": v.get("gmv", 0), "conv": v.get("conv", 0), "ad_gmv": v.get("ad_gmv", 0),
-          "wk": v.get("wk", []), "goal": _goals.get(k, {}).get("gmv", 0),
+          "wk": v.get("wk", []), "pdp_wk": v.get("pdp_wk", []),
+          "goal": _goals.get(k, {}).get("gmv", 0),
           "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in hero_perf.items()],
         key=lambda x: -x["gmv"])
     if not hero_list:
         _HEALTH.append("히어로 PMKT 성과 0건 — 트래커 구조 확인")
 
     perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget,
-            "highlights": highlights, "hero": hero_list, "weeks": _wk_labels}
+            "highlights": highlights, "hero": hero_list, "weeks": _wk_labels,
+            "pdp_weeks": _pdp_wk_labels}
     perf_block = "const IMC_PERF = " + json.dumps(perf, ensure_ascii=False) + ";"
     html2, nperf = re.subn(r"const IMC_PERF = \{.*?\};", perf_block, html2, count=1, flags=re.DOTALL)
     assert nperf == 1, f"IMC_PERF 교체 실패 (matched {nperf})"
