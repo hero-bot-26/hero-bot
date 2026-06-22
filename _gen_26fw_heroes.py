@@ -745,17 +745,18 @@ try:
                         for h in _DASH_HEROES for s in (h.get("stys") or []) if s.get("style")}
     _dash_name2season = {h.get("name"): h.get("season") for h in _DASH_HEROES if h.get("season")}
 
+    # 진짜 현재/예정 히어로는 전부 대시보드에 시즌과 함께 있음(26SS·26FW 큐레이션).
+    # ⚠ PLM '데이터' 시트의 시즌 컬럼은 전 행 '26FW' 균일(시트 스코프 라벨일 뿐 제품 시즌 아님)
+    #   + 발매 2025-02짜리 캐리오버(예: 신세틱 스웨이드)도 들어있음 → "마스터에 있으면 26FW"는 오탐.
+    #   따라서 대시보드에 없으면 = 이전 시즌(운영 종료)로 처리.
     def _resolve_season(name):
         stys = _hero_stys.get(name, set())
-        for s in stys:                                  # ① STY가 대시보드 STY와 겹치면 그 시즌
+        for s in stys:                                  # ① STY가 대시보드 히어로 STY와 겹치면 그 시즌
             if s in _dash_sty2season and _dash_sty2season[s]:
                 return _dash_sty2season[s]
         if name in _dash_name2season:                   # ② 이름이 대시보드 히어로와 일치(STY 없는 경우, 예: 윈드브레이커)
             return _dash_name2season[name]
-        for s in stys:                                  # ③ 26FW PLM 마스터에 있으면 26FW
-            if s in plm:
-                return "26FW"
-        return "25FW"                                   # ④ 직전 FW(마스터에 없는 캐리오버)
+        return "25FW"                                   # ③ 대시보드에 없음 = 이전 시즌(운영 종료, 예: 경량패딩·신세틱)
 
     hero_list = sorted(
         [{"name": k, "pdp_real": v.get("pdp_real", 0), "pdp_ad": v.get("pdp_ad", 0),
