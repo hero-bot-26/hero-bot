@@ -274,9 +274,11 @@ html2, nsa = re.subn(r"const SALES_AS_OF = '[^']*';",
 # 소스 시트: SALES_SHEET(Databricks 잡이 매일 07:00 KST에 채우는 전용 SA 시트). raw 탭만 사용.
 # goods→hero 매핑은 build_maps 가 내부 DEV_SHEET_ID(26SS 탭)에서 별도로 읽음(sheet_id 무관).
 nd = 0
+_DASH_HEROES = []   # IMC 히어로 시즌 판정용(대시보드 STY→시즌 큐레이션값)
 try:
     from soo.hero_ops.sales_rollup import build_dashboard, SALES_SHEET_ID
     dash = build_dashboard(sheets, drive, SALES_SHEET_ID, TODAY.isoformat())
+    _DASH_HEROES = dash.get("heroes", [])
     dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
     html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
     assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
@@ -646,6 +648,7 @@ try:
         return [j for j, c in enumerate(hdr) if kw in str(c or "")]
 
     hero_perf = {}
+    _hero_stys = {}   # 히어로 품목 → STY_No 베이스(접미사 제거) 집합. 시즌 판정용.
     _wk_labels = []   # 주차별 추세용 라벨(W2..W10), [히어로 Convs] 실거래액 컬럼과 1:1
     _pdp_wk_labels = []   # 주차별 추세용 라벨, [히어로 PDP] 실 PDP 조회 컬럼과 1:1
     try:
@@ -655,6 +658,7 @@ try:
             _h = _pr[_hi]
             _ji = next((j for j, c in enumerate(_h) if "HERO 품목" in str(c)), 1)
             _jb = next((j for j, c in enumerate(_h) if "브랜드" in str(c)), 2)
+            _jsty = next((j for j, c in enumerate(_h) if "STY" in str(c)), 3)
             _cr, _ca = _cols_with(_h, "실 PDP 조회"), _cols_with(_h, "광고 PDP 조회")
             # 주차 라벨 행(헤더 위 4행 내, 'W2 (날짜~)' 형태) → '실 PDP 조회' 컬럼은 이미 주차 순서
             _pwrow = next((_pr[_ri] for _ri in range(max(0, _hi - 4), _hi)
@@ -669,7 +673,13 @@ try:
                 _pdp_wk_labels = [f"W{i + 2}" for i in range(len(_cr))]
             for r in _pr[_hi + 1:]:
                 it = _g2(r, _ji)
-                if not it or it.startswith("무신사 스탠다드") or _g2(r, _jb):
+                if not it or it.startswith("무신사 스탠다드"):
+                    continue
+                # STY는 상세행(브랜드 有)에 있음 — 브랜드 필터 전에 수집(시즌 판정용).
+                _sty = _g2(r, _jsty).split("-")[0].strip()              # 'MMEWS5Z01-SB' → 'MMEWS5Z01'
+                if _sty:
+                    _hero_stys.setdefault(it, set()).add(_sty)
+                if _g2(r, _jb):   # 그룹 집계행(품목 有·브랜드 空)만 PDP 합산
                     continue
                 hero_perf.setdefault(it, {})
                 hero_perf[it]["pdp_real"] = sum(_n(_g2(r, j)) for j in _cr)
@@ -727,15 +737,37 @@ try:
     except Exception as _eg:
         _HEALTH.append(f"히어로 마케팅 목표 로드 실패: {type(_eg).__name__}")
 
+    # 히어로 시즌 판정 — 새 시트/하드코딩 없이 기존 데이터로 추론(트래커엔 시즌 컬럼 없음):
+    #   ① 트래커 STY가 대시보드 히어로 STY와 겹치면 → 대시보드의 큐레이션 시즌(예: 26SS)
+    #   ② 아니면 26FW PLM 마스터(plm)에 있으면 → 26FW
+    #   ③ 둘 다 아니면 → 직전 FW(25FW). 26FW 마스터에 없는 이전 시즌 캐리오버(예: 경량 패딩).
+    _dash_sty2season = {s.get("style"): h.get("season")
+                        for h in _DASH_HEROES for s in (h.get("stys") or []) if s.get("style")}
+    _dash_name2season = {h.get("name"): h.get("season") for h in _DASH_HEROES if h.get("season")}
+
+    def _resolve_season(name):
+        stys = _hero_stys.get(name, set())
+        for s in stys:                                  # ① STY가 대시보드 STY와 겹치면 그 시즌
+            if s in _dash_sty2season and _dash_sty2season[s]:
+                return _dash_sty2season[s]
+        if name in _dash_name2season:                   # ② 이름이 대시보드 히어로와 일치(STY 없는 경우, 예: 윈드브레이커)
+            return _dash_name2season[name]
+        for s in stys:                                  # ③ 26FW PLM 마스터에 있으면 26FW
+            if s in plm:
+                return "26FW"
+        return "25FW"                                   # ④ 직전 FW(마스터에 없는 캐리오버)
+
     hero_list = sorted(
         [{"name": k, "pdp_real": v.get("pdp_real", 0), "pdp_ad": v.get("pdp_ad", 0),
           "gmv": v.get("gmv", 0), "conv": v.get("conv", 0), "ad_gmv": v.get("ad_gmv", 0),
           "wk": v.get("wk", []), "pdp_wk": v.get("pdp_wk", []),
+          "season": _resolve_season(k),
           "goal": _goals.get(k, {}).get("gmv", 0),
           "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in hero_perf.items()],
         key=lambda x: -x["gmv"])
     if not hero_list:
         _HEALTH.append("히어로 PMKT 성과 0건 — 트래커 구조 확인")
+    print("IMC 히어로 시즌: " + ", ".join(f"{h['name']}={h['season']}" for h in hero_list))
 
     perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget,
             "highlights": highlights, "hero": hero_list, "weeks": _wk_labels,
