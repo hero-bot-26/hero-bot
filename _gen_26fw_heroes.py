@@ -756,7 +756,9 @@ try:
                 return _dash_sty2season[s]
         if name in _dash_name2season:                   # ② 이름이 대시보드 히어로와 일치(STY 없는 경우, 예: 윈드브레이커)
             return _dash_name2season[name]
-        return "25FW"                                   # ③ 대시보드에 없음 = 이전 시즌(운영 종료, 예: 경량패딩·신세틱)
+        # ③ 대시보드에 없음 = 현재 운영 아님. 정확한 시즌은 신뢰할 소스 없음(PLM 시즌컬럼 균일·발매일 캐리오버)
+        #    → 시즌 추측 대신 '판매종료' 딱지(사용자 결정 2026-06-22). 예: 경량패딩·신세틱.
+        return "판매종료"
 
     hero_list = sorted(
         [{"name": k, "pdp_real": v.get("pdp_real", 0), "pdp_ad": v.get("pdp_ad", 0),
