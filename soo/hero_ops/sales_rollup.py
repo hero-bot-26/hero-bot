@@ -297,12 +297,14 @@ def _ytd_gmv(per):
 def build_dashboard(sheets, drive, sheet_id, as_of):
     """앱이 읽을 DASHBOARD dict (raw 합계; 비율은 JS에서 계산)."""
     from soo.hero_ops.hero_goods_map import build_maps
-    from soo.hero_ops.order_ingest import load_color_maps, parse_orders
+    from soo.hero_ops.order_ingest import load_color_maps, parse_orders, current_season
     g2h, s2h = build_maps(sheets)
+    cur_season = current_season(as_of)          # 오늘 기준 현재 시즌(2~7월 SS / 8~1월 FW)
     # 컬러 크로스워크(코드↔한글) — 컬러명 '한글(코드)' 통일 + 오더 매칭용
+    # ★준비물량은 오더시트(무탠본부) 발주수량을 '현재 타겟시즌'만 집계 → 타시즌·미래발주 제외.
     try:
         code2kor, kor2code = load_color_maps(sheets)
-        color_prep, style_prep = parse_orders(sheets, code2kor, kor2code)
+        color_prep, style_prep = parse_orders(sheets, code2kor, kor2code, season=cur_season)
     except Exception as e:                      # 오더시트 접근 실패해도 대시보드는 생성
         print(f"[order_ingest] 스킵: {e}")
         code2kor, kor2code, color_prep, style_prep = {}, {}, {}, {}
@@ -335,8 +337,17 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
         for p in PERIODS:
             for k in _CH:
                 HT["tq"][p][k] += t["tq"][p][k] or 0
+    # 준비물량(prep) = 오더시트 현재 타겟시즌 발주수량 기준(목표 탭 prep 대체).
+    #   → 시즌 누적 합산 버그 해소 + 목표 탭에 없는 캐리오버 히어로(슬랙스/양말 등)도 채워짐.
+    for base, sp in style_prep.items():
+        hero = s2h.get(base)
+        if not hero:
+            continue
+        HT = hero_target[hero]
         for k in _CH:
-            HT["prep"][k] += t["prep"][k] or 0
+            HT["prep"][k] += sp.get(k, 0) or 0
+    # 현재 타겟시즌 발주가 있는 히어로 = 현재 시즌 멤버(캐리오버 26FW→26SS 배지 보정용)
+    order_heroes = {s2h[b] for b in style_prep if b in s2h}
 
     def _tgt(d):
         # 목표/준비 모두 0이면 None (목표 미설정 히어로)
@@ -346,6 +357,19 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
         return {
             "tq": {p: {k: round(d["tq"][p][k]) or None for k in _CH} for p in PERIODS},
             "prep": {k: round(d["prep"][k]) or None for k in _CH},
+        }
+
+    def _sty_tgt(base):
+        # 스타일 목표 = 거래량(target_ingest) + 준비물량(오더시트 현재 타겟시즌).
+        t = sty_target.get(base)
+        sp = style_prep.get(base)
+        has_tq = bool(t) and any(t["tq"]["YTD"][k] for k in _CH)
+        has_prep = bool(sp) and any(sp.get(k) for k in _CH)
+        if not (has_tq or has_prep):
+            return None
+        return {
+            "tq": {p: {k: ((round(t["tq"][p][k]) or None) if t else None) for k in _CH} for p in PERIODS},
+            "prep": {k: ((round(sp[k]) or None) if sp else None) for k in _CH},
         }
 
     def _stock(d):
@@ -376,7 +400,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
         v = _per_color(cp)                          # {기간:[gmv,qty,prev_gmv,rev,net]}
         # 컬러 준비물량(=오더 발주수량) + 안분 목표(스타일목표×발주비중)
         cprep = color_prep.get((base, col))
-        sprep = style_prep.get(base) or 0
+        sprep = (style_prep.get(base) or {}).get("t") or 0
         st = sty_target.get(base)
         weight = (cprep / sprep) if (cprep and sprep) else None
         for p, arr in v.items():
@@ -414,13 +438,13 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
                 "periods": _per_full(S["periods"]),
                 "stock": _stock(sty_stock.get((hero, base))) if (hero, base) in sty_stock else None,
                 "inbound": _inb(sty_in.get((hero, base))) if (hero, base) in sty_in else None,
-                "target": _tgt_or_none(sty_target.get(base)),
+                "target": _sty_tgt(base),
                 "funnel": _funnel(sty_funnel.get((hero, base))),
                 "colors": [_color_obj(col, cp, hero, base) for col, cp in cols],
             })
         out_heroes.append({
             "name": hero,
-            "season": hero_season.get(hero, "26SS"),
+            "season": cur_season if hero in order_heroes else hero_season.get(hero, cur_season),
             "periods": _per_full(H["periods"]),
             "target": _tgt(hero_target[hero]) if hero in hero_target else None,
             "stock": _stock(hero_stock[hero]) if hero in hero_stock else None,
