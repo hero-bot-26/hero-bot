@@ -638,13 +638,17 @@ try:
     #   별칭=풀네임+공백제거+한글 첫토큰+짧은형(쿨탠/힛탠). 'NEW' 등 비한글 토큰은 제외(오탐 방지).
     _SHORT = {"쿨탠다드": ["쿨탠"], "힛탠다드": ["힛탠"]}
 
-    def _mk_aliases(name, base=()):
+    # first_token: 첫 단어를 별칭으로 추가할지. 대시보드 히어로(쿨탠다드·슬랙스 등 첫단어 고유)만 True.
+    #   26FW 히어로는 첫 단어가 일반 수식어("에센셜 플리스"의 에센셜·"웜 팬츠"의 웜)라 오탐 → False(큐레이션만).
+    def _mk_aliases(name, base=(), first_token=True):
         al = {name, name.replace(" ", "")} | set(base)
         toks = name.split()
         first = toks[0] if toks else ""
-        if len(first) >= 2 and _re2.search(r"[가-힣]", first):
+        if first_token and len(first) >= 2 and _re2.search(r"[가-힣]", first):
             al.add(first)
-            al.update(_SHORT.get(first, []))
+        for _kk, _ss in _SHORT.items():   # 쿨탠/힛탠 짧은형은 first_token 무관하게 이름에 키 있으면 추가
+            if _kk in name.replace(" ", ""):
+                al.update(_ss)
         return [a for a in sorted(al, key=len, reverse=True) if len(a.replace(" ", "")) >= 2]
 
     _lineup = {}  # 정규화명 → {name, aliases, season}
@@ -655,7 +659,7 @@ try:
     for _hn, _al in _hero_alias.items():
         _k = _hn.replace(" ", "")
         if _k not in _lineup:
-            _lineup[_k] = {"name": _hn, "aliases": _mk_aliases(_hn, _al), "season": "26FW"}
+            _lineup[_k] = {"name": _hn, "aliases": _mk_aliases(_hn, _al, first_token=False), "season": "26FW"}
     hero_lineup = list(_lineup.values())
 
     # 매칭 키워드 = 라인업 별칭 ∪ 현재 운영 히어로 품목 (공백 제거 정규화)
