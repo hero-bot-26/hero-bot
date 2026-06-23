@@ -346,12 +346,16 @@ try:
     _fwd = (TODAY + _dt.timedelta(days=150)).isoformat()
     _items = []
 
+    def _clean(v):   # 셀 내부 줄바꿈/탭/연속공백 → 단일 공백(셀 멀티라인 값이 JSON·표시 깨는 것 방지)
+        return _re2.sub(r"\s+", " ", v).strip() if isinstance(v, str) else v
+
     def _add(type_, channel, date_, title, sub="", owner="", **extra):
-        title = str(title or "").strip()
+        title = _clean(str(title or ""))
         if not date_ or not title:
             return False
-        d = {"type": type_, "channel": channel, "date": date_, "title": title[:60], "sub": sub, "owner": owner}
-        d.update(extra)
+        d = {"type": type_, "channel": channel, "date": date_, "title": title[:60],
+             "sub": _clean(sub), "owner": _clean(owner)}
+        d.update({k: _clean(v) for k, v in extra.items()})
         _items.append(d)
         return True
 
@@ -505,9 +509,10 @@ try:
             def _mcol(*names):
                 return next((j for j, c in enumerate(_mh) if any(n in str(c) for n in names)), None)
 
+            # '콘텐츠'·'마케팅'은 담당(I/H)이 기획안(N/M)보다 앞이라 첫 매칭=담당. '주력'=E IMC 주력 상품.
             _C = {k: _mcol(*v) for k, v in {"month": ["월"], "gubun": ["구분"], "issue": ["주요 이슈"],
-                  "lvl": ["레벨"], "mkt": ["마케팅"], "status": ["진행 상황"],
-                  "shoot": ["촬영 타겟"], "rel": ["릴리즈"]}.items()}
+                  "prod": ["주력"], "lvl": ["레벨"], "mkt": ["마케팅"], "cont": ["콘텐츠"], "photo": ["포토"],
+                  "status": ["진행 상황"], "shoot": ["촬영 타겟"], "rel": ["릴리즈"]}.items()}
 
             def _gc(r, k):
                 j = _C.get(k)
@@ -525,6 +530,10 @@ try:
                 _lvl = _gc(r, "lvl").upper()[:1]
                 _lvl = _lvl if _lvl in ("S", "A", "B") else ""
                 _mst = _gc(r, "status")
+                _prod = _gc(r, "prod")   # E IMC 주력 상품(겨냥 히어로/상품)
+                _owners = " · ".join(f"{_role} {_nm}" for _role, _nm in
+                                     [("마케팅", _gc(r, "mkt")), ("콘텐츠", _gc(r, "cont")), ("포토", _gc(r, "photo"))]
+                                     if _nm)
                 _date = _mdate(_gc(r, "rel")) or _mdate(_gc(r, "shoot"))
                 _approx = not _date
                 if _approx:
@@ -541,10 +550,15 @@ try:
                         _hit["level"] = _lvl
                     if _mst:
                         _hit["mstatus"] = _mst
+                    if _prod:
+                        _hit["prod"] = _prod
+                    if _owners:
+                        _hit["owners"] = _owners
                     _n_enrich += 1
                     continue
                 if _add("캠페인", "캠페인", _date, _issue, _gc(r, "gubun"), _gc(r, "mkt"),
-                        level=_lvl, mstatus=_mst, source="MKT", approx=_approx):
+                        level=_lvl, mstatus=_mst, prod=_prod, owners=_owners,
+                        source="MKT", approx=_approx):
                     _n_camp += 1
 
         # ② 메인 캘린더 그리드 에너지/바이럴 레인 (R3 월·R4 일자 → 컬럼별 날짜 매핑, 2026년)
@@ -628,7 +642,7 @@ try:
     def _hero_related(it):
         if it["channel"] == "발매":
             return True
-        blob = (it["title"] + " " + it.get("sub", "")).replace(" ", "")
+        blob = (it["title"] + " " + it.get("sub", "") + " " + it.get("prod", "")).replace(" ", "")
         if "히어로" in blob:
             return True
         return any(a in blob for a in _alias_norm)
@@ -649,7 +663,8 @@ try:
     for x in _items:
         x["status"] = "past" if x["date"] < _t else ("today" if x["date"] == _t else "future")
     imc_block = "const IMC = " + json.dumps({"as_of": _t, "items": _items}, ensure_ascii=False) + ";"
-    html2, nimc = re.subn(r"const IMC = \{.*?\};", imc_block, html2, count=1, flags=re.DOTALL)
+    # 람다 치환 — 치환문자열의 \n·\g 등 백슬래시 이스케이프 처리 방지(값에 \ 남아도 안전)
+    html2, nimc = re.subn(r"const IMC = \{.*?\};", lambda _m: imc_block, html2, count=1, flags=re.DOTALL)
     assert nimc == 1, f"IMC 교체 실패 (matched {nimc})"
     _np = sum(1 for x in _items if x["status"] == "past")
     _nh = sum(1 for x in _items if x["hero_related"])
