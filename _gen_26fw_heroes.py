@@ -369,7 +369,7 @@ try:
     for g in _IMCT.load_offline_gates(sheets):
         _add("오프라인", "오프라인", g["date"].isoformat(), g["label"], g["kind"], season_gate=g["season_gate"])
     for it in _IMCT.load_release_issues(sheets):
-        _add("발매이슈", "발매이슈", it["when"].isoformat(), it["issue"], it["brand"], it["owner"])
+        _add("입고알람", "입고알람", it["when"].isoformat(), it["issue"], it["brand"], it["owner"])
     for p in _IMCT.load_general_promos(sheets):
         _add("기획전", "기획전", p["start"].isoformat(), p["title"], "", p["owner"])
 
@@ -423,8 +423,8 @@ try:
     #   이슈행(공통캠페인/기획전/오프라인/글로벌/PRODUCT/PR/매거진)은 imc_triggers·6)PR 권위소스와
     #   중복이라 제외. 셀의 'OOO_' 프리픽스=포맷(피드/릴스/스토리), '히어로_'=SNS팀 정답 히어로태그.
     try:
-        _CH_MAP = {  # C열 채널값 → (IMC type, sub). 여기 없는 채널은 스킵.
-            "SHOOTING": ("촬영", "촬영"), "IG_OFFICIAL": ("IG", "오피셜"),
+        _CH_MAP = {  # C열 채널값 → (IMC type, sub). 여기 없는 채널은 스킵. (촬영은 마케팅 내부용이라 제외)
+            "IG_OFFICIAL": ("IG", "오피셜"),
             "IG_GLOBAL": ("IG", "글로벌"), "CRM": ("CRM", "CRM"),
             "인앱메시지": ("CRM", "인앱"), "KKO": ("CRM", "카카오"),
         }
@@ -634,8 +634,32 @@ try:
     except Exception as _e:
         _HEALTH.append(f"캠페인 트래커 히어로 로드 실패: {type(_e).__name__}")
 
-    # 매칭 키워드 = 26FW 별칭 ∪ 현재 운영 히어로 품목 (공백 제거 정규화)
-    _alias_norm = {a.replace(" ", "") for al in _hero_alias.values() for a in al}
+    # 히어로 라인업(히어로별 뷰·매칭용) = 대시보드 히어로(시즌有, 쿨탠다드·슬랙스·버뮤다 등) ∪ 26FW 기획 히어로.
+    #   별칭=풀네임+공백제거+한글 첫토큰+짧은형(쿨탠/힛탠). 'NEW' 등 비한글 토큰은 제외(오탐 방지).
+    _SHORT = {"쿨탠다드": ["쿨탠"], "힛탠다드": ["힛탠"]}
+
+    def _mk_aliases(name, base=()):
+        al = {name, name.replace(" ", "")} | set(base)
+        toks = name.split()
+        first = toks[0] if toks else ""
+        if len(first) >= 2 and _re2.search(r"[가-힣]", first):
+            al.add(first)
+            al.update(_SHORT.get(first, []))
+        return [a for a in sorted(al, key=len, reverse=True) if len(a.replace(" ", "")) >= 2]
+
+    _lineup = {}  # 정규화명 → {name, aliases, season}
+    for _dh in _DASH_HEROES:
+        _dn = _dh.get("name", "")
+        if _dn:
+            _lineup[_dn.replace(" ", "")] = {"name": _dn, "aliases": _mk_aliases(_dn), "season": _dh.get("season", "")}
+    for _hn, _al in _hero_alias.items():
+        _k = _hn.replace(" ", "")
+        if _k not in _lineup:
+            _lineup[_k] = {"name": _hn, "aliases": _mk_aliases(_hn, _al), "season": "26FW"}
+    hero_lineup = list(_lineup.values())
+
+    # 매칭 키워드 = 라인업 별칭 ∪ 현재 운영 히어로 품목 (공백 제거 정규화)
+    _alias_norm = {a.replace(" ", "") for h in hero_lineup for a in h["aliases"]}
     _alias_norm |= {h.replace(" ", "") for h in _cur_heroes if len(h.replace(" ", "")) >= 2}
     _alias_norm = list(_alias_norm)
 
@@ -651,15 +675,14 @@ try:
         x["hero_related"] = _hero_related(x)
 
     # 4) 윈도우 필터 + status 부여
-    #    '2)일정' 마스터 항목(source="일정")은 hero_related인 것만 유지 — 앱 히어로 중심 성격 유지,
-    #    비히어로 일반 콘텐츠(일반 IG/CRM) 노이즈 제외. 그 외 소스는 전부 유지(hero 토글로 가림).
+    #    ⚠ 예전엔 비히어로 일정(source="일정")을 영구 드롭 → 봄 히어로 시즌 종료 후 5/6월 비히어로
+    #    활동(여름상품·매장)이 통째로 사라져 '마케팅이 멈춘 듯' 보임. 이제 전량 유지하고
+    #    '히어로 관련만' 토글로만 가림(실제 활동 가시화). 비히어로 노이즈는 토글 ON이 기본이라 평소엔 숨김.
     _t = TODAY.isoformat()
     _n_master_raw = sum(1 for x in _items if x.get("source") == "일정")
-    _items = [x for x in _items
-              if not (x.get("source") == "일정" and not x["hero_related"])]
-    _n_master_kept = sum(1 for x in _items if x.get("source") == "일정")
+    _n_master_hero = sum(1 for x in _items if x.get("source") == "일정" and x["hero_related"])
     _items = sorted((x for x in _items if _back <= x["date"] <= _fwd), key=lambda x: x["date"])
-    print(f"2)일정 마스터 필터: {_n_master_raw}건 중 히어로관련 {_n_master_kept}건 유지")
+    print(f"2)일정 마스터: {_n_master_raw}건(히어로 {_n_master_hero}) 전량 유지 — 토글로 가림")
     for x in _items:
         x["status"] = "past" if x["date"] < _t else ("today" if x["date"] == _t else "future")
     imc_block = "const IMC = " + json.dumps({"as_of": _t, "items": _items}, ensure_ascii=False) + ";"
@@ -676,6 +699,14 @@ try:
         _HEALTH.append("HERO_IMC_ALIASES 교체 실패(앱 플레이스홀더 확인)")
     else:
         print(f"히어로 IMC 별칭 주입: {len(_hero_alias)}개")
+
+    # 히어로별 뷰용 라인업(이름/별칭/시즌) 주입
+    _lineup_block = "const HERO_LINEUP = " + json.dumps(hero_lineup, ensure_ascii=False) + ";"
+    html2, _nl = re.subn(r"const HERO_LINEUP = \[.*?\];", lambda _m: _lineup_block, html2, count=1, flags=re.DOTALL)
+    if _nl != 1:
+        _HEALTH.append("HERO_LINEUP 교체 실패(앱 플레이스홀더 확인)")
+    else:
+        print(f"히어로 라인업 주입: {len(hero_lineup)}종")
 except Exception as e:
     _HEALTH.append(f"IMC 주입 예외: {type(e).__name__}")
     print(f"[주의] IMC 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
