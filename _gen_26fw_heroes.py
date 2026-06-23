@@ -292,6 +292,7 @@ SNS_SHEET_ID = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"  # [무탠다드] 
 TRACKER_SHEET_ID = "1oz6zM-x2nqaDSAufWJ2a-QZh-1F6LQipttNkVKoFAn8"  # 캠페인 운영관리 트래커([히어로 PDP]에 운영 히어로 품목)
 GOAL_SHEET_ID = "1_tZDl-heZyWT4VQYIAT3ZHFeMoQlK2FSOpEMyZjqvm0"  # PLM 시트(사용자 소유), '히어로 마케팅 목표' 탭=마케팅 입력란
 GOAL_TAB = "히어로 마케팅 목표"
+MKT_SHEET_ID = "16jqlhmynIxXckdrpjICaDNajZd-xjnrl0x332qDCtzg"  # 마케팅팀 MKT calendar (캠페인 레벨/진행상황·에너지/바이럴)
 
 
 def _sns_table(tab, keys, last_col="AB", max_row=900, scan=20, optional=(), sid=None):
@@ -471,6 +472,120 @@ try:
     except Exception as _es:
         _HEALTH.append(f"2)일정 마스터 로드 예외: {type(_es).__name__}")
         print(f"[주의] 2)일정 마스터 로드 실패(기존 소스만 유지): {type(_es).__name__}: {_es}")
+
+    # 2.7) 마케팅팀 MKT calendar (별개 파일) — ①캠페인 레벨(S/A/B)·진행상황 ②에너지/바이럴 액션.
+    #   레벨/진행상황은 '26년 캠페인 통합 관리' 표(월별·릴리즈/촬영 일자), 에너지/바이럴은 메인 그리드 레인.
+    #   기존 캠페인/기획전 항목과 제목 매칭되면 레벨/상태만 보강(중복 추가 방지), 아니면 신규 추가.
+    def _mkt(rng):
+        try:
+            return sheets.spreadsheets().values().get(
+                spreadsheetId=MKT_SHEET_ID, range=rng,
+                valueRenderOption="FORMATTED_VALUE").execute().get("values", [])
+        except Exception:
+            return []
+
+    def _mdate(s):       # "2026. 1. 14." / "2026-02-24" → iso
+        m = _re2.findall(r"\d+", str(s or ""))
+        if len(m) >= 3 and 2025 <= int(m[0]) <= 2027:
+            try:
+                return _dt.date(int(m[0]), int(m[1]), int(m[2])).isoformat()
+            except ValueError:
+                return None
+        return None
+
+    try:
+        _norm = lambda s: _re2.sub(r"\s+", "", str(s or ""))
+        # ① 캠페인 통합 관리 → 레벨/진행상황(+담당·일자). 헤더: 월|구분|주요이슈|...|레벨|마케팅|...|진행상황|촬영타겟일|에셋전달일|릴리즈일자
+        _mc = _mkt("'26년 캠페인 통합 관리 시트'!A23:AQ90")
+        _mhi = next((i for i, r in enumerate(_mc) if any("주요 이슈" in str(c) for c in r)), -1)
+        _n_camp = _n_enrich = 0
+        if _mhi >= 0:
+            _mh = _mc[_mhi]
+
+            def _mcol(*names):
+                return next((j for j, c in enumerate(_mh) if any(n in str(c) for n in names)), None)
+
+            _C = {k: _mcol(*v) for k, v in {"month": ["월"], "gubun": ["구분"], "issue": ["주요 이슈"],
+                  "lvl": ["레벨"], "mkt": ["마케팅"], "status": ["진행 상황"],
+                  "shoot": ["촬영 타겟"], "rel": ["릴리즈"]}.items()}
+
+            def _gc(r, k):
+                j = _C.get(k)
+                return str(r[j]).strip() if j is not None and j < len(r) and r[j] is not None else ""
+
+            _exist = [x for x in _items if x["type"] in ("캠페인", "기획전")]
+            _cur_m = 0
+            for r in _mc[_mhi + 1:]:
+                _mm = _re2.match(r"(\d{1,2})", _gc(r, "month"))
+                if _mm:
+                    _cur_m = int(_mm.group(1))
+                _issue = _gc(r, "issue")
+                if not _issue or not _cur_m:
+                    continue
+                _lvl = _gc(r, "lvl").upper()[:1]
+                _lvl = _lvl if _lvl in ("S", "A", "B") else ""
+                _mst = _gc(r, "status")
+                _date = _mdate(_gc(r, "rel")) or _mdate(_gc(r, "shoot"))
+                _approx = not _date
+                if _approx:
+                    try:
+                        _date = _dt.date(2026, _cur_m, 1).isoformat()
+                    except ValueError:
+                        continue
+                # 기존 캠페인/기획전과 제목 매칭(정규화 포함관계, 짧은 쪽 ≥4자)되면 보강
+                _ni = _norm(_issue)
+                _hit = next((x for x in _exist if len(min(_ni, _norm(x["title"]), key=len)) >= 4
+                             and (_ni in _norm(x["title"]) or _norm(x["title"]) in _ni)), None)
+                if _hit:
+                    if _lvl:
+                        _hit["level"] = _lvl
+                    if _mst:
+                        _hit["mstatus"] = _mst
+                    _n_enrich += 1
+                    continue
+                if _add("캠페인", "캠페인", _date, _issue, _gc(r, "gubun"), _gc(r, "mkt"),
+                        level=_lvl, mstatus=_mst, source="MKT", approx=_approx):
+                    _n_camp += 1
+
+        # ② 메인 캘린더 그리드 에너지/바이럴 레인 (R3 월·R4 일자 → 컬럼별 날짜 매핑, 2026년)
+        _grid = _mkt("'26년 MKT 캘린더'!A1:NZ70")
+        _n_energy = 0
+        if _grid:
+            _dri = max(range(min(8, len(_grid))),
+                       key=lambda i: sum(1 for c in _grid[i] if str(c).strip().isdigit()))
+            _drow = _grid[_dri]
+            _mrow = _grid[_dri - 1] if _dri > 0 else []
+            _c2d, _cm2 = {}, None
+            for j in range(len(_drow)):
+                _ml = str(_mrow[j]).strip() if j < len(_mrow) else ""
+                _mq = _re2.match(r"(\d{1,2})\s*월", _ml)
+                if _mq:
+                    _cm2 = int(_mq.group(1))
+                _dv = str(_drow[j]).strip()
+                if _cm2 and _dv.isdigit() and 1 <= int(_dv) <= 31:
+                    try:
+                        _c2d[j] = _dt.date(2026, _cm2, int(_dv)).isoformat()
+                    except ValueError:
+                        pass
+            _ELANES = {"릴스": "릴스·리포터즈", "리포터즈": "릴스·리포터즈", "큐레이터": "큐레이터·스냅",
+                       "스냅": "큐레이터·스냅", "인플루언서": "인플루언서", "유튜버": "인플루언서", "바이럴": "바이럴"}
+            for r in _grid:
+                _lab = (str(r[0]).strip() if len(r) > 0 and r[0] else "") + " " \
+                       + (str(r[1]).strip() if len(r) > 1 and r[1] else "")
+                _lane = next((v for k, v in _ELANES.items() if k in _lab), None)
+                if not _lane:
+                    continue
+                for j, _iso in _c2d.items():
+                    _v = str(r[j]).strip() if j < len(r) and r[j] is not None else ""
+                    if len(_v) > 2:
+                        if _add("에너지", "에너지", _iso, _v, _lane, source="MKT"):
+                            _n_energy += 1
+        print(f"IMC MKT calendar 로드: 캠페인 신규 {_n_camp}·보강 {_n_enrich}건 + 에너지/바이럴 {_n_energy}건")
+        if _n_camp == 0 and _n_enrich == 0 and _n_energy == 0:
+            _HEALTH.append("MKT calendar 0건 — 구조변경/권한 확인")
+    except Exception as _emkt:
+        _HEALTH.append(f"MKT calendar 로드 예외: {type(_emkt).__name__}")
+        print(f"[주의] MKT calendar 로드 실패(기존 소스만 유지): {type(_emkt).__name__}: {_emkt}")
 
     # 3) 히어로 별칭 자동생성(#4) + 각 항목 hero_related 태깅
     #    판별: 발매(정의상 히어로) / 제목에 '히어로' 명시(2)일정의 '히어로_' 프리픽스 등) / 26FW 제품명 키워드.
