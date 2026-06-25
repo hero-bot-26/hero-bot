@@ -276,7 +276,7 @@ html2, nsa = re.subn(r"const SALES_AS_OF = '[^']*';",
 nd = 0
 _DASH_HEROES = []   # IMC 히어로 시즌 판정용(대시보드 STY→시즌 큐레이션값)
 try:
-    from soo.hero_ops.sales_rollup import build_dashboard, SALES_SHEET_ID
+    from soo.hero_ops.sales_rollup import build_dashboard, SALES_SHEET_ID, build_style_to_hero, read_tab
     dash = build_dashboard(sheets, drive, SALES_SHEET_ID, TODAY.isoformat())
     _DASH_HEROES = dash.get("heroes", [])
     dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
@@ -789,8 +789,8 @@ try:
 
     highlights = sorted(tops_off + tops_wm, key=lambda x: -x["views"])[:10]
 
-    # 히어로별 PMKT 성과 — 캠페인 트래커 [히어로 PDP](PDP 조회) + [히어로 Convs](거래) 품목별 집계.
-    # 주차 컬럼이 반복돼 헤더명이 여러 번 나오므로 '모든 매칭 컬럼' 합산. 그룹 집계행(품목 有·브랜드 空)만 사용.
+    # 시트 읽기 헬퍼(_raw/_g2/_hdr_idx) — 아래 '히어로 마케팅 목표' 로드 등에서 사용.
+    # ★히어로별 PMKT 성과는 더 이상 캠페인 트래커가 아니라 Databricks 'PMKT주차'/'PMKT경로'(team.sales.pdp_path_daily_summary_v 기반)에서 로드(하단 hero_perf 블록).
     def _raw(tab, sid, last_col="BZ", max_row=400):
         try:
             return sheets.spreadsheets().values().get(
@@ -813,72 +813,60 @@ try:
         return [j for j, c in enumerate(hdr) if kw in str(c or "")]
 
     hero_perf = {}
-    _hero_stys = {}   # 히어로 품목 → STY_No 베이스(접미사 제거) 집합. 시즌 판정용.
-    _wk_labels = []   # 주차별 추세용 라벨(W2..W10), [히어로 Convs] 실거래액 컬럼과 1:1
-    _pdp_wk_labels = []   # 주차별 추세용 라벨, [히어로 PDP] 실 PDP 조회 컬럼과 1:1
+    _wk_labels = []        # 주차 추세 라벨(글로벌 주차축), 모든 히어로 wk 배열과 1:1
+    _pdp_wk_labels = []
+    _PERIODS = ["YTD", "MTD", "WEEK"]   # PMKT기간 탭의 period 값. 프론트 토글과 1:1.
+
+    def _num(v):   # read_tab은 UNFORMATTED_VALUE라 숫자를 실제 number로 줌 → float 직접(★_n은 float ".0"를 ×10로 깨뜨림)
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
     try:
-        _pr = _raw("[히어로 PDP]", TRACKER_SHEET_ID)
-        _hi = _hdr_idx(_pr, ["HERO 품목", "실 PDP 조회"])
-        if _hi >= 0:
-            _h = _pr[_hi]
-            _ji = next((j for j, c in enumerate(_h) if "HERO 품목" in str(c)), 1)
-            _jb = next((j for j, c in enumerate(_h) if "브랜드" in str(c)), 2)
-            _jsty = next((j for j, c in enumerate(_h) if "STY" in str(c)), 3)
-            _cr, _ca = _cols_with(_h, "실 PDP 조회"), _cols_with(_h, "광고 PDP 조회")
-            # 주차 라벨 행(헤더 위 4행 내, 'W2 (날짜~)' 형태) → '실 PDP 조회' 컬럼은 이미 주차 순서
-            _pwrow = next((_pr[_ri] for _ri in range(max(0, _hi - 4), _hi)
-                           if any(_re3.match(r"\s*W\d+", str(c or "")) for c in _pr[_ri])), None)
-            _pdp_wk_labels = []
-            if _pwrow is not None:
-                _panch = sorted((j, _re3.match(r"\s*(W\d+)", str(c)).group(1))
-                                for j, c in enumerate(_pwrow) if _re3.match(r"\s*W\d+", str(c or "")))
-                for j in _cr:
-                    _pdp_wk_labels.append(next((al for ac, al in reversed(_panch) if ac <= j), ""))
-            else:
-                _pdp_wk_labels = [f"W{i + 2}" for i in range(len(_cr))]
-            for r in _pr[_hi + 1:]:
-                it = _g2(r, _ji)
-                if not it or it.startswith("무신사 스탠다드"):
-                    continue
-                # STY는 상세행(브랜드 有)에 있음 — 브랜드 필터 전에 수집(시즌 판정용).
-                _sty = _g2(r, _jsty).split("-")[0].strip()              # 'MMEWS5Z01-SB' → 'MMEWS5Z01'
-                if _sty:
-                    _hero_stys.setdefault(it, set()).add(_sty)
-                if _g2(r, _jb):   # 그룹 집계행(품목 有·브랜드 空)만 PDP 합산
-                    continue
-                hero_perf.setdefault(it, {})
-                hero_perf[it]["pdp_real"] = sum(_n(_g2(r, j)) for j in _cr)
-                hero_perf[it]["pdp_ad"] = sum(_n(_g2(r, j)) for j in _ca)
-                hero_perf[it]["pdp_wk"] = [_n(_g2(r, j)) for j in _cr]   # 주차별 실 PDP 조회(추세)
-        _cv = _raw("[히어로 Convs]", TRACKER_SHEET_ID)
-        _hi = _hdr_idx(_cv, ["HERO 품목", "실 거래액"])
-        if _hi >= 0:
-            _h = _cv[_hi]
-            _ji = next((j for j, c in enumerate(_h) if "HERO 품목" in str(c)), 1)
-            _jb = next((j for j, c in enumerate(_h) if "브랜드" in str(c)), 2)
-            _cc, _cg = _cols_with(_h, "실 거래수"), _cols_with(_h, "실 거래액")
-            # 광고 기여 거래액 = 바로 "거래액"(PMKT)+"거래액"(상품광고) 컬럼. "실 거래액"은 정확일치로 제외.
-            _cag = [j for j, c in enumerate(_h) if str(c or "").strip() == "거래액"]
-            # 주차 라벨 행(헤더 위 4행 내, 'W2 (날짜~)' 형태) → 실거래액 컬럼별 주차명 매핑
-            _wrow = next((_cv[_ri] for _ri in range(max(0, _hi - 4), _hi)
-                          if any(_re3.match(r"\s*W\d+", str(c or "")) for c in _cv[_ri])), None)
-            if _wrow is not None:
-                _anch = sorted((j, _re3.match(r"\s*(W\d+)", str(c)).group(1))
-                               for j, c in enumerate(_wrow) if _re3.match(r"\s*W\d+", str(c or "")))
-                for j in _cg:
-                    _lab = next((al for ac, al in reversed(_anch) if ac <= j), "")
-                    _wk_labels.append(_lab)
-            else:
-                _wk_labels = [f"W{i + 2}" for i in range(len(_cg))]
-            for r in _cv[_hi + 1:]:
-                it = _g2(r, _ji)
-                if not it or it.startswith("무신사 스탠다드") or _g2(r, _jb):
-                    continue
-                hero_perf.setdefault(it, {})
-                hero_perf[it]["conv"] = sum(_n(_g2(r, j)) for j in _cc)
-                hero_perf[it]["gmv"] = sum(_n(_g2(r, j)) for j in _cg)
-                hero_perf[it]["ad_gmv"] = sum(_n(_g2(r, j)) for j in _cag)
-                hero_perf[it]["wk"] = [_n(_g2(r, j)) for j in _cg]   # 주차별 실거래액(추세)
+        _s2h, _hmeta, _ = build_style_to_hero(sheets)   # base style → 히어로(series), hero_meta[series].season
+
+        def _hero_of(style):
+            return _s2h.get(str(style or "").split("-")[0].strip())
+
+        # (1) PMKT기간 — goods×기간(YTD/MTD/WEEK) → 히어로별 period 스냅샷.
+        #     거래액=gmv · PDP조회=pdp_uv · 전환수=buy_uv(구매UV) · 마케팅기여=mkt_gmv/mkt_pdp_uv(캠페인기획전+외부유입).
+        for r in read_tab(sheets, SALES_SHEET_ID, "PMKT기간"):
+            hero = _hero_of(r.get("style_no"))
+            if not hero:
+                continue
+            per = str(r.get("period") or "").strip()
+            if per not in _PERIODS:
+                continue
+            P = hero_perf.setdefault(hero, {"periods": {}, "season": (_hmeta.get(hero) or {}).get("season") or ""})
+            d = P["periods"].setdefault(per, {"gmv": 0, "pdp_real": 0, "conv": 0, "ad_gmv": 0, "pdp_ad": 0})
+            d["gmv"] += round(_num(r.get("gmv")))
+            d["pdp_real"] += round(_num(r.get("pdp_uv")))
+            d["conv"] += round(_num(r.get("buy_uv")))
+            d["ad_gmv"] += round(_num(r.get("mkt_gmv")))
+            d["pdp_ad"] += round(_num(r.get("mkt_pdp_uv")))
+        # (2) PMKT주차 — goods×ISO주차 → 히어로별 주차 시계열(거래액/PDP 스파크라인, 기간 무관)
+        _wk_keys, _hero_wk, _wk_label = set(), {}, {}
+        for r in read_tab(sheets, SALES_SHEET_ID, "PMKT주차"):
+            hero = _hero_of(r.get("style_no"))
+            if not hero:
+                continue
+            try:
+                _key = (int(_num(r.get("yyyy"))), int(_num(r.get("week_no"))))
+            except (TypeError, ValueError):
+                continue
+            _wk_keys.add(_key)
+            W = _hero_wk.setdefault(hero, {}).setdefault(_key, {"gmv": 0, "pdp": 0})
+            W["gmv"] += round(_num(r.get("gmv"))); W["pdp"] += round(_num(r.get("pdp_uv")))
+            if _key not in _wk_label:
+                _ws = str(r.get("week_start") or "")[5:].replace("-", "/")     # 'YYYY-MM-DD'→'MM/DD'
+                _wk_label[_key] = f"W{_key[1]}" + (f" ({_ws})" if _ws else "")
+        _wk_axis = sorted(_wk_keys)
+        _wk_labels = [_wk_label.get(k, f"W{k[1]}") for k in _wk_axis]
+        _pdp_wk_labels = _wk_labels
+        for hero, P in hero_perf.items():
+            _hw = _hero_wk.get(hero, {})
+            P["wk"] = [_hw.get(k, {}).get("gmv", 0) for k in _wk_axis]
+            P["pdp_wk"] = [_hw.get(k, {}).get("pdp", 0) for k in _wk_axis]
     except Exception as _eh:
         _HEALTH.append(f"히어로 PMKT 성과 로드 실패: {type(_eh).__name__}")
 
@@ -902,37 +890,16 @@ try:
     except Exception as _eg:
         _HEALTH.append(f"히어로 마케팅 목표 로드 실패: {type(_eg).__name__}")
 
-    # 히어로 시즌 판정 — 새 시트/하드코딩 없이 기존 데이터로 추론(트래커엔 시즌 컬럼 없음):
-    #   ① 트래커 STY가 대시보드 히어로 STY와 겹치면 → 대시보드의 큐레이션 시즌(예: 26SS)
-    #   ② 아니면 26FW PLM 마스터(plm)에 있으면 → 26FW
-    #   ③ 둘 다 아니면 → 직전 FW(25FW). 26FW 마스터에 없는 이전 시즌 캐리오버(예: 경량 패딩).
-    _dash_sty2season = {s.get("style"): h.get("season")
-                        for h in _DASH_HEROES for s in (h.get("stys") or []) if s.get("style")}
-    _dash_name2season = {h.get("name"): h.get("season") for h in _DASH_HEROES if h.get("season")}
-
-    # 진짜 현재/예정 히어로는 전부 대시보드에 시즌과 함께 있음(26SS·26FW 큐레이션).
-    # ⚠ PLM '데이터' 시트의 시즌 컬럼은 전 행 '26FW' 균일(시트 스코프 라벨일 뿐 제품 시즌 아님)
-    #   + 발매 2025-02짜리 캐리오버(예: 신세틱 스웨이드)도 들어있음 → "마스터에 있으면 26FW"는 오탐.
-    #   따라서 대시보드에 없으면 = 이전 시즌(운영 종료)로 처리.
-    def _resolve_season(name):
-        stys = _hero_stys.get(name, set())
-        for s in stys:                                  # ① STY가 대시보드 히어로 STY와 겹치면 그 시즌
-            if s in _dash_sty2season and _dash_sty2season[s]:
-                return _dash_sty2season[s]
-        if name in _dash_name2season:                   # ② 이름이 대시보드 히어로와 일치(STY 없는 경우, 예: 윈드브레이커)
-            return _dash_name2season[name]
-        # ③ 대시보드에 없음 = 현재 운영 아님. 정확한 시즌은 신뢰할 소스 없음(PLM 시즌컬럼 균일·발매일 캐리오버)
-        #    → 시즌 추측 대신 '판매종료' 딱지(사용자 결정 2026-06-22). 예: 경량패딩·신세틱.
-        return "판매종료"
-
+    # 히어로 시즌 — HERO STY 레지스트리의 시즌 컬럼(build_style_to_hero → hero_meta[].season)을 그대로 사용.
+    #   위 PMKT 롤업에서 P["season"]에 이미 주입됨. 트래커 시절의 추론(_resolve_season) 제거:
+    #   레지스트리에 시즌이 네이티브로 있어 STY 겹침추론·PLM마스터폴백·'판매종료' 오표기가 전부 불필요.
     hero_list = sorted(
-        [{"name": k, "pdp_real": v.get("pdp_real", 0), "pdp_ad": v.get("pdp_ad", 0),
-          "gmv": v.get("gmv", 0), "conv": v.get("conv", 0), "ad_gmv": v.get("ad_gmv", 0),
+        [{"name": k, "periods": v.get("periods", {}),
           "wk": v.get("wk", []), "pdp_wk": v.get("pdp_wk", []),
-          "season": _resolve_season(k),
+          "season": v.get("season", ""),
           "goal": _goals.get(k, {}).get("gmv", 0),
           "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in hero_perf.items()],
-        key=lambda x: -x["gmv"])
+        key=lambda x: -(x["periods"].get("YTD", {}).get("gmv", 0)))
     if not hero_list:
         _HEALTH.append("히어로 PMKT 성과 0건 — 트래커 구조 확인")
     print("IMC 히어로 시즌: " + ", ".join(f"{h['name']}={h['season']}" for h in hero_list))
