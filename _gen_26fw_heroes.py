@@ -855,8 +855,9 @@ try:
             except (TypeError, ValueError):
                 continue
             _wk_keys.add(_key)
-            W = _hero_wk.setdefault(hero, {}).setdefault(_key, {"gmv": 0, "pdp": 0})
+            W = _hero_wk.setdefault(hero, {}).setdefault(_key, {"gmv": 0, "pdp": 0, "mkt": 0})
             W["gmv"] += round(_num(r.get("gmv"))); W["pdp"] += round(_num(r.get("pdp_uv")))
+            W["mkt"] += round(_num(r.get("mkt_gmv")))    # 주차별 마케팅기여 거래액(캠페인/기획전+외부유입) → 프론트 마케팅기여율 추세
             if _key not in _wk_label:
                 _ws = str(r.get("week_start") or "")[5:].replace("-", "/")     # 'YYYY-MM-DD'→'MM/DD'
                 _wk_label[_key] = f"W{_key[1]}" + (f" ({_ws})" if _ws else "")
@@ -867,6 +868,7 @@ try:
             _hw = _hero_wk.get(hero, {})
             P["wk"] = [_hw.get(k, {}).get("gmv", 0) for k in _wk_axis]
             P["pdp_wk"] = [_hw.get(k, {}).get("pdp", 0) for k in _wk_axis]
+            P["mkt_wk"] = [_hw.get(k, {}).get("mkt", 0) for k in _wk_axis]
     except Exception as _eh:
         _HEALTH.append(f"히어로 PMKT 성과 로드 실패: {type(_eh).__name__}")
 
@@ -896,6 +898,7 @@ try:
     hero_list = sorted(
         [{"name": k, "periods": v.get("periods", {}),
           "wk": v.get("wk", []), "pdp_wk": v.get("pdp_wk", []),
+          "mkt_wk": v.get("mkt_wk", []),
           "season": v.get("season", ""),
           "goal": _goals.get(k, {}).get("gmv", 0),
           "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in hero_perf.items()],
