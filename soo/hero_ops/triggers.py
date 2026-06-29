@@ -233,6 +233,36 @@ def load_quantity_inputs(sheets, sheet_id: str = DBX_SHEET_ID) -> dict:
     return out
 
 
+GRADE_TAB = "등급"               # SA 시트(DBX_SHEET_ID): season, hero, grade, by, at — append 순서라 마지막=최신
+_GRADE_KEYS = {"S", "A", "SA", "U", "E"}   # 앱 그룹키(=heroGroupKey). route.js는 S/A/SA/E만 기록
+
+
+def load_grade_inputs(sheets, sheet_id: str = DBX_SHEET_ID) -> dict:
+    """등급 탭 → {season: {정규화히어로명: 그룹키}}. 같은 (season,hero) 중복이면 최신(마지막) 우선.
+
+    app.html HERO_GRADE_SAVED 와 동일 형태. 키=공백제거 정규화명(JS _gradeNorm: /\\s+/g→'')과 맞춤.
+    그룹키 ∈ {S, A, SA, U, E}. (담당자 웹 기록의 영속 반영 — 1차수량과 동일 패턴.)
+    """
+    try:
+        res = sheets.spreadsheets().values().get(
+            spreadsheetId=sheet_id, range=f"{GRADE_TAB}!A2:E").execute()
+    except Exception:
+        return {}
+    out: dict = {}
+    for r in res.get("values", []):
+        if len(r) < 3:
+            continue
+        season = str(r[0]).strip()
+        hero = re.sub(r"\s+", "", str(r[1]))      # 공백제거 정규화 (JS _gradeNorm과 동일)
+        grade = str(r[2]).strip().upper()
+        if grade == "S/A":
+            grade = "SA"
+        if not season or not hero or grade not in _GRADE_KEYS:
+            continue
+        out.setdefault(season, {})[hero] = grade
+    return out
+
+
 def done_floor(rec) -> int:
     """이 단계 이하는 날짜 없어도 완료 간주 (생성기 규칙 A/B/C)."""
     if rec is None:
