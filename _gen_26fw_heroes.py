@@ -835,23 +835,35 @@ try:
         except (TypeError, ValueError):
             return 0.0
     try:
-        _s2h, _hmeta, _ = build_style_to_hero(sheets)   # base style → 히어로(series), hero_meta[series].season
+        # ★26SS 히어로 매핑 — MD 상품MAP(★MSTRD_26SS 운영계획) SKU탭 스냅샷(신품번 style_no → HERO, 4종 제외).
+        #   build_style_to_hero(FW HERO STY 레지스트리)를 대체. 26FW는 이 파일을 교체/연결하면 됨(일회성 스냅샷).
+        _sty_map = json.load(open(ROOT / "hero_sty_26ss.json", encoding="utf-8"))
+        _s2h = _sty_map["style_to_hero"]
+        _HERO_SEASON = _sty_map.get("season", "26SS")
 
         def _hero_of(style):
             return _s2h.get(str(style or "").split("-")[0].strip())
 
-        # (1) PMKT기간 — goods×기간(YTD/MTD/WEEK) → 히어로별 period 스냅샷.
-        #     거래액=gmv · PDP조회=pdp_uv · 전환수=buy_uv(구매UV) · 마케팅기여=mkt_gmv/mkt_pdp_uv(캠페인기획전+외부유입).
+        def _perd(hero, per):
+            P = hero_perf.setdefault(hero, {"periods": {}, "season": _HERO_SEASON})
+            return P["periods"].setdefault(per, {"gmv": 0, "pmkt_gmv": 0, "pdp_real": 0, "conv": 0, "ad_gmv": 0, "pdp_ad": 0})
+
+        # (1a) 성과 GMV = 실적 누판(gmv=실판매가) — 매출 YTD/MTD/WEEK 탭을 신품번→히어로로 롤업.
+        #      PMKT의 gmv는 직접경로 어트리뷰션이라 실적보다 작음 → 헤드라인 GMV엔 누판을 씀.
+        for _per in _PERIODS:
+            for r in read_tab(sheets, SALES_SHEET_ID, _per):
+                hero = _hero_of(r.get("style_no"))
+                if hero:
+                    _perd(hero, _per)["gmv"] += round(_num(r.get("gmv")))
+        # (1b) PMKT기간 — 퍼널 지표(전환=buy_uv/pdp_uv · 마케팅기여=mkt_gmv/mkt_pdp_uv, 캠페인기획전+외부유입)
+        #      + 마케팅기여율 분모용 pmkt_gmv(직접경로 GMV). 헤드라인 GMV는 위 누판을 쓰므로 여기 gmv는 pmkt_gmv로만.
         for r in read_tab(sheets, SALES_SHEET_ID, "PMKT기간"):
             hero = _hero_of(r.get("style_no"))
-            if not hero:
-                continue
             per = str(r.get("period") or "").strip()
-            if per not in _PERIODS:
+            if not hero or per not in _PERIODS:
                 continue
-            P = hero_perf.setdefault(hero, {"periods": {}, "season": (_hmeta.get(hero) or {}).get("season") or ""})
-            d = P["periods"].setdefault(per, {"gmv": 0, "pdp_real": 0, "conv": 0, "ad_gmv": 0, "pdp_ad": 0})
-            d["gmv"] += round(_num(r.get("gmv")))
+            d = _perd(hero, per)
+            d["pmkt_gmv"] += round(_num(r.get("gmv")))
             d["pdp_real"] += round(_num(r.get("pdp_uv")))
             d["conv"] += round(_num(r.get("buy_uv")))
             d["ad_gmv"] += round(_num(r.get("mkt_gmv")))
@@ -904,9 +916,8 @@ try:
     except Exception as _eg:
         _HEALTH.append(f"히어로 마케팅 목표 로드 실패: {type(_eg).__name__}")
 
-    # 히어로 시즌 — HERO STY 레지스트리의 시즌 컬럼(build_style_to_hero → hero_meta[].season)을 그대로 사용.
-    #   위 PMKT 롤업에서 P["season"]에 이미 주입됨. 트래커 시절의 추론(_resolve_season) 제거:
-    #   레지스트리에 시즌이 네이티브로 있어 STY 겹침추론·PLM마스터폴백·'판매종료' 오표기가 전부 불필요.
+    # 히어로 시즌 — 26SS 스냅샷(hero_sty_26ss.json)의 season을 전 히어로에 부여(위 _perd에서 P["season"]=_HERO_SEASON).
+    #   26FW 전환 시엔 스냅샷 파일만 교체(season·style_to_hero).
     hero_list = sorted(
         [{"name": k, "periods": v.get("periods", {}),
           "wk": v.get("wk", []), "pdp_wk": v.get("pdp_wk", []),
