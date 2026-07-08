@@ -1011,9 +1011,96 @@ try:
 except Exception as e:
     print(f"[주의] 27SS 진척 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
+# ── 26FW 발매센터 데이터 주입 (const LAUNCH_26FW) ──
+# 준비(상품기획 14단계 완료율=heroes) + 발매(★MSTRD_26FW 상품MAP 발매스케줄 품번→시리즈→발매일)
+#   + 판매(IMC_PERF 현재 누판 YTD, 이름정규화 조인). 상태=발매일 vs TODAY 자동전환.
+nlaunch = 0
+try:
+    _26FW_MAP_ID = "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"   # ★MSTRD_26FW 상품MAP
+    _FW_GRADE = {"라이트다운": "S", "힛탠다드": "S", "커브드팬츠": "S",
+                 "웜 팬츠": "A", "빅토리아 울": "A", "그리드/메시 플리스": "A", "에센셜 플리스": "A", "리커버리": "A",
+                 "헤비다운": "E", "슬랙스": "E", "데님팬츠": "E", "스웨트팬츠": "E", "벨트": "E", "양말": "E", "심리스 브라": "E"}
+    _FW_ALIAS = {"그리드/알파 플리스": "그리드/메시 플리스"}   # 발매스케줄 표기 → 표준 히어로명
+    _FW_MD_PLANNING = {"리커버리"}                          # 발매일 미정 중 MD 기획진행(사용자 명시); 그 외 무일정=캐리오버
+    def _fw_norm(s): return re.sub(r"\s+", "", str(s or ""))
+    def _fw_date(s):
+        m = re.match(r"\s*(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})", str(s or ""))
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+    _sch = sheets.spreadsheets().values().get(
+        spreadsheetId=_26FW_MAP_ID, range="'발매스케줄'!A9:R600").execute().get("values", [])
+    _fw_agg = {n: {"dates": [], "new": 0, "carry": 0, "styles": set()} for n in _FW_GRADE}
+    for r in _sch:
+        if len(r) < 15:
+            continue
+        ser = _FW_ALIAS.get(str(r[4]).strip(), str(r[4]).strip())
+        if ser not in _FW_GRADE:
+            continue
+        a = _fw_agg[ser]; season = str(r[6]).strip(); nc = str(r[5]).strip(); d = _fw_date(r[14])
+        if season == "26FW":
+            a["styles"].add(str(r[3]).strip())
+            if "신규" in nc: a["new"] += 1
+            elif "캐리오버" in nc: a["carry"] += 1
+            if d: a["dates"].append(d)
+
+    # 준비 완료율 (heroes 매트릭스, 이름정규화 조인)
+    _prep = {_fw_norm(h["name"]): h for h in heroes}
+    # 판매 (IMC_PERF hero_list, 현재 누판 YTD)
+    _perf_heroes = globals().get("hero_list", []) or []
+    _sales = {_fw_norm(h["name"]): h for h in _perf_heroes}
+
+    _fw_list = []
+    for name, grade in _FW_GRADE.items():
+        a = _fw_agg[name]; fw = sorted(a["dates"]); first = fw[0] if fw else None
+        if not first:
+            status = "MD기획중" if name in _FW_MD_PLANNING else "캐리오버"
+        else:
+            dd = (first - TODAY).days
+            status = "판매중" if dd <= 0 else ("임박" if dd <= 21 else "준비")
+        h = _prep.get(_fw_norm(name))
+        prep_done = sum(1 for s in h["stages"] if s == "done") if h else 0
+        prep_prog = sum(1 for s in h["stages"] if s == "progress") if h else 0
+        prep_total = len(h["stages"]) if h else 14
+        sp = _sales.get(_fw_norm(name))
+        sales = None
+        if sp:
+            _y = (sp.get("periods") or {}).get("YTD") or {}
+            _g = _y.get("gmv") or 0
+            if _g:
+                _pdp = _y.get("pdp_real") or 0        # PDP 조회 UV
+                _buy = _y.get("conv") or 0            # 구매 UV
+                _pmkt = _y.get("pmkt_gmv") or 0       # 직접경로 거래액(마케팅기여 분모)
+                sales = {"gmv": _g,
+                         # 전환율 = 구매UV/PDP조회UV (실적·퍼널 정의 통일)
+                         "conv": round(_buy / _pdp * 100, 1) if _pdp else None,
+                         # 마케팅기여 = 마케팅 유입(캠페인/기획전+외부) 거래액 / PMKT 직접경로 거래액
+                         "mkt": round(_y.get("ad_gmv", 0) / _pmkt * 100) if _pmkt else None}
+        _fw_list.append({
+            "name": name, "grade": grade, "status": status,
+            "launch": first.isoformat() if first else None,
+            "launch_last": fw[-1].isoformat() if fw else None,
+            "dday": (first - TODAY).days if first else None,
+            "sku_new": a["new"], "sku_carry": a["carry"], "style_count": len(a["styles"]),
+            "prep_done": prep_done, "prep_prog": prep_prog, "prep_total": prep_total,
+            "prep_pct": round(prep_done / prep_total * 100) if prep_total else 0,
+            "sales": sales,
+        })
+    # 정렬: 발매일 asc(무일정 뒤) → 무일정은 MD기획중 먼저 → 등급
+    _grk = {"S": 0, "A": 1, "E": 2}
+    _fw_list.sort(key=lambda x: (x["launch"] or "9999", 0 if x["status"] == "MD기획중" else 1, _grk.get(x["grade"], 9)))
+    launch_obj = {"as_of": TODAY.isoformat(), "heroes": _fw_list}
+    launch_block = "const LAUNCH_26FW = " + json.dumps(launch_obj, ensure_ascii=False) + ";"
+    html2, nlaunch = re.subn(r"const LAUNCH_26FW = \{.*?\};", lambda _m: launch_block, html2, count=1, flags=re.DOTALL)
+    _nsold = sum(1 for x in _fw_list if x["sales"])
+    print(f"LAUNCH_26FW 주입: {len(_fw_list)}종 (판매중 {sum(x['status']=='판매중' for x in _fw_list)}·임박 {sum(x['status']=='임박' for x in _fw_list)}·준비 {sum(x['status']=='준비' for x in _fw_list)}·MD기획중 {sum(x['status']=='MD기획중' for x in _fw_list)}·캐리오버 {sum(x['status']=='캐리오버' for x in _fw_list)}, 누판연동 {_nsold}종)")
+    if nlaunch != 1:
+        _HEALTH.append("LAUNCH_26FW 교체 실패(앱 플레이스홀더 확인)")
+except Exception as e:
+    print(f"[주의] LAUNCH_26FW 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
+
 HTML.write_text(html2, encoding="utf-8")
 
-print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27})")
+print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch})")
 for h in heroes:
     done = sum(1 for s in h["stages"] if s == "done")
     prog = sum(1 for s in h["stages"] if s == "progress")
