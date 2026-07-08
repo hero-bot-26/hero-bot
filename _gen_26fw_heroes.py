@@ -511,7 +511,7 @@ try:
         # ① 캠페인 통합 관리 → 레벨/진행상황(+담당·일자). 헤더: 월|구분|주요이슈|...|레벨|마케팅|...|진행상황|촬영타겟일|에셋전달일|릴리즈일자
         _mc = _mkt("'26년 캠페인 통합 관리 시트'!A23:AQ90")
         _mhi = next((i for i, r in enumerate(_mc) if any("주요 이슈" in str(c) for c in r)), -1)
-        _n_camp = _n_enrich = 0
+        _n_camp = _n_enrich = _n_plan = 0
         if _mhi >= 0:
             _mh = _mc[_mhi]
 
@@ -539,6 +539,9 @@ try:
                 _lvl = _gc(r, "lvl").upper()[:1]
                 _lvl = _lvl if _lvl in ("S", "A", "B") else ""
                 _mst = _gc(r, "status")
+                if "기획" in _mst:   # '기획중'=아직 확정 안 된 내부 기획 업무 → IMC에 반영하지 않음(신규추가·보강 모두 스킵)
+                    _n_plan += 1
+                    continue
                 _prod = _gc(r, "prod")   # E IMC 주력 상품(겨냥 히어로/상품)
                 _owners = " · ".join(f"{_role} {_nm}" for _role, _nm in
                                      [("마케팅", _gc(r, "mkt")), ("콘텐츠", _gc(r, "cont")), ("포토", _gc(r, "photo"))]
@@ -603,7 +606,7 @@ try:
                     if len(_v) > 2:
                         if _add("에너지", "에너지", _iso, _v, _lane, source="MKT"):
                             _n_energy += 1
-        print(f"IMC MKT calendar 로드: 캠페인 신규 {_n_camp}·보강 {_n_enrich}건 + 에너지/바이럴 {_n_energy}건")
+        print(f"IMC MKT calendar 로드: 캠페인 신규 {_n_camp}·보강 {_n_enrich}건 + 에너지/바이럴 {_n_energy}건 (기획중 {_n_plan}건 제외)")
         if _n_camp == 0 and _n_enrich == 0 and _n_energy == 0:
             _HEALTH.append("MKT calendar 0건 — 구조변경/권한 확인")
     except Exception as _emkt:
