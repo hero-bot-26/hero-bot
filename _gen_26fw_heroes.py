@@ -286,7 +286,11 @@ nd = 0
 _DASH_HEROES = []   # IMC 히어로 시즌 판정용(대시보드 STY→시즌 큐레이션값)
 try:
     from soo.hero_ops.sales_rollup import build_dashboard, SALES_SHEET_ID, build_style_to_hero, read_tab
-    dash = build_dashboard(sheets, drive, SALES_SHEET_ID, TODAY.isoformat())
+    # 홈 실적 = 시트39 확정 26SS 매핑(uid+신품번, 사용자 검증 524.5억=525.4). 성과 탭과 동일 히어로 정의.
+    _map26 = json.load(open(ROOT / "hero_goods_26ss.json", encoding="utf-8"))
+    _dash_s2h = _map26["style_to_hero"]
+    dash = build_dashboard(sheets, drive, SALES_SHEET_ID, TODAY.isoformat(),
+                           style2hero=_dash_s2h, goods2hero=_map26["goods_to_hero"])
     _DASH_HEROES = dash.get("heroes", [])
     dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
     html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
@@ -835,14 +839,19 @@ try:
         except (TypeError, ValueError):
             return 0.0
     try:
-        # ★26SS 히어로 매핑 — MD 상품MAP(★MSTRD_26SS 운영계획) SKU탭 스냅샷(신품번 style_no → HERO, 4종 제외).
-        #   build_style_to_hero(FW HERO STY 레지스트리)를 대체. 26FW는 이 파일을 교체/연결하면 됨(일회성 스냅샷).
-        _sty_map = json.load(open(ROOT / "hero_sty_26ss.json", encoding="utf-8"))
+        # ★26SS 히어로 매핑 — 시트39(gid1392316906) 확정 매핑(uid+신품번, 사용자 검증 524.5억=525.4).
+        #   style_to_hero(행별 신품번→hero) + goods_to_hero(uid 폴백: 신품번 빈칸/누락 goods). 26FW는 파일 교체.
+        _sty_map = json.load(open(ROOT / "hero_goods_26ss.json", encoding="utf-8"))
         _s2h = _sty_map["style_to_hero"]
+        _g2h = _sty_map.get("goods_to_hero", {})
         _HERO_SEASON = _sty_map.get("season", "26SS")
 
-        def _hero_of(style):
-            return _s2h.get(str(style or "").split("-")[0].strip())
+        def _hero_of(style, goods=None):
+            h = _s2h.get(str(style or "").split("-")[0].strip())
+            if not h and goods is not None:          # 신품번 빈칸/누락 → uid 폴백
+                try: h = _g2h.get(str(int(goods)))
+                except (TypeError, ValueError): h = None
+            return h
 
         def _perd(hero, per):
             P = hero_perf.setdefault(hero, {"periods": {}, "season": _HERO_SEASON})
@@ -852,7 +861,7 @@ try:
         #      PMKT의 gmv는 직접경로 어트리뷰션이라 실적보다 작음 → 헤드라인 GMV엔 누판을 씀.
         for _per in _PERIODS:
             for r in read_tab(sheets, SALES_SHEET_ID, _per):
-                hero = _hero_of(r.get("style_no"))
+                hero = _hero_of(r.get("style_no"), r.get("goods_no"))
                 if hero:
                     _perd(hero, _per)["gmv"] += round(_num(r.get("gmv")))
         # (1b) PMKT기간 — 퍼널 지표(전환=buy_uv/pdp_uv · 마케팅기여=mkt_gmv/mkt_pdp_uv, 캠페인기획전+외부유입)
@@ -1045,7 +1054,8 @@ try:
 
     # 준비 완료율 (heroes 매트릭스, 이름정규화 조인)
     _prep = {_fw_norm(h["name"]): h for h in heroes}
-    # 판매 (IMC_PERF hero_list, 현재 누판 YTD)
+    # 판매 = Databricks 누판(상품MAP 799uid 기준, IMC_PERF hero_list) — 사용자 지시(2026-07-08):
+    #   옛 전사시트 '26년 히어로 실적 대시보드' 폐기, 799uid 누판이 단일 기준.
     _perf_heroes = globals().get("hero_list", []) or []
     _sales = {_fw_norm(h["name"]): h for h in _perf_heroes}
 

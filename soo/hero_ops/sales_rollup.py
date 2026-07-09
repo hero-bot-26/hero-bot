@@ -132,8 +132,9 @@ def _add(dst, ch, row):
 
 
 # ── 매출 집계: 히어로/스타일/컬러 × 기간 × 채널 ──────────────────────────────
-def aggregate(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None):
+def aggregate(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None, style_to_hero=None):
     # hero -> {periods:{P:{cur:channels, prev:channels}}, stys:{base:{name, periods, colors:{opt:periods}}}}
+    # style_to_hero 주면 매출 히어로 귀속을 행별 신품번(base)→hero 로 해석(성과 탭과 100% 동일 총액).
     heroes = defaultdict(lambda: {
         "periods": {p: {"cur": _blank_channels(), "prev": _blank_channels()} for p in PERIODS},
         "stys": defaultdict(lambda: {
@@ -152,12 +153,17 @@ def aggregate(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None):
                     gid = int(row.get("goods_no"))
                 except (TypeError, ValueError):
                     continue
-                hero = (goods_to_hero.get(gid) or {}).get("hero")
+                base = _base(row.get("style_no") or "")
+                if style_to_hero is not None:
+                    hero = style_to_hero.get(base)     # 성과 탭과 동일: 행별 신품번→hero
+                    if not hero:                        # 신품번 빈칸/누락 goods → uid 폴백
+                        hero = (goods_to_hero.get(gid) or {}).get("hero")
+                else:
+                    hero = (goods_to_hero.get(gid) or {}).get("hero")
                 if not hero:
                     stats["unmapped_goods"].add(gid)
                     continue
                 stats["mapped"] += 1
-                base = _base(row.get("style_no") or "")
                 ch = "online" if str(row.get("channel")).strip().lower() == "online" else "offline"
                 H = heroes[hero]
                 _add(H["periods"][period][when], ch, row)
@@ -294,11 +300,45 @@ def _ytd_gmv(per):
     return per["YTD"]["cur"]["total"]["gmv"]
 
 
-def build_dashboard(sheets, drive, sheet_id, as_of):
-    """앱이 읽을 DASHBOARD dict (raw 합계; 비율은 JS에서 계산)."""
+def _goods_map_from_style(sheets, sheet_id, style2hero, season="26SS", goods_override=None):
+    """매출/재고/입고 탭의 (goods_no, style_no) 쌍 + style→hero(★상품MAP 799 basis) → goods_no→{hero,season}.
+    build_maps(큐레이션 파싱) 대체 — IMC 성과 탭과 동일 히어로 정의로 홈 실적 통일(사용자 지시 2026-07-08:
+    옛 전사시트 '26년 히어로 실적 대시보드' 폐기, 누판 799uid 단일 기준)."""
+    g2h = {}
+    for tab in ("YTD", "MTD", "WEEK", "DAY", "잔여재고", "입고현황"):
+        try:
+            rows = read_tab(sheets, sheet_id, tab)
+        except Exception:
+            continue
+        for row in rows:
+            try:
+                gid = int(row.get("goods_no"))
+            except (TypeError, ValueError):
+                continue
+            if gid in g2h:
+                continue
+            hero = style2hero.get(_base(row.get("style_no") or ""))
+            if hero:
+                g2h[gid] = {"hero": hero, "season": season}
+    if goods_override:                    # uid 명시 매핑(시트39 uid + 사용자 PIN) 우선 반영
+        for gid, hero in goods_override.items():
+            if hero:
+                g2h[int(gid)] = {"hero": hero, "season": season}
+    return g2h
+
+
+def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=None):
+    """앱이 읽을 DASHBOARD dict (raw 합계; 비율은 JS에서 계산).
+    style2hero 주면 그 매핑(base 신품번→hero)으로 통일(성과 탭과 동일 총액).
+    goods2hero(uid→hero) 주면 신품번 빈칸/누락 goods를 uid로 보강(시트39 26SS 정합)."""
     from soo.hero_ops.hero_goods_map import build_maps
     from soo.hero_ops.order_ingest import load_color_maps, parse_orders, current_season
-    g2h, s2h = build_maps(sheets)
+    if style2hero:
+        g2h = _goods_map_from_style(sheets, sheet_id, style2hero, goods_override=goods2hero)
+        s2h = {_base(k): v for k, v in style2hero.items()}
+        print(f"[dashboard] 799 basis 매핑: goods_no→hero {len(g2h)} · style→hero {len(s2h)}")
+    else:
+        g2h, s2h = build_maps(sheets)
     cur_season = current_season(as_of)          # 오늘 기준 현재 시즌(2~7월 SS / 8~1월 FW)
     # 컬러 크로스워크(코드↔한글) — 컬러명 '한글(코드)' 통일 + 오더 매칭용
     # ★준비물량은 오더시트(무탠본부) 발주수량을 '현재 타겟시즌'만 집계 → 타시즌·미래발주 제외.
@@ -308,7 +348,8 @@ def build_dashboard(sheets, drive, sheet_id, as_of):
     except Exception as e:                      # 오더시트 접근 실패해도 대시보드는 생성
         print(f"[order_ingest] 스킵: {e}")
         code2kor, kor2code, color_prep, style_prep = {}, {}, {}, {}
-    heroes, stats = aggregate(sheets, sheet_id, g2h, code2kor, kor2code)
+    heroes, stats = aggregate(sheets, sheet_id, g2h, code2kor, kor2code,
+                              style_to_hero=(s2h if style2hero else None))
     hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h, code2kor, kor2code)
     hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h, code2kor, kor2code)
     hero_funnel, sty_funnel = aggregate_funnel(sheets, sheet_id, g2h)   # PDP 유입→구매전환
