@@ -296,6 +296,11 @@ try:
     html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
     assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
     print(f"DASHBOARD: 히어로 {len(dash['heroes'])}개 주입 (매핑 {dash['_stats']['mapped']}/{dash['_stats']['rows']})")
+    # 스타일명(발매센터 스타일별 세부 표시용) — 시트39 품명
+    _sty_names = _map26.get("style_names", {})
+    sn_block = "const STY_NAMES = " + json.dumps(_sty_names, ensure_ascii=False) + ";"
+    html2, nsn = re.subn(r"const STY_NAMES = \{.*?\};", lambda _m: sn_block, html2, count=1, flags=re.DOTALL)
+    print(f"STY_NAMES 주입: {len(_sty_names)}개 (교체 {nsn})")
 except Exception as e:
     print(f"[주의] DASHBOARD 주입 실패 — 실적 대시보드는 기존값 유지: {type(e).__name__}: {e}")
 
