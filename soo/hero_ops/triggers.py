@@ -291,6 +291,44 @@ def load_mstrd_inputs(sheets, sheet_id: str = DBX_SHEET_ID) -> dict:
     return out
 
 
+_MSTRD_GRADE_MAP = {"S급": "S", "A급": "A", "에센셜": "E"}
+
+
+def parse_mstrd_grades(sheets, url_or_id: str) -> dict:
+    """등록된 MSTRD 상품MAP 파일의 첫 탭 '등급구분/시리즈구분' 표 → {정규화히어로명: 'S'|'A'|'E'}.
+
+    파싱 실패(파일 접근 불가·형식 불일치)면 {} 반환 → 앱 STEP2 알람 폴백.
+    등급 셀(S급/A급/에센셜) 뒤 첫 비어있지 않은 셀을 히어로명으로 본다(컬럼 위치 변동 흡수).
+    키=공백제거 정규화명(JS _gradeNorm과 동일).
+    """
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url_or_id or "")
+    fid = m.group(1) if m else (url_or_id or "").strip()
+    if not fid:
+        return {}
+    try:
+        meta = sheets.spreadsheets().get(spreadsheetId=fid).execute()
+        first = meta["sheets"][0]["properties"]["title"]
+        res = sheets.spreadsheets().values().get(
+            spreadsheetId=fid, range=f"'{first}'!A1:H120").execute()
+    except Exception:
+        return {}
+    out: dict = {}
+    for r in res.get("values", []):
+        for j, c in enumerate(r):
+            g = _MSTRD_GRADE_MAP.get(str(c).strip())
+            if g:
+                hero = ""
+                for c2 in r[j + 1:]:
+                    if str(c2).strip():
+                        hero = str(c2).strip()
+                        break
+                hero = re.sub(r"\s+", "", hero)
+                if hero and hero != "TOTAL":
+                    out[hero] = g
+                break
+    return out
+
+
 def done_floor(rec) -> int:
     """이 단계 이하는 날짜 없어도 완료 간주 (생성기 규칙 A/B/C)."""
     if rec is None:

@@ -95,7 +95,7 @@ else:
 plm = {rec.style_no: rec for rec in recs}
 
 # 앱 "완료 클릭" 기록(단계완료 탭) — 수동 단계 done 판정에 반영(재생성해도 유지).
-from soo.hero_ops.triggers import load_completions, load_quantity_inputs, load_grade_inputs, load_mstrd_inputs
+from soo.hero_ops.triggers import load_completions, load_quantity_inputs, load_grade_inputs, load_mstrd_inputs, parse_mstrd_grades
 completions = load_completions(sheets)
 print(f"완료 클릭 기록: {len(completions)}건")
 
@@ -110,6 +110,14 @@ print(f"등급 기록: {sum(len(v) for v in grade_saved.values())}건 ({len(grad
 # 상품 관리판(MSTRD 상품MAP) 링크 등록 — {season: {url,by,at}} (STEP1 완료 트리거, 앱 등록 영속 반영)
 mstrd_reg = load_mstrd_inputs(sheets)
 print(f"상품MAP 링크 등록: {len(mstrd_reg)} 시즌 {list(mstrd_reg)}")
+
+# 등록된 MSTRD 파일에서 등급구분 표 파싱 → {season: {정규화명: 'S'|'A'|'E'}} (STEP2 등급 자동, 못읽으면 빈값→앱 알람)
+mstrd_grades = {}
+for _s, _rec in mstrd_reg.items():
+    _g = parse_mstrd_grades(sheets, _rec.get("url", ""))
+    if _g:
+        mstrd_grades[_s] = _g
+print(f"MSTRD 등급 파싱: {sum(len(v) for v in mstrd_grades.values())}건 ({list(mstrd_grades)})")
 
 # PO수량(발주량) — MD투입 시트에서 스타일별 {po:{4채널,t}, colors:{...}} (타겟시즌=2026FW 필터)
 try:
@@ -287,6 +295,11 @@ assert ng == 1, f"HERO_GRADE_SAVED 교체 실패 (matched {ng})"
 _mstrd_block = "const MSTRD_REGISTRY = " + json.dumps(mstrd_reg, ensure_ascii=False) + ";"
 html2, nmr = re.subn(r"const MSTRD_REGISTRY = \{.*?\};", lambda _m: _mstrd_block, html2, count=1, flags=re.DOTALL)
 assert nmr == 1, f"MSTRD_REGISTRY 교체 실패 (matched {nmr})"
+
+# ── MSTRD 파싱 등급 주입(STEP2 자동 채움, 등록된 파일서 읽음) ──
+_mstrd_grades_block = "const MSTRD_GRADES = " + json.dumps(mstrd_grades, ensure_ascii=False) + ";"
+html2, nmg = re.subn(r"const MSTRD_GRADES = \{.*?\};", lambda _m: _mstrd_grades_block, html2, count=1, flags=re.DOTALL)
+assert nmg == 1, f"MSTRD_GRADES 교체 실패 (matched {nmg})"
 
 # ── 실적 대시보드 데이터 주입 (build_dashboard) ──
 # 소스 시트: SALES_SHEET(Databricks 잡이 매일 07:00 KST에 채우는 전용 SA 시트). raw 탭만 사용.
