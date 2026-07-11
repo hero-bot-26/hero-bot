@@ -203,20 +203,40 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
 
     for hero in HERO_ORDER:
         skus = hero_sku.get(hero, {})
+        _cut = CUTOFF.isoformat()
+        dbx_keys = set(dbx_actuals) if dbx_actuals is not None else set()
+        # ★벨트류 폴백: 색이 없는 상품은 시트 SKU=품번-사이즈(예 MECBE0Z50-59)인데
+        #   WMS STL_NO은 품번(MECBE0Z50, 사이즈는 GDS_OPT) → col8 미스. 이때 style(신품번)로
+        #   폴백 매칭 + 사이즈행 병합(중복합산 방지). 의류는 col8이 이미 매칭돼 폴백 안 탐.
+        merged = OrderedDict()
+        for code, c in skus.items():
+            style = c["style"]
+            if dbx_actuals is not None and code not in dbx_keys and style and style in dbx_keys:
+                out_key, dbx_key = style, style           # 벨트 폴백 → style로 병합
+            else:
+                out_key, dbx_key = code, code
+            if out_key not in merged:
+                merged[out_key] = {"sku": out_key, "style": style, "name": c["name"],
+                                   "color": c["color"], "planned": [], "actual_sheet": [],
+                                   "ordered_total": 0, "dbx_key": dbx_key, "n": 0}
+            m = merged[out_key]
+            m["planned"] += c["planned"]; m["actual_sheet"] += c["actual"]
+            m["ordered_total"] += c["ordered_total"]; m["n"] += 1
+            if not m["name"]:
+                m["name"] = c["name"]
         sku_list = []
         h_plan = h_act = 0
-        for code, c in skus.items():
+        for code, c in merged.items():
             planned = sorted(c["planned"], key=lambda x: x["date"])
             plan_total = sum(p["qty"] for p in planned)
-            # 실적 소스: DBX(WMS) 있으면 그걸로 교체, 없으면 시트 AO/AP
-            # DBX는 25.11~ 전체 이력 → 예정과 같은 기간(컷오프 이후)만 사용해 정합 유지
-            _cut = CUTOFF.isoformat()
+            # 실적 소스: DBX(WMS) 있으면 그걸로(컷오프 이후만), 없으면 시트 AO/AP
             if dbx_actuals is not None:
-                actual = sorted([a for a in dbx_actuals.get(code, []) if a["date"] >= _cut],
+                actual = sorted([a for a in dbx_actuals.get(c["dbx_key"], []) if a["date"] >= _cut],
                                 key=lambda x: x["date"])
             else:
-                actual = sorted(c["actual"], key=lambda x: x["date"])
+                actual = sorted(c["actual_sheet"], key=lambda x: x["date"])
             act_total = sum(a["qty"] for a in actual)
+            _color = ("전 사이즈" if c["n"] > 1 else c["color"])
             next_date = None
             for p in planned:
                 if act_total < plan_total or not actual:
@@ -232,7 +252,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
             else:
                 status = "예정"
             sku_list.append({
-                "sku": code, "style": c["style"], "name": c["name"], "color": c["color"],
+                "sku": code, "style": c["style"], "name": c["name"], "color": _color,
                 "planned": planned, "actual": actual,
                 "plan_total": plan_total, "actual_total": act_total,
                 "ordered_total": c["ordered_total"], "status": status,
