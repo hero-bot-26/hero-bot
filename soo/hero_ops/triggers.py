@@ -263,6 +263,34 @@ def load_grade_inputs(sheets, sheet_id: str = DBX_SHEET_ID) -> dict:
     return out
 
 
+MSTRD_TAB = "상품MAP"   # SA 시트(DBX_SHEET_ID): season, url, by, at — append 순서라 마지막=최신 (STEP1 상품관리판 링크 등록)
+
+
+def load_mstrd_inputs(sheets, sheet_id: str = DBX_SHEET_ID) -> dict:
+    """상품MAP 탭 → {season: {"url":str, "by":str, "at":str}}. 같은 season 중복이면 최신(마지막) 우선.
+
+    기획MD팀이 앱에서 시즌별 상품관리판(MSTRD 상품MAP) 파일 링크를 등록 → STEP1 완료 트리거.
+    app.html MSTRD_REGISTRY 로 주입(재생성해도 유지 — 등급/1차수량과 동일 패턴).
+    """
+    try:
+        res = sheets.spreadsheets().values().get(
+            spreadsheetId=sheet_id, range=f"{MSTRD_TAB}!A2:D").execute()
+    except Exception:
+        return {}
+    out: dict = {}
+    for r in res.get("values", []):
+        if len(r) < 2:
+            continue
+        season = str(r[0]).strip()
+        url = str(r[1]).strip()
+        if not season or not url:
+            continue
+        by = str(r[2]).strip() if len(r) > 2 else ""
+        at = str(r[3]).strip() if len(r) > 3 else ""
+        out[season] = {"url": url, "by": by, "at": at}
+    return out
+
+
 def done_floor(rec) -> int:
     """이 단계 이하는 날짜 없어도 완료 간주 (생성기 규칙 A/B/C)."""
     if rec is None:

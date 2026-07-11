@@ -95,7 +95,7 @@ else:
 plm = {rec.style_no: rec for rec in recs}
 
 # 앱 "완료 클릭" 기록(단계완료 탭) — 수동 단계 done 판정에 반영(재생성해도 유지).
-from soo.hero_ops.triggers import load_completions, load_quantity_inputs, load_grade_inputs
+from soo.hero_ops.triggers import load_completions, load_quantity_inputs, load_grade_inputs, load_mstrd_inputs
 completions = load_completions(sheets)
 print(f"완료 클릭 기록: {len(completions)}건")
 
@@ -106,6 +106,10 @@ print(f"1차수량 입력: {sum(len(v) for v in qinputs.values())}건 ({len(qinp
 # 히어로 등급(앱 '등급 설정' 기록) — {season: {정규화명: 그룹키}} (담당자 웹 기록 영속 반영)
 grade_saved = load_grade_inputs(sheets)
 print(f"등급 기록: {sum(len(v) for v in grade_saved.values())}건 ({len(grade_saved)} 시즌)")
+
+# 상품 관리판(MSTRD 상품MAP) 링크 등록 — {season: {url,by,at}} (STEP1 완료 트리거, 앱 등록 영속 반영)
+mstrd_reg = load_mstrd_inputs(sheets)
+print(f"상품MAP 링크 등록: {len(mstrd_reg)} 시즌 {list(mstrd_reg)}")
 
 # PO수량(발주량) — MD투입 시트에서 스타일별 {po:{4채널,t}, colors:{...}} (타겟시즌=2026FW 필터)
 try:
@@ -278,6 +282,11 @@ html2, nsa = re.subn(r"const SALES_AS_OF = '[^']*';",
 _grade_block = "const HERO_GRADE_SAVED = " + json.dumps(grade_saved, ensure_ascii=False) + ";"
 html2, ng = re.subn(r"const HERO_GRADE_SAVED = \{.*?\};", lambda _m: _grade_block, html2, count=1, flags=re.DOTALL)
 assert ng == 1, f"HERO_GRADE_SAVED 교체 실패 (matched {ng})"
+
+# ── 상품 관리판(MSTRD) 링크 등록 주입(담당자 웹 STEP1 등록 → 시트 → 앱, 재생성해도 유지) ──
+_mstrd_block = "const MSTRD_REGISTRY = " + json.dumps(mstrd_reg, ensure_ascii=False) + ";"
+html2, nmr = re.subn(r"const MSTRD_REGISTRY = \{.*?\};", lambda _m: _mstrd_block, html2, count=1, flags=re.DOTALL)
+assert nmr == 1, f"MSTRD_REGISTRY 교체 실패 (matched {nmr})"
 
 # ── 실적 대시보드 데이터 주입 (build_dashboard) ──
 # 소스 시트: SALES_SHEET(Databricks 잡이 매일 07:00 KST에 채우는 전용 SA 시트). raw 탭만 사용.
