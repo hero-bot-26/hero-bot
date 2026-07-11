@@ -1122,9 +1122,35 @@ try:
 except Exception as e:
     print(f"[주의] LAUNCH_26FW 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
+# ── 26FW 입고 보드 데이터 주입 (const INBOUND_BOARD) ──
+# 예정=생산관리 탭(AK/AL), 실적=시트 실입고(AO/AP). 히어로 15종, SKU(품번-컬러) 단위.
+ninb = 0
+try:
+    from soo.hero_ops.inbound_board import build_inbound_board, load_dbx_actuals
+    _lm = {}
+    try:
+        for x in _fw_list:   # LAUNCH_26FW 히어로 메타 재사용(발매일/상태)
+            _lm[x["name"]] = {"launch": x.get("launch"), "status": x.get("status")}
+    except Exception:
+        pass
+    _dbx_act = load_dbx_actuals(sheets)   # DBX WMS 실입고(입고일자별 탭). 없으면 None→시트 AO/AP 폴백
+    inbound_obj = build_inbound_board(sheets, as_of=TODAY, launch_meta=_lm, dbx_actuals=_dbx_act)
+    inbound_block = "const INBOUND_BOARD = " + json.dumps(inbound_obj, ensure_ascii=False) + ";"
+    html2, ninb = re.subn(r"const INBOUND_BOARD = \{.*?\};", lambda _m: inbound_block, html2, count=1, flags=re.DOTALL)
+    _nsku = sum(h["sku_count"] for h in inbound_obj["heroes"])
+    _st = {}
+    for h in inbound_obj["heroes"]:
+        for s in h["skus"]:
+            _st[s["status"]] = _st.get(s["status"], 0) + 1
+    print(f"INBOUND_BOARD 주입: {len(inbound_obj['heroes'])}히어로 · SKU {_nsku} · 날짜버킷 {len(inbound_obj['days'])} · 상태{_st} · 실적={'DBX' if _dbx_act is not None else '시트AO/AP'}({len(_dbx_act) if _dbx_act else 0} SKU)")
+    if ninb != 1:
+        _HEALTH.append("INBOUND_BOARD 교체 실패(앱 플레이스홀더 확인)")
+except Exception as e:
+    print(f"[주의] INBOUND_BOARD 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
+
 HTML.write_text(html2, encoding="utf-8")
 
-print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch})")
+print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch}) · INBOUND_BOARD(교체 {ninb})")
 for h in heroes:
     done = sum(1 for s in h["stages"] if s == "done")
     prog = sum(1 for s in h["stages"] if s == "progress")
