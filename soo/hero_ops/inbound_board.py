@@ -236,6 +236,23 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
             else:
                 actual = sorted(c["actual_sheet"], key=lambda x: x["date"])
             act_total = sum(a["qty"] for a in actual)
+            # 차수별 실입고 배분(FIFO): 실입고를 예정 차수 순서대로 채움 → '이 차수 예정만큼 들어왔나'
+            # 누적이 아니라 각 예정 차수에 귀속된 실입고량(recv)을 계산.
+            _pool = [dict(a) for a in actual]   # 소모용 복사본
+            for p in planned:
+                _need = p["qty"]; _got = 0; _fd = []
+                for a in _pool:
+                    if _need <= 0:
+                        break
+                    if a["qty"] <= 0:
+                        continue
+                    _take = min(_need, a["qty"])
+                    a["qty"] -= _take; _need -= _take; _got += _take
+                    _fd.append(a["date"])
+                p["recv"] = _got
+                p["recv_dates"] = sorted(set(_fd))
+            # 예정 초과분(예정에 귀속 안 된 실입고) = 예정 외 입고
+            leftover = [{"date": a["date"], "qty": a["qty"]} for a in _pool if a["qty"] > 0]
             _color = ("전 사이즈" if c["n"] > 1 else c["color"])
             next_date = None
             for p in planned:
@@ -253,7 +270,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
                 status = "예정"
             sku_list.append({
                 "sku": code, "style": c["style"], "name": c["name"], "color": _color,
-                "planned": planned, "actual": actual,
+                "planned": planned, "actual": actual, "leftover": leftover,
                 "plan_total": plan_total, "actual_total": act_total,
                 "ordered_total": c["ordered_total"], "status": status,
                 "next_date": next_date or (planned[0]["date"] if planned else None)})
