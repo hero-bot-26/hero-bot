@@ -263,7 +263,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
             if plan_total and act_total >= plan_total:
                 status = "완료"
             elif act_total > 0:
-                status = "입고중"
+                status = "일부 입고"
             elif planned and _pdate(planned[0]["date"]) and _pdate(planned[0]["date"]) < as_of:
                 status = "지연"
             else:
@@ -282,8 +282,8 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
             for a in actual:
                 day_plan[a["date"]]["actual_qty"] += a["qty"]
                 day_plan[a["date"]]["skus"].add(code)
-        # 정렬: 상태(예정/입고중/지연 먼저) → next_date
-        srank = {"지연": 0, "입고중": 1, "예정": 2, "완료": 3}
+        # 정렬: 상태(예정/일부입고/지연 먼저) → next_date
+        srank = {"지연": 0, "일부 입고": 1, "예정": 2, "완료": 3}
         sku_list.sort(key=lambda s: (srank.get(s["status"], 9), s["next_date"] or "9999"))
         meta = lm.get(hero, {})
         heroes_out.append({
@@ -329,7 +329,7 @@ if __name__ == "__main__":
     st = Counter(s["status"] for h in board["heroes"] for s in h["skus"])
     print("\n상태 분포:", dict(st))
     # 샘플 SKU
-    print("\n샘플(데님팬츠 입고중/완료):")
+    print("\n샘플(데님팬츠 일부입고/완료):")
     for h in board["heroes"]:
         if h["name"] == "데님팬츠":
             for s in h["skus"][:6]:
