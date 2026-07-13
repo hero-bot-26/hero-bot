@@ -1116,21 +1116,23 @@ try:
     _fw_list = []
     for name, grade in _FW_GRADE.items():
         a = _fw_agg[name]
-        # 발매일 = 무탠 진실소스 우선(리커버리 발주전·힛탠다드 등 stale 교정), 없으면 발매스케줄 폴백
+        # 발매일 = 무탠 진실소스 단독. ★발매스케줄 폴백 폐기 — 슬랙스처럼 무탠에 26FW 신규
+        # 발매 STY가 없는 히어로는 발매스케줄이 옛 품번을 신규로 오기한 stale 날짜(7/29)를
+        # 물고 있어 캘린더와 어긋남 → 무탠 무일정=캐리오버로 통일(잘못된 데이터 제거).
         _mh = _MUT_BY_KEY.get(_ser_key(name))
         _mut_dates = _mh["dates"] if (_mh and _mh.get("dates")) else []
-        fw = list(_mut_dates) if _mut_dates else sorted(a["dates"])
+        fw = list(_mut_dates)
         first = fw[0] if fw else None
         if not first:
             status = "MD기획중" if name in _FW_MD_PLANNING else "캐리오버"
         else:
             dd = (first - TODAY).days
             status = "판매중" if dd <= 0 else ("임박" if dd <= 21 else "준비")
-        # SKU 카운트도 무탠 사용 시 무탠 기준(리커버리 6종 등), 아니면 발매스케줄
+        # SKU 카운트도 무탠 기준(발매 STY 없으면 0 — 캐리오버 히어로는 신규 SKU 없음)
         if _mut_dates:
             _sku_new, _sku_carry, _style_cnt = _mh["new"], _mh["carry"], len(_mh["reps"])
         else:
-            _sku_new, _sku_carry, _style_cnt = a["new"], a["carry"], len(a["styles"])
+            _sku_new, _sku_carry, _style_cnt = 0, 0, 0
         h = _prep.get(_fw_norm(name))
         prep_done = sum(1 for s in h["stages"] if s == "done") if h else 0
         prep_prog = sum(1 for s in h["stages"] if s == "progress") if h else 0
