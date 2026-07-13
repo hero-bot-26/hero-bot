@@ -420,22 +420,13 @@ try:
         _items.append(d)
         return True
 
-    # 1) 기존 IMC 소스 (발매스케줄/캠페인/오프라인/발매이슈/일반기획전)
-    #    발매일은 무탠 진실소스로 스타일(대표품번) 단위 오버라이드, 무탠 전용 히어로(리커버리 등)는 아래서 보강.
-    _repf = _MUTAN_REL.get("rep_first", {})
-    _seen_ser = set()
-    for r in _IMCT.load_releases(sheets):
-        if r["grade"] not in ("HERO", "HERO SUB"):
-            continue
-        rel = _repf.get(r["style"]) or r["release"]        # 무탠 우선
-        _add("발매", "발매", rel.isoformat(), r["name"], f"{r['series']}/{r['grade']}")
-        _seen_ser.add(_ser_key(r["series"]))
-    # 발매스케줄에 발매일이 없어 누락된 히어로(리커버리=발주전, 양말 재드롭 등)를 무탠에서 보강
+    # 1) 발매 이벤트 = 무탠본부 아이템마스터 진실소스 단독(대표품번=STY 단위, 정확한 발매일).
+    #    ★발매스케줄(상품MAP)은 stale STY(슬랙스 옛 20FW품번을 26FW신규로 오기 등)가 섞여 있어 폐기.
+    #    무탠 26FW 발매일 있는 히어로 STY만(등급 HERO/HERO SUB) 정확일자로 매핑.
     for _ser, _h in _MUTAN_REL.get("heroes", {}).items():
-        if _ser_key(_ser) in _seen_ser:
-            continue
         for _e in _h.get("events", []):
-            _add("발매", "발매", _e["release"].isoformat(), _e["name"], f"{_ser}/HERO")
+            _add("발매", "발매", _e["release"].isoformat(), _e["name"], f"{_ser}/{_e.get('grade', 'HERO')}")
+    # (캠페인/오프라인/발매이슈/기획전은 기존 소스 유지)
     for c in _IMCT.load_campaigns(sheets):
         _add("캠페인", "캠페인", c["start"].isoformat(), c["name"], c["gubun"], c["owner"])
     for g in _IMCT.load_offline_gates(sheets):

@@ -118,7 +118,7 @@ def load_mutan_release_dates(sheets) -> dict:
     # 1) 히어로(26FW): 대표품번 → 시리즈 / 신규·캐리
     hv = sheets.spreadsheets().values().get(
         spreadsheetId=MUTAN_SHEET, range=f"'{MUTAN_HERO_TAB}'!A7:M400").execute().get("values", [])
-    rep_series, rep_nc = {}, {}
+    rep_series, rep_nc, rep_grade = {}, {}, {}
     for r in hv:
         def h(i): return str(r[i]).strip() if i < len(r) and r[i] is not None else ""
         ser = h(3); rep = h(2) or h(0)
@@ -126,6 +126,8 @@ def load_mutan_release_dates(sheets) -> dict:
             continue
         rep_series.setdefault(rep, ser)
         rep_nc.setdefault(rep, "캐리" if "캐리" in h(5) else "신규")
+        _g = h(1).upper()   # B열: HERO / HERO SUB
+        rep_grade.setdefault(rep, "HERO SUB" if "SUB" in _g else "HERO")
 
     # 2) 무탠 아이템마스터: 26FW 발매일 있는 행 → 대표품번/히어로별 집계
     mv = sheets.spreadsheets().values().get(
@@ -151,7 +153,7 @@ def load_mutan_release_dates(sheets) -> dict:
         h["dates"].add(rel); h["reps"].add(rep)
         ev = h["events"]
         if rep not in ev or rel < ev[rep]["release"]:
-            ev[rep] = {"style": rep, "name": name, "release": rel}
+            ev[rep] = {"style": rep, "name": name, "release": rel, "grade": rep_grade.get(rep, "HERO")}
 
     out = {}
     for ser, h in heroes.items():
