@@ -298,6 +298,121 @@ def load_offline_gates(sheets) -> list[dict]:
     return out
 
 
+# 오프라인 '전개 플랜' 본문 파싱 — 히어로별 월·주차 조닝 전개 + 브랜드협업/IP.
+#   그리드 = 월(R7)×주차(R13, 각 2열) 가로 레이아웃. 콘텐츠 셀을 좌측 주차-시작열로 스냅.
+#   히어로 행(HERO 섹션, C열 라벨) = 주차 근사일(월×주). ISSUE 행 = 셀에 '(M/D)' 명시일.
+_ROLLOUT_MONTHS = {
+    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6, "JUNE": 6,
+    "JUL": 7, "JULY": 7, "AUG": 8, "AUGUST": 8, "SEP": 9, "SEPT": 9, "SEPTEMBER": 9,
+    "OCT": 10, "OCTOBER": 10, "NOV": 11, "NOVEMBER": 11, "DEC": 12, "DECEMBER": 12,
+}
+# 히어로 행: C열 라벨에 이 키워드 있으면 히어로 전개 행. 매칭은 생성기 별칭이 하니 표시용.
+_ROLLOUT_HEROES = ["커브드", "라이트 다운", "힛탠", "빅토리아", "그리드", "메시", "플러피", "폴라", "웜 팬츠", "리커버리"]
+
+
+def _rollout_colmap(month_row, week_row):
+    """(month_row, week_row) → {주차_시작열: (month, week)}. 월/주차 라벨 위치에서 동적 생성."""
+    month_cols = []
+    for j, c in enumerate(month_row):
+        s = str(c or "").strip().upper()
+        if s in _ROLLOUT_MONTHS:
+            month_cols.append((j, _ROLLOUT_MONTHS[s]))
+
+    def month_at(j):
+        m = None
+        for jc, mm in month_cols:
+            if jc <= j:
+                m = mm
+        return m
+
+    cmap = {}
+    for j, c in enumerate(week_row):
+        mm = re.match(r"(\d)\s*W", str(c or "").strip())
+        if mm and month_at(j):
+            cmap[j] = (month_at(j), int(mm.group(1)))
+    return cmap
+
+
+def load_offline_rollout(sheets) -> list[dict]:
+    """조닝 플랜 본문 → [{title, sub, date, approx, owner}].
+    ①히어로별 전개(주차 근사일) ②브랜드협업·IP/그래픽(명시일). 타입=오프라인."""
+    res = sheets.spreadsheets().values().get(
+        spreadsheetId=OFFLINE_SHEET, range=f"'{OFFLINE_TAB}'!A1:BD42",
+        valueRenderOption="FORMATTED_VALUE").execute()
+    rows = res.get("values", [])
+
+    def _row(i):
+        return rows[i] if i < len(rows) else []
+
+    def _cell(r, j):
+        return str(r[j]).strip() if j < len(r) and r[j] is not None else ""
+
+    # 헤더행 탐색: 월 라벨(JULY 등) 최다 행 = month_row, 주차 라벨('1W'등) 최다 행 = week_row.
+    #   시트에 월/주차 헤더 그리드가 2벌(게이트용·히어로용) 있으나 컬럼 위치 동일 → 최다 행 하나면 충분.
+    scan = range(min(25, len(rows)))
+    m_idx = max(scan, key=lambda i: sum(1 for c in _row(i)
+                if str(c or "").strip().upper() in _ROLLOUT_MONTHS), default=6)
+    w_idx = max(scan, key=lambda i: sum(1 for c in _row(i)
+                if re.match(r"\dW", str(c or "").strip())), default=m_idx + 1)
+    cmap = _rollout_colmap(_row(m_idx), _row(w_idx))
+    starts = sorted(cmap)
+
+    def snap(j):
+        prev = None
+        for s in starts:
+            if s <= j:
+                prev = s
+            else:
+                break
+        return prev
+
+    out = []
+    # ① 히어로별 전개 행: C열(idx2) 라벨이 히어로 키워드인 행.
+    for r in rows:
+        label = _cell(r, 2).lstrip("★☆*∙ ").strip()
+        if not label or not any(k in label for k in _ROLLOUT_HEROES):
+            continue
+        for j in range(3, len(r)):
+            s = _cell(r, j)
+            if not s or s == "Extension":
+                continue
+            sc = snap(j)
+            if sc is None:
+                continue
+            mo, wk = cmap[sc]
+            try:
+                d = datetime.date(SEASON_YEAR, mo, min((wk - 1) * 7 + 1, 28))
+            except ValueError:
+                continue
+            out.append({"title": f"[{label}] {s}", "sub": f"오프라인 전개 · {mo}월 {wk}주",
+                        "date": d, "approx": True, "owner": OFFLINE_OWNER})
+    # ② ISSUE 행(브랜드 협업 / IP·그래픽): 셀 '(M/D)라벨' 세그먼트별 명시일.
+    for r in rows:
+        cat = _cell(r, 2)
+        if "협업" not in cat and "IP" not in cat and "그래픽" not in cat:
+            continue
+        tag = "브랜드 협업" if "협업" in cat else "IP·그래픽 티셔츠"
+        for j in range(3, len(r)):
+            s = _cell(r, j)
+            if not s:
+                continue
+            for seg in re.split(r"(?=\(\s*\d{1,2}\s*/\s*\d{1,2}\s*\))", s):
+                seg = seg.strip()
+                m = re.search(r"\(\s*(\d{1,2})\s*/\s*(\d{1,2})\s*\)", seg)
+                if not m:
+                    continue
+                try:
+                    d = datetime.date(SEASON_YEAR, int(m.group(1)), int(m.group(2)))
+                except ValueError:
+                    continue
+                name = re.sub(r"\(\s*\d{1,2}\s*/\s*\d{1,2}\s*\)", "", seg).strip()
+                if not name:
+                    continue
+                out.append({"title": f"[{tag}] {name}", "sub": f"오프라인 · {tag}",
+                            "date": d, "approx": False, "owner": OFFLINE_OWNER})
+    return out
+
+
 def compute_offline_alarms(gates, as_of: datetime.date):
     """게이트 카운트다운(D-7/D-1/D-DAY). 반환 (dN) → [gate]."""
     groups: dict[int, list] = defaultdict(list)

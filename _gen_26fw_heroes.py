@@ -440,6 +440,10 @@ try:
         _add("캠페인", "캠페인", c["start"].isoformat(), c["name"], c["gubun"], c["owner"])
     for g in _IMCT.load_offline_gates(sheets):
         _add("오프라인", "오프라인", g["date"].isoformat(), g["label"], g["kind"], season_gate=g["season_gate"])
+    # 오프라인 전개 플랜 본문(히어로별 조닝 전개 + 브랜드협업/IP) — 게이트 외 실제 '전개' 내용
+    for it in _IMCT.load_offline_rollout(sheets):
+        _add("오프라인", "오프라인", it["date"].isoformat(), it["title"], it["sub"],
+             it.get("owner", ""), approx=it.get("approx", False))
     for it in _IMCT.load_release_issues(sheets):
         _add("입고알람", "입고알람", it["when"].isoformat(), it["issue"], it["brand"], it["owner"])
     for p in _IMCT.load_general_promos(sheets):
