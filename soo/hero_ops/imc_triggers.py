@@ -80,6 +80,90 @@ def load_releases(sheets) -> list[dict]:
     return out
 
 
+# ── 무탠본부 아이템마스터: 26FW 발매일자 진실소스 ──────────────────────────
+# 배경: '발매스케줄'(상품MAP)은 stale — 리커버리는 품번이 '발주전'(MDP 미링크)이라
+#   발매일이 통째로 빠지고, 힛탠다드·웜팬츠·데님 등은 지난 날짜가 남아있음. 기획MD팀이
+#   실제 발매일을 관리하는 곳은 이 '무탠본부_아이템 코드 관리' 시트의 '무탠' 탭 B열.
+#   '히어로(26FW)' 탭이 대표품번→시리즈(히어로) 매핑, 리커버리는 품명 [리커버리] 브라켓으로 보강.
+MUTAN_SHEET = "1rVbq1UVwKAdNApYovVDPF9ALwoE-v1KhNZUyHtf_bn4"
+MUTAN_TAB = "무탠"                 # 아이템마스터: B=발매일정 C=UID D=신품번 E=대표품번 F=컬러 G=품명 H=발매시즌
+MUTAN_HERO_TAB = "히어로(26FW)"     # A/C=대표품번 B=HERO/SUB D=시리즈 F=신규/캐리 M=품명
+# 대표품번이 아직 '발주전'이라 레지스트리로 못 잡는 히어로 → 품명 [키워드] 브라켓으로 매칭
+MUTAN_BRACKET_HEROES = {"리커버리": "리커버리"}
+
+
+def _mutan_date(s) -> datetime.date | None:
+    m = re.findall(r"\d+", str(s or ""))
+    if len(m) < 3:
+        return None
+    y, mo, d = int(m[0]), int(m[1]), int(m[2])
+    if y < 100:
+        y += 2000
+    try:
+        return datetime.date(y, mo, d)
+    except ValueError:
+        return None
+
+
+def load_mutan_release_dates(sheets) -> dict:
+    """무탠본부 시트 → 26FW 발매일자 진실소스.
+
+    반환 {
+      "rep_first": {대표품번: 최초 발매일(date)},          # 스타일 단위 날짜 오버라이드용
+      "heroes": {시리즈명: {"dates":[date..], "reps":{대표품번..},
+                            "new":int, "carry":int,
+                            "events":[{style, name, release}]}},   # events=대표품번 단위 최초일
+    }
+    """
+    # 1) 히어로(26FW): 대표품번 → 시리즈 / 신규·캐리
+    hv = sheets.spreadsheets().values().get(
+        spreadsheetId=MUTAN_SHEET, range=f"'{MUTAN_HERO_TAB}'!A7:M400").execute().get("values", [])
+    rep_series, rep_nc = {}, {}
+    for r in hv:
+        def h(i): return str(r[i]).strip() if i < len(r) and r[i] is not None else ""
+        ser = h(3); rep = h(2) or h(0)
+        if not ser or ser == "-" or not rep or rep in ("-", "발주전"):
+            continue
+        rep_series.setdefault(rep, ser)
+        rep_nc.setdefault(rep, "캐리" if "캐리" in h(5) else "신규")
+
+    # 2) 무탠 아이템마스터: 26FW 발매일 있는 행 → 대표품번/히어로별 집계
+    mv = sheets.spreadsheets().values().get(
+        spreadsheetId=MUTAN_SHEET, range=f"'{MUTAN_TAB}'!B12:H30000").execute().get("values", [])
+    rep_first: dict[str, datetime.date] = {}
+    heroes: dict[str, dict] = {}
+    for r in mv:
+        def c(i): return str(r[i]).strip() if i < len(r) and r[i] is not None else ""
+        rel = _mutan_date(c(0)); season = c(6); rep = c(3); name = c(5)   # B발매·H시즌·E대표·G품명
+        if not rel or not season.startswith("26FW") or not rep:
+            continue
+        if rep not in rep_first or rel < rep_first[rep]:
+            rep_first[rep] = rel
+        ser = rep_series.get(rep)
+        if not ser:
+            for kw, hero in MUTAN_BRACKET_HEROES.items():
+                if f"[{kw}]" in name:
+                    ser = hero
+                    break
+        if not ser:
+            continue
+        h = heroes.setdefault(ser, {"dates": set(), "reps": set(), "events": {}})
+        h["dates"].add(rel); h["reps"].add(rep)
+        ev = h["events"]
+        if rep not in ev or rel < ev[rep]["release"]:
+            ev[rep] = {"style": rep, "name": name, "release": rel}
+
+    out = {}
+    for ser, h in heroes.items():
+        new = sum(1 for rep in h["reps"] if rep_nc.get(rep) != "캐리")   # 레지스트리 미상(리커버리 등)=신규 취급
+        carry = len(h["reps"]) - new
+        out[ser] = {
+            "dates": sorted(h["dates"]), "reps": h["reps"], "new": new, "carry": carry,
+            "events": sorted(h["events"].values(), key=lambda e: (e["release"], e["style"])),
+        }
+    return {"rep_first": rep_first, "heroes": out}
+
+
 def compute_imc(releases, as_of: datetime.date):
     """(owner, dN) → [release] 그룹. dN ∈ SCHEME(7/2/0)."""
     groups: dict[tuple, list] = defaultdict(list)

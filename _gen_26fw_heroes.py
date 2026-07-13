@@ -373,6 +373,27 @@ def _gv(row, cmap, k):
     return str(row[j]).strip() if j is not None and j < len(row) and row[j] is not None else ""
 
 
+# ── 무탠본부 아이템마스터 = 26FW 발매일자 진실소스 (IMC·발매센터 공용) ──
+# '발매스케줄'(상품MAP)은 stale(리커버리 발주전·힛탠다드 등 지난날짜) → 기획MD팀이 실제
+# 발매일 관리하는 '무탠' 탭 B열로 교정. 실패해도 발매스케줄 폴백(리커버리만 미노출로 회귀).
+_SER_ALIAS = {"그리드/알파 플리스": "그리드/메시 플리스"}   # 무탠 레지스트리 표기 → 앱 표준명
+
+
+def _ser_key(s):
+    s = _SER_ALIAS.get(str(s or "").strip(), str(s or "").strip())
+    return re.sub(r"\s+", "", s)
+
+
+_MUTAN_REL = {"rep_first": {}, "heroes": {}}
+try:
+    from soo.hero_ops import imc_triggers as _IMCT0
+    _MUTAN_REL = _IMCT0.load_mutan_release_dates(sheets)
+    print(f"무탠 발매일자 로드: {len(_MUTAN_REL['heroes'])} 히어로 · 대표품번 {len(_MUTAN_REL['rep_first'])}건")
+except Exception as e:
+    print(f"[주의] 무탠 발매일자 로드 실패 — 발매스케줄 폴백: {type(e).__name__}: {e}")
+_MUT_BY_KEY = {_ser_key(s): h for s, h in _MUTAN_REL.get("heroes", {}).items()}
+
+
 # ── IMC 통합(과거·현재·미래) 주입 → const IMC ──
 # 소스: 발매/캠페인/오프라인/발매이슈/기획전(imc_triggers, 별도 파일) + SNS/CRM 콘텐츠 통합 관리 시트
 #       (온사이트/PR/IG광고). 각 액션에 status(past/today/future)·channel 부여. 윈도우 TODAY-365~+150.
@@ -400,10 +421,21 @@ try:
         return True
 
     # 1) 기존 IMC 소스 (발매스케줄/캠페인/오프라인/발매이슈/일반기획전)
+    #    발매일은 무탠 진실소스로 스타일(대표품번) 단위 오버라이드, 무탠 전용 히어로(리커버리 등)는 아래서 보강.
+    _repf = _MUTAN_REL.get("rep_first", {})
+    _seen_ser = set()
     for r in _IMCT.load_releases(sheets):
         if r["grade"] not in ("HERO", "HERO SUB"):
             continue
-        _add("발매", "발매", r["release"].isoformat(), r["name"], f"{r['series']}/{r['grade']}")
+        rel = _repf.get(r["style"]) or r["release"]        # 무탠 우선
+        _add("발매", "발매", rel.isoformat(), r["name"], f"{r['series']}/{r['grade']}")
+        _seen_ser.add(_ser_key(r["series"]))
+    # 발매스케줄에 발매일이 없어 누락된 히어로(리커버리=발주전, 양말 재드롭 등)를 무탠에서 보강
+    for _ser, _h in _MUTAN_REL.get("heroes", {}).items():
+        if _ser_key(_ser) in _seen_ser:
+            continue
+        for _e in _h.get("events", []):
+            _add("발매", "발매", _e["release"].isoformat(), _e["name"], f"{_ser}/HERO")
     for c in _IMCT.load_campaigns(sheets):
         _add("캠페인", "캠페인", c["start"].isoformat(), c["name"], c["gubun"], c["owner"])
     for g in _IMCT.load_offline_gates(sheets):
@@ -1088,12 +1120,22 @@ try:
 
     _fw_list = []
     for name, grade in _FW_GRADE.items():
-        a = _fw_agg[name]; fw = sorted(a["dates"]); first = fw[0] if fw else None
+        a = _fw_agg[name]
+        # 발매일 = 무탠 진실소스 우선(리커버리 발주전·힛탠다드 등 stale 교정), 없으면 발매스케줄 폴백
+        _mh = _MUT_BY_KEY.get(_ser_key(name))
+        _mut_dates = _mh["dates"] if (_mh and _mh.get("dates")) else []
+        fw = list(_mut_dates) if _mut_dates else sorted(a["dates"])
+        first = fw[0] if fw else None
         if not first:
             status = "MD기획중" if name in _FW_MD_PLANNING else "캐리오버"
         else:
             dd = (first - TODAY).days
             status = "판매중" if dd <= 0 else ("임박" if dd <= 21 else "준비")
+        # SKU 카운트도 무탠 사용 시 무탠 기준(리커버리 6종 등), 아니면 발매스케줄
+        if _mut_dates:
+            _sku_new, _sku_carry, _style_cnt = _mh["new"], _mh["carry"], len(_mh["reps"])
+        else:
+            _sku_new, _sku_carry, _style_cnt = a["new"], a["carry"], len(a["styles"])
         h = _prep.get(_fw_norm(name))
         prep_done = sum(1 for s in h["stages"] if s == "done") if h else 0
         prep_prog = sum(1 for s in h["stages"] if s == "progress") if h else 0
@@ -1117,7 +1159,7 @@ try:
             "launch": first.isoformat() if first else None,
             "launch_last": fw[-1].isoformat() if fw else None,
             "dday": (first - TODAY).days if first else None,
-            "sku_new": a["new"], "sku_carry": a["carry"], "style_count": len(a["styles"]),
+            "sku_new": _sku_new, "sku_carry": _sku_carry, "style_count": _style_cnt,
             "prep_done": prep_done, "prep_prog": prep_prog, "prep_total": prep_total,
             "prep_pct": round(prep_done / prep_total * 100) if prep_total else 0,
             "sales": sales,
