@@ -923,7 +923,8 @@ try:
 
         def _perd(hero, per):
             P = hero_perf.setdefault(hero, {"periods": {}, "season": _HERO_SEASON})
-            return P["periods"].setdefault(per, {"gmv": 0, "pmkt_gmv": 0, "pdp_real": 0, "conv": 0, "ad_gmv": 0, "pdp_ad": 0})
+            return P["periods"].setdefault(per, {"gmv": 0, "pmkt_gmv": 0, "pdp_real": 0, "conv": 0, "ad_gmv": 0, "pdp_ad": 0,
+                                                 "pdp_real_ly": 0, "conv_ly": 0, "pmkt_gmv_ly": 0})
 
         # (1a) 성과 GMV = 실적 누판(gmv=실판매가) — 매출 YTD/MTD/WEEK 탭을 신품번→히어로로 롤업.
         #      PMKT의 gmv는 직접경로 어트리뷰션이라 실적보다 작음 → 헤드라인 GMV엔 누판을 씀.
@@ -945,6 +946,10 @@ try:
             d["conv"] += round(_num(r.get("buy_uv")))
             d["ad_gmv"] += round(_num(r.get("mkt_gmv")))
             d["pdp_ad"] += round(_num(r.get("mkt_pdp_uv")))
+            # 전년 동기간(YoY) — PMKT기간 셀의 *_ly 컬럼(같은 goods 전년 날짜). 신규 goods는 전년 0 → 프론트서 null 처리.
+            d["pdp_real_ly"] += round(_num(r.get("pdp_uv_ly")))
+            d["conv_ly"] += round(_num(r.get("buy_uv_ly")))
+            d["pmkt_gmv_ly"] += round(_num(r.get("gmv_ly")))
         # (2) PMKT주차 — goods×ISO주차 → 히어로별 주차 시계열(거래액/PDP 스파크라인, 기간 무관)
         _wk_keys, _hero_wk, _wk_label = set(), {}, {}
         for r in read_tab(sheets, SALES_SHEET_ID, "PMKT주차"):
