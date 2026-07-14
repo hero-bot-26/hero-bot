@@ -439,6 +439,20 @@ try:
         _add("입고알람", "입고알람", it["when"].isoformat(), it["issue"], it["brand"], it["owner"])
     for p in _IMCT.load_general_promos(sheets):
         _add("기획전", "기획전", p["start"].isoformat(), p["title"], "", p["owner"])
+    # 온라인 캠페인 스케줄('[통합] 26년 프로모션 스케줄') — 월별 SUMMARY 상세(1~7월, 자가확장) + 연간 백본(8~12월)
+    _n_on = 0
+    try:
+        for it in _IMCT.load_online(sheets):
+            if _add("온라인", "온라인", it["date"].isoformat(), it["name"], it["sub"],
+                    approx=it.get("approx", False),
+                    end=(it["end"].isoformat() if it.get("end") else ""), guide=it.get("guide", "")):
+                _n_on += 1
+        print(f"IMC 온라인 캠페인 로드: {_n_on}건")
+        if _n_on == 0:
+            _HEALTH.append("온라인 캠페인 0건 — 시트 권한/구조 확인")
+    except Exception as _e_on:
+        _HEALTH.append(f"온라인 캠페인 로드 예외: {type(_e_on).__name__}")
+        print(f"[주의] 온라인 캠페인 로드 실패(기존 소스 유지): {type(_e_on).__name__}: {_e_on}")
 
     # 2) SNS/CRM 브랜드 콘텐츠 통합 관리 시트 (별개 파일) — 온사이트/PR/IG광고. 헤더명 기반 파싱(#4).
     def _date_ymd(s):       # "2025/9/4" · "2025.09.04"

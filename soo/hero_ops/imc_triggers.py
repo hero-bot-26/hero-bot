@@ -440,6 +440,185 @@ def format_offline(groups):
     return out
 
 
+# ── 온라인 캠페인 스케줄 ('[통합] 26년 무탠다드 프로모션 스케줄' 시트) ──────────
+#   ① 월별 SUMMARY 탭("26' N월 SUMMARY") = 매월 다음 달 상세 확정 → 하단 기획전 테이블
+#      (브랜드/카테고리/기획전 구분/시작일·종료일ISO/운영 가이드). 탭이 매월 신규 생성 → 자가 확장.
+#   ② 연간 '26년 캠페인 스케줄' = 월(R3)×일(R4) 가로 그리드. -2026 전사 백본 + 주요이슈 + CPCMS.
+#      월별 SUMMARY 있는 달은 상세가 권위 → 백본은 미확정(월별 SUMMARY 없는) 달만 채움.
+ONLINE_SHEET = "13P65W4wjZBkDfoKQ1X1s9Uc2eG84vMH1etw2ewCNHdE"
+ONLINE_ANNUAL_TAB = "26년 캠페인 스케줄"
+ONLINE_OWNER = "온라인MD"
+_ONLINE_MONTH_RE = re.compile(r"26'?\s*(\d{1,2})\s*월\s*SUMMARY")
+
+
+def _md(d):
+    return f"{d.month}/{d.day}" if d else ""
+
+
+def _online_monthly_tabs(sheets) -> list[tuple[int, str]]:
+    """존재하는 '26' N월 SUMMARY' 탭 → [(month, title)] (월 오름차순)."""
+    meta = sheets.spreadsheets().get(
+        spreadsheetId=ONLINE_SHEET, fields="sheets.properties.title").execute()
+    out = []
+    for s in meta.get("sheets", []):
+        t = str(s["properties"]["title"]).strip()
+        m = _ONLINE_MONTH_RE.match(t)
+        if m:
+            out.append((int(m.group(1)), t))
+    return sorted(out)
+
+
+def load_online_monthly(sheets) -> list[dict]:
+    """각 '26' N월 SUMMARY' 하단 기획전 테이블 → 상세 온라인 기획전.
+    헤더(카테고리/테마·기획전 구분·시작일·종료일 포함 행)를 동적 감지 후 컬럼 매핑.
+    ★탭 전체를 batchGet 1회로 읽어 Sheets 읽기수 절약(429 방지)."""
+    tabs = _online_monthly_tabs(sheets)
+    if not tabs:
+        return []
+    try:
+        vr = sheets.spreadsheets().values().batchGet(
+            spreadsheetId=ONLINE_SHEET, ranges=[f"'{t}'!A1:N130" for _, t in tabs],
+            valueRenderOption="FORMATTED_VALUE").execute().get("valueRanges", [])
+    except Exception:
+        return []
+    out = []
+    for (mon, _tab), vrng in zip(tabs, vr):
+        rows = vrng.get("values", [])
+        # 헤더행 = '시작일'·'종료일'·'기획전 구분'·'카테고리/테마' 모두 있는 행.
+        hi, cols = None, {}
+        for i, r in enumerate(rows):
+            cells = [str(c or "").strip() for c in r]
+            pos = {}
+            for name in ("브랜드 구분", "카테고리/테마", "기획전 구분", "시작일", "종료일", "운영 가이드"):
+                for j, c in enumerate(cells):
+                    if c == name:
+                        pos[name] = j
+                        break
+            if all(k in pos for k in ("카테고리/테마", "기획전 구분", "시작일", "종료일")):
+                hi, cols = i, pos
+                break
+        if hi is None:
+            continue
+
+        def _cell(r, key):
+            j = cols.get(key)
+            return str(r[j]).strip() if j is not None and j < len(r) and r[j] is not None else ""
+
+        for r in rows[hi + 1:]:
+            name = _cell(r, "카테고리/테마")
+            sd = _to_date(_cell(r, "시작일"))
+            if not name or not sd or sd.year != SEASON_YEAR:
+                continue
+            ed = _to_date(_cell(r, "종료일"))
+            out.append({"date": sd, "end": ed, "brand": _cell(r, "브랜드 구분"),
+                        "name": name, "kind": _cell(r, "기획전 구분"),
+                        "guide": _cell(r, "운영 가이드"), "month": mon})
+    return out
+
+
+def load_online_annual(sheets, skip_months=()) -> list[dict]:
+    """'26년 캠페인 스케줄' 가로 그리드 → 2026 전사/무탠 캠페인 백본.
+    월(R3)×일(R4) 컬럼→날짜 매핑. -2026 전사 블록 + 주요이슈 + CPCMS 행만 추출."""
+    try:
+        rows = sheets.spreadsheets().values().get(
+            spreadsheetId=ONLINE_SHEET, range=f"'{ONLINE_ANNUAL_TAB}'!A3:NN60",
+            valueRenderOption="FORMATTED_VALUE").execute().get("values", [])
+    except Exception:
+        return []
+    if len(rows) < 4:
+        return []
+    r_month = rows[0]                       # 원래 R3 = 월 라벨행
+    mstart = {}                             # 월 시작 컬럼 → month
+    for j, c in enumerate(r_month):
+        m = re.match(r"(\d{1,2})\s*월", str(c or "").strip())
+        if m:
+            mstart[j] = int(m.group(1))
+    starts = sorted(mstart)
+
+    def col_date(j):
+        sc = None
+        for s in starts:
+            if s <= j:
+                sc = s
+            else:
+                break
+        if sc is None:
+            return None
+        try:
+            return datetime.date(SEASON_YEAR, mstart[sc], j - sc + 1)
+        except ValueError:
+            return None
+
+    def _c(r, j):
+        return str(r[j]).strip() if j < len(r) and r[j] is not None else ""
+
+    # 대상 행 = (그룹라벨, row). ① -2026 전사 블록(빅캠페인~무신사스탠다드) ② 주요이슈 ③ CPCMS.
+    targets, used = [], set()
+    y26 = next((i for i, r in enumerate(rows) if _c(r, 1) == "-2026"), None)
+    if y26 is None:   # 폴백: 마지막 '빅캠페인' 행 = 최신년(2026)
+        bigs = [i for i, r in enumerate(rows) if _c(r, 2) == "빅캠페인"]
+        y26 = (bigs[-1] + 1) if bigs else None
+    if y26 is not None:
+        for i in range(y26 - 1, y26 + 4):   # 빅캠페인·그외전사·멤버스/브랜드위크·월간·무신사스탠다드
+            if 0 <= i < len(rows) and i not in used:
+                used.add(i)
+                targets.append((_c(rows[i], 2) or "전사 캠페인", rows[i]))
+    for i, r in enumerate(rows):
+        lab = " ".join(_c(r, k) for k in range(min(3, len(r))))
+        if "주요 이슈" in lab and i not in used:
+            used.add(i)
+            targets.append(("무탠 이슈", r))
+        elif "CPCMS" in lab and i not in used:
+            used.add(i)
+            targets.append(("CPCMS", r))
+            if i + 1 < len(rows) and _c(rows[i + 1], 2) == "" and (i + 1) not in used:
+                used.add(i + 1)                # 병합 연속행
+                targets.append(("CPCMS", rows[i + 1]))
+
+    def _grp(g):
+        g = re.sub(r"\s*\(.*\)", "", g).strip()
+        return {"그 외 전사캠페인": "전사 캠페인", "멤버스/브랜드위크": "멤버스/브랜드위크",
+                "무신사 스탠다드": "무신사 스탠다드"}.get(g, g) or "전사 캠페인"
+
+    best = {}   # (그룹, 정규화명, 월) → 최초일 (같은 캠페인 병합셀/반복 dedup)
+    for group, r in targets:
+        g = _grp(group)
+        for j in range(3, len(r)):
+            s = _c(r, j)
+            if not s or s == "0":
+                continue
+            d = col_date(j)
+            if d is None or d.month in skip_months:
+                continue
+            name = re.split(r"[(（]", s)[0].strip()
+            if len(name) < 2:
+                continue
+            key = (g, name.replace(" ", ""), d.month)
+            if key not in best or d < best[key][0]:
+                best[key] = (d, name, g)
+    return [{"date": d, "name": name, "kind": g} for (d, name, g) in best.values()]
+
+
+def load_online(sheets) -> list[dict]:
+    """온라인 캠페인 스케줄 = 월별 상세(권위) + 연간 백본(월별 없는 달만).
+    반환 [{name, sub, date, end, approx, guide}] — 생성기가 IMC '온라인' 타입으로 주입."""
+    monthly = load_online_monthly(sheets)
+    covered = {it["month"] for it in monthly}
+    annual = load_online_annual(sheets, skip_months=covered)
+    out = []
+    for it in monthly:
+        sd, ed = it["date"], it.get("end")
+        rng = _md(sd) + (f"~{_md(ed)}" if ed and ed != sd else "")
+        parts = [p for p in (it.get("brand"), it.get("kind")) if p]
+        sub = " · ".join(parts) + (f" · {rng}" if rng else "")
+        out.append({"name": it["name"], "sub": sub, "date": sd, "end": ed,
+                    "approx": False, "guide": it.get("guide", "")})
+    for it in annual:
+        out.append({"name": it["name"], "sub": f"전사 · {it['kind']}", "date": it["date"],
+                    "end": None, "approx": True, "guide": ""})
+    return out
+
+
 # ── IMC-7: 발매이슈(D-4 공유) + 일반기획전(작성 D-1) 역산 ─────────────────────
 ISSUE_TAB = "발매 이슈"
 ISSUE_LEADS = {"맨": "유다휘", "우먼": "전혜미", "키즈": "이지현", "전체": "김민수"}
