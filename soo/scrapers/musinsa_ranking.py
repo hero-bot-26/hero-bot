@@ -31,6 +31,12 @@ class RankItem:
     brand: str
     product_name: str
     url: str
+    # 트렌드 레이더용 확장 필드 (랭킹봇 경로에선 기본값으로 무시됨)
+    image_url: str = ""
+    price: int | None = None
+    discount_rate: int | None = None
+    review_count: int | None = None
+    label: str = ""
 
 
 def _params_page1(section_id: int, sub_pan: str | None = None, gf: str = "A") -> dict:
@@ -63,6 +69,21 @@ def _params_pagen(page: int, offset: int, start_rank: int, gf: str = "A") -> dic
     }
 
 
+def _to_int(v) -> int | None:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _event_payloads(image: dict) -> tuple[dict, dict]:
+    """image.onClickLike.eventLog 아래 ga4 / amplitude payload 추출 (가격·리뷰 소스)."""
+    log = ((image.get("onClickLike") or {}).get("eventLog") or {})
+    ga4 = ((log.get("ga4") or {}).get("payload") or {})
+    amp = ((log.get("amplitude") or {}).get("payload") or {})
+    return ga4, amp
+
+
 def _extract_items(payload: dict) -> list[RankItem]:
     """API 응답 dict에서 RankItem 리스트 추출."""
     out: list[RankItem] = []
@@ -72,7 +93,8 @@ def _extract_items(payload: dict) -> list[RankItem]:
         for it in module.get("items", []):
             if it.get("type") != "PRODUCT_COLUMN":
                 continue
-            rank = (it.get("image") or {}).get("rank")
+            image = it.get("image") or {}
+            rank = image.get("rank")
             if not rank:  # 광고 슬롯 등 None
                 continue
             info = it.get("info") or {}
@@ -80,9 +102,20 @@ def _extract_items(payload: dict) -> list[RankItem]:
             brand = info.get("brandName") or ""
             name = info.get("productName") or ""
             url = (it.get("onClick") or {}).get("url") or f"https://www.musinsa.com/products/{goods_no}"
+
+            ga4, amp = _event_payloads(image)
+            image_url = image.get("url") or ""
+            price = _to_int(ga4.get("best_price") or ga4.get("price"))
+            discount_rate = _to_int(ga4.get("discount_rate"))
+            review_count = _to_int(amp.get("reviewCount"))
+            labels = image.get("labels") or []
+            label = (labels[0].get("text") if labels and isinstance(labels[0], dict) else "") or ""
+
             out.append(RankItem(
                 rank=int(rank), goods_no=goods_no,
                 brand=brand, product_name=name, url=url,
+                image_url=image_url, price=price, discount_rate=discount_rate,
+                review_count=review_count, label=label,
             ))
     return out
 

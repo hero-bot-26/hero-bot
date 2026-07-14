@@ -1,7 +1,11 @@
 secrets.yaml
 credentials.json
 token.json
-data/
+data/*
+# 트렌드 레이더: 봇 내부 기억(스냅샷) + 키워드 사전은 커밋 대상 (rankings.db 등 나머지는 계속 무시)
+!data/trend_snap/
+!data/trend_snap/*.json
+!data/trend_keywords.json
 logs/
 __pycache__/
 *.pyc

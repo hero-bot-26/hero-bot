@@ -1,0 +1,66 @@
+name: Trend radar daily
+
+# 트렌드 레이더 — 매일 무신사 전 브랜드 Top500 캡처 → 어제 대비 급상승/뜨는 키워드
+# → 전사 트렌드 채널에 발행. 히어로 랭킹봇과 별개 라인. Google 인증 불필요(스크래퍼+로컬 JSON).
+# 핵심: 오늘 스냅샷을 data/trend_snap/에 커밋-백 → 내일 실행 때 "어제"가 존재.
+on:
+  schedule:
+    - cron: "30 0 * * *"    # ~09:30 KST (트렌드는 정시 정확도 불필요; 스케줄 지연 허용)
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: "대상 날짜 (YYYY-MM-DD, 기본 오늘)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Slack 발송 안 함 (true/false)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: trend-daily
+  cancel-in-progress: false
+
+permissions:
+  contents: write            # 스냅샷 커밋-백용
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run trend radar
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.as_of }}" ]; then
+            ARGS="$ARGS --as-of ${{ github.event.inputs.as_of }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python run_trend_daily.py $ARGS
+
+      - name: Commit snapshot back (변경 있을 때만)
+        run: |
+          git config user.name  "trend-radar-bot"
+          git config user.email "trend-radar-bot@users.noreply.github.com"
+          git add data/trend_snap
+          if git diff --cached --quiet; then
+            echo "스냅샷 변경 없음 — 커밋 스킵"
+          else
+            git commit -m "트렌드 스냅샷 (자동) $(date -u +%Y-%m-%d)"
+            git pull --rebase --autostash || true
+            git push
+          fi

@@ -35,6 +35,21 @@ ranking:
   # 캡처 시 하단을 rank N까지만 보이게 자름 (null/0 = 풀페이지). 모바일/데스크톱 6열 = 2줄 = 12.
   screenshot_crop_to_rank: 12
 
+# 트렌드 레이더 — 전사용 "요즘 뭐가 잘 팔리나" 일일/주간 발행 (무탠 필터 없이 전 브랜드 Top500)
+trend:
+  top_n: 500
+  section_id: 199
+  sub_pan: "product"
+  # 봇 내부 기억(깃 커밋되는 작은 JSON 스냅샷). 스프레드시트 아님.
+  snapshot_dir: "data/trend_snap"
+  keep_days: 14
+  # "급상승" 판정: 어제 대비 이만큼 이상 순위 오르면 riser
+  jump_threshold: 30
+  # 신규/급상승 후보를 이 순위 안에서만 집계 (하위권 노이즈 컷)
+  top_focus: 300
+  # 발행 채널 — 전사 트렌드 채널. 비면 dry 콘솔만.
+  slack_channel: "C0BGZHX98F5"
+
 # 히어로 운영 시스템 (IA v0.2 시트 ① 히어로 보드 + 시트 ② 발매분 보드)
 # 생성 도구: python -m soo.hero_ops._create_master_sheets
 hero_ops:
