@@ -975,6 +975,41 @@ try:
                 except (TypeError, ValueError): h = None
             return h
 
+        # ★26FW 히어로 매핑(MSTRD 'HERO STY' B열=HERO/HERO SUB 진실소스) — 26SS와 별도.
+        #   26SS·26FW는 히어로 이름이 겹치지만(커브드 SS 7STY vs FW 14STY 등) 스타일 구성이
+        #   달라 이름 조인이 불가 → 26FW 실적은 이 매핑으로 따로 롤업(hero_perf_fw).
+        _fw2h_sty, _fw2h_goods = {}, {}
+        try:
+            from soo.hero_ops.imc_triggers import load_26fw_hero_goods
+            _fwm = load_26fw_hero_goods(sheets)
+            _fw2h_sty, _fw2h_goods = _fwm["style_to_hero"], _fwm["goods_to_hero"]
+            json.dump({k: _fwm[k] for k in ("season", "style_to_hero", "goods_to_hero", "styles")},
+                      open(ROOT / "hero_goods_26fw.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+            _nou = sum(1 for s in _fwm["styles"].values() if s["uid_src"] == "없음")
+            print(f"26FW 히어로 매핑(MSTRD HERO STY): 스타일 {len(_fw2h_sty)} · uid {len(_fw2h_goods)} · uid미생성 {_nou}")
+        except Exception as _efw:      # 라이브 읽기 실패 → 스냅샷 폴백(조용한 0 방지)
+            _HEALTH.append(f"26FW 히어로 매핑 로드 실패({type(_efw).__name__}) — 스냅샷 사용")
+            print(f"[주의] 26FW 매핑 라이브 실패 — 스냅샷 폴백: {type(_efw).__name__}: {_efw}")
+            try:
+                _snap = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
+                _fw2h_sty, _fw2h_goods = _snap["style_to_hero"], _snap["goods_to_hero"]
+            except Exception:
+                _HEALTH.append("26FW 히어로 매핑 스냅샷도 없음 — 26FW 실적 0")
+
+        def _hero_of_fw(style, goods=None):
+            h = _fw2h_sty.get(str(style or "").split("-")[0].strip())
+            if not h and goods is not None:
+                try: h = _fw2h_goods.get(str(int(goods)))
+                except (TypeError, ValueError): h = None
+            return h
+
+        hero_perf_fw = {}
+
+        def _perd_fw(hero, per):
+            P = hero_perf_fw.setdefault(hero, {"periods": {}, "season": "26FW"})
+            return P["periods"].setdefault(per, {"gmv": 0, "pmkt_gmv": 0, "pdp_real": 0, "conv": 0,
+                                                 "ad_gmv": 0, "pdp_ad": 0})
+
         def _perd(hero, per):
             P = hero_perf.setdefault(hero, {"periods": {}, "season": _HERO_SEASON})
             return P["periods"].setdefault(per, {"gmv": 0, "pmkt_gmv": 0, "pdp_real": 0, "conv": 0, "ad_gmv": 0, "pdp_ad": 0,
@@ -987,11 +1022,22 @@ try:
                 hero = _hero_of(r.get("style_no"), r.get("goods_no"))
                 if hero:
                     _perd(hero, _per)["gmv"] += round(_num(r.get("gmv")))
+                hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))   # 26FW 기준 별도 롤업
+                if hero_fw:
+                    _perd_fw(hero_fw, _per)["gmv"] += round(_num(r.get("gmv")))
         # (1b) PMKT기간 — 퍼널 지표(전환=buy_uv/pdp_uv · 마케팅기여=mkt_gmv/mkt_pdp_uv, 캠페인기획전+외부유입)
         #      + 마케팅기여율 분모용 pmkt_gmv(직접경로 GMV). 헤드라인 GMV는 위 누판을 쓰므로 여기 gmv는 pmkt_gmv로만.
         for r in read_tab(sheets, SALES_SHEET_ID, "PMKT기간"):
-            hero = _hero_of(r.get("style_no"))
             per = str(r.get("period") or "").strip()
+            hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))   # 26FW 기준 퍼널 지표
+            if hero_fw and per in _PERIODS:
+                dfw = _perd_fw(hero_fw, per)
+                dfw["pmkt_gmv"] += round(_num(r.get("gmv")))
+                dfw["pdp_real"] += round(_num(r.get("pdp_uv")))
+                dfw["conv"] += round(_num(r.get("buy_uv")))
+                dfw["ad_gmv"] += round(_num(r.get("mkt_gmv")))
+                dfw["pdp_ad"] += round(_num(r.get("mkt_pdp_uv")))
+            hero = _hero_of(r.get("style_no"))
             if not hero or per not in _PERIODS:
                 continue
             d = _perd(hero, per)
@@ -1203,10 +1249,13 @@ try:
 
     # 준비 완료율 (heroes 매트릭스, 이름정규화 조인)
     _prep = {_fw_norm(h["name"]): h for h in heroes}
-    # 판매 = Databricks 누판(상품MAP 799uid 기준, IMC_PERF hero_list) — 사용자 지시(2026-07-08):
-    #   옛 전사시트 '26년 히어로 실적 대시보드' 폐기, 799uid 누판이 단일 기준.
-    _perf_heroes = globals().get("hero_list", []) or []
-    _sales = {_fw_norm(h["name"]): h for h in _perf_heroes}
+    # 판매 = 26FW 히어로 스타일(MSTRD 'HERO STY' B열=HERO/HERO SUB) 기준 누판 롤업.
+    # ★사용자 확정(2026-07-15): 26FW 라이브 실적은 MSTRD 26FW 스타일만 집계(26SS 전용 STY 제외).
+    #   기존엔 26SS 기준 hero_list를 히어로 '이름'으로 조인했는데, 26SS·26FW는 이름이 겹쳐도
+    #   STY 구성이 달라(커브드=SS 7STY/FW 14STY, 공통 3) 완전히 틀린 값이었다:
+    #   640 정답 uid 중 178개(28%)만 잡히고 8종은 실적 0(이름 미존재), 캐리오버는 26SS 매출까지 과다.
+    _perf_fw = globals().get("hero_perf_fw", {}) or {}
+    _sales = {_fw_norm(k): v for k, v in _perf_fw.items()}
 
     _fw_list = []
     for name, grade in _FW_GRADE.items():

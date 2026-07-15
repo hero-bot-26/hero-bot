@@ -166,6 +166,89 @@ def load_mutan_release_dates(sheets) -> dict:
     return {"rep_first": rep_first, "heroes": out}
 
 
+# ── 26FW 히어로 스타일 진실소스 ───────────────────────────────────────────────
+#   ★MSTRD_26FW 상품MAP 'HERO STY' 탭 B열(HERO / HERO SUB)이 26FW 히어로 스타일의 정답.
+#   그 스타일의 SKU(uid)는 같은 시트 'SKU' 탭(B=품번, I=uid)에서, 아직 SKU 탭에 없는
+#   신규는 무탠 아이템마스터(C=UID, D=신품번, E=대표품번)에서 실시간으로 잡는다.
+#   ★26SS와 26FW는 히어로 이름이 겹치지만(커브드·슬랙스·데님…) STY 구성이 다르므로
+#     반드시 시즌별 매핑을 따로 둔다 — 이름 조인 금지.
+MSTRD_SHEET = "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"
+MSTRD_STY_TAB = "HERO STY"   # R6헤더/R7~: A·C=품번 B=HERO|HERO SUB D=시리즈 E=캐리/신규 F=발매시즌 M=품명
+MSTRD_SKU_TAB = "SKU"        # R4헤더/R5~: B=품번 I=uid
+# B열이 'HERO/HERO SUB'가 아니지만 히어로로 인정하는 예외 {품번: 시리즈} (사용자 확정)
+MSTRD_STY_EXCEPTIONS = {"MMFFJBA01": "에센셜 플리스"}   # B열='핵심상품'이나 HERO SUB로 인정
+
+
+def load_26fw_hero_goods(sheets) -> dict:
+    """MSTRD HERO STY(B열 HERO/HERO SUB) → 26FW 히어로 스타일·uid 매핑.
+
+    반환 {"season": "26FW",
+          "style_to_hero": {품번: 시리즈},
+          "goods_to_hero": {uid: 시리즈},
+          "styles": {품번: {grade, hero, carry, rel_season, name, uid_src}}}
+    ★uid가 아직 생성 안 된 스타일(발주전/미발매)은 goods_to_hero에 안 들어감 — 생성되면
+      다음 실행에서 자동 편입(무탠 C열이 실시간 소스).
+    """
+    def g(r, j):
+        return str(r[j]).strip() if j < len(r) and r[j] is not None else ""
+
+    # 1) HERO STY → 히어로 스타일 정답
+    sv = sheets.spreadsheets().values().get(
+        spreadsheetId=MSTRD_SHEET, range=f"'{MSTRD_STY_TAB}'!A7:N1100").execute().get("values", [])
+    styles: dict[str, dict] = {}
+    for r in sv:
+        sty = g(r, 0) or g(r, 2)
+        grade, ser = g(r, 1).upper(), g(r, 3)
+        if not sty or sty == "-":
+            continue
+        if grade not in ("HERO", "HERO SUB"):
+            if sty in MSTRD_STY_EXCEPTIONS:
+                grade, ser = "HERO SUB", MSTRD_STY_EXCEPTIONS[sty]
+            else:
+                continue            # '핵심상품' 등 = 히어로 아님
+        if sty in MSTRD_STY_EXCEPTIONS:
+            ser = MSTRD_STY_EXCEPTIONS[sty]
+        if not ser or ser == "-":
+            continue
+        styles[sty] = {"grade": grade, "hero": ser, "carry": g(r, 4),
+                       "rel_season": g(r, 5), "name": g(r, 12), "uid_src": "없음"}
+
+    # 2) SKU 탭: 품번 → uid
+    kv = sheets.spreadsheets().values().get(
+        spreadsheetId=MSTRD_SHEET, range=f"'{MSTRD_SKU_TAB}'!A5:I16000").execute().get("values", [])
+    sku_uid: dict[str, set] = defaultdict(set)
+    for r in kv:
+        sty, uid = g(r, 1), g(r, 8)
+        if sty and uid.isdigit():
+            sku_uid[sty].add(uid)
+
+    # 3) 무탠 아이템마스터: 신품번/대표품번 → uid (실시간 생성분)
+    mv = sheets.spreadsheets().values().get(
+        spreadsheetId=MUTAN_SHEET, range=f"'{MUTAN_TAB}'!C12:E30000").execute().get("values", [])
+    mut_uid: dict[str, set] = defaultdict(set)
+    for r in mv:
+        uid, new_sty, rep = g(r, 0), g(r, 1), g(r, 2)   # C=UID D=신품번 E=대표품번
+        if not uid.isdigit():
+            continue
+        for k in (new_sty, rep):
+            if k and k != "-":
+                mut_uid[k].add(uid)
+
+    goods_to_hero: dict[str, str] = {}
+    for sty, s in styles.items():
+        uids = set(sku_uid.get(sty, ())) | set(mut_uid.get(sty, ()))
+        if uids:
+            s["uid_src"] = "SKU+무탠" if (sku_uid.get(sty) and mut_uid.get(sty)) else (
+                "SKU" if sku_uid.get(sty) else "무탠")
+        for u in uids:
+            goods_to_hero[u] = s["hero"]
+
+    return {"season": "26FW",
+            "style_to_hero": {k: v["hero"] for k, v in styles.items()},
+            "goods_to_hero": goods_to_hero,
+            "styles": styles}
+
+
 def compute_imc(releases, as_of: datetime.date):
     """(owner, dN) → [release] 그룹. dN ∈ SCHEME(7/2/0)."""
     groups: dict[tuple, list] = defaultdict(list)
