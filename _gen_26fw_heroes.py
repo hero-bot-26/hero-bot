@@ -978,12 +978,12 @@ try:
         # ★26FW 히어로 매핑(MSTRD 'HERO STY' B열=HERO/HERO SUB 진실소스) — 26SS와 별도.
         #   26SS·26FW는 히어로 이름이 겹치지만(커브드 SS 7STY vs FW 14STY 등) 스타일 구성이
         #   달라 이름 조인이 불가 → 26FW 실적은 이 매핑으로 따로 롤업(hero_perf_fw).
-        _fw2h_sty, _fw2h_goods = {}, {}
+        _fw2h_sty, _fw2h_goods, _fw2sty = {}, {}, {}
         try:
             from soo.hero_ops.imc_triggers import load_26fw_hero_goods
             _fwm = load_26fw_hero_goods(sheets)
-            _fw2h_sty, _fw2h_goods = _fwm["style_to_hero"], _fwm["goods_to_hero"]
-            json.dump({k: _fwm[k] for k in ("season", "style_to_hero", "goods_to_hero", "styles")},
+            _fw2h_sty, _fw2h_goods, _fw2sty = _fwm["style_to_hero"], _fwm["goods_to_hero"], _fwm["goods_to_style"]
+            json.dump({k: _fwm[k] for k in ("season", "style_to_hero", "goods_to_hero", "goods_to_style", "styles")},
                       open(ROOT / "hero_goods_26fw.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
             _nou = sum(1 for s in _fwm["styles"].values() if s["uid_src"] == "없음")
             print(f"26FW 히어로 매핑(MSTRD HERO STY): 스타일 {len(_fw2h_sty)} · uid {len(_fw2h_goods)} · uid미생성 {_nou}")
@@ -993,6 +993,7 @@ try:
             try:
                 _snap = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
                 _fw2h_sty, _fw2h_goods = _snap["style_to_hero"], _snap["goods_to_hero"]
+                _fw2sty = _snap.get("goods_to_style", {})
             except Exception:
                 _HEALTH.append("26FW 히어로 매핑 스냅샷도 없음 — 26FW 실적 0")
 
@@ -1004,6 +1005,25 @@ try:
             return h
 
         hero_perf_fw = {}
+        # 26FW STY별 실적(홈 26FW 행 펼침 드릴다운용) — hero → {품번: {기간: {gmv, qty}}}
+        #   ★기존 프론트는 DASHBOARD(26SS)에서 이름으로 stys를 끌어와 26SS 스타일을 보여줬다
+        #     (벨트 26FW 합계 7.8억인데 하위 STY가 10.4억, 양말에 26SS 전용 FMASC101 노출).
+        hero_sty_fw = {}
+
+        def _styd_fw(hero, base, per):
+            return hero_sty_fw.setdefault(hero, {}).setdefault(base, {}).setdefault(per, {"gmv": 0, "qty": 0})
+
+        def _base_of(style, goods):
+            # ★MSTRD 등록 품번을 우선. 매출 시트의 style_no는 '리뉴얼 이전품번'인 경우가 있어
+            #   그대로 쓰면 같은 상품이 옛 품번으로 갈라진다(양말 FMASC101 = MEASC0Z70의 구 품번,
+            #   같은 uid가 양쪽에 등록됨 → 품명 동일 '라이트웨이트 크루 삭스 1팩').
+            try:
+                b = _fw2sty.get(str(int(goods)), "")
+                if b:
+                    return b
+            except (TypeError, ValueError):
+                pass
+            return str(style or "").split("-")[0].strip()
 
         def _perd_fw(hero, per):
             P = hero_perf_fw.setdefault(hero, {"periods": {}, "season": "26FW"})
@@ -1026,8 +1046,14 @@ try:
                 hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))   # 26FW 기준 별도 롤업
                 if hero_fw:
                     _dfw = _perd_fw(hero_fw, _per)
-                    _dfw["gmv"] += round(_num(r.get("gmv")))
-                    _dfw["qty"] += round(_num(r.get("qty")))
+                    _g0, _q0 = round(_num(r.get("gmv"))), round(_num(r.get("qty")))
+                    _dfw["gmv"] += _g0
+                    _dfw["qty"] += _q0
+                    _b = _base_of(r.get("style_no"), r.get("goods_no"))
+                    if _b:
+                        _sd0 = _styd_fw(hero_fw, _b, _per)
+                        _sd0["gmv"] += _g0
+                        _sd0["qty"] += _q0
         # 26FW 전년 동기간(YoY 분모) — 전년YTD/전년MTD/전년WEEK 탭을 26FW 매핑으로 롤업.
         #   ★프론트가 26SS DASHBOARD를 이름으로 조인해 쓰지 않도록 26FW 자체 기간·전년을 갖춘다.
         for _per in _PERIODS:
@@ -1311,7 +1337,15 @@ try:
                     _ly = _d.get("gmv_ly") or 0
                     _pp[_p.lower()] = {"gmv": _d.get("gmv", 0), "qty": _d.get("qty", 0),
                                        "yoy": ((_d.get("gmv", 0) - _ly) / _ly) if _ly else None}
-                sales = {"gmv": _g, "periods": _pp,
+                # STY 드릴다운(26FW 스타일만) — 프론트가 DASHBOARD(26SS) stys를 안 쓰게.
+                _st = []
+                for _b, _pers in (globals().get("hero_sty_fw", {}) or {}).get(name, {}).items():
+                    _st.append({"style": _b,
+                                "periods": {p.lower(): {"gmv": (_pers.get(p) or {}).get("gmv", 0),
+                                                        "qty": (_pers.get(p) or {}).get("qty", 0)}
+                                            for p in _PERIODS}})
+                _st.sort(key=lambda x: -x["periods"]["ytd"]["gmv"])
+                sales = {"gmv": _g, "periods": _pp, "stys": _st,
                          # 전환율 = 구매UV/PDP조회UV (실적·퍼널 정의 통일)
                          "conv": round(_buy / _pdp * 100, 1) if _pdp else None,
                          # 마케팅기여 = 마케팅 유입(캠페인/기획전+외부) 거래액 / PMKT 직접경로 거래액

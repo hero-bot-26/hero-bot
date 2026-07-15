@@ -235,6 +235,7 @@ def load_26fw_hero_goods(sheets) -> dict:
                 mut_uid[k].add(uid)
 
     goods_to_hero: dict[str, str] = {}
+    goods_to_style: dict[str, str] = {}      # uid → 품번(STY 단위 집계용; 매출행 신품번 빈칸 대비)
     for sty, s in styles.items():
         uids = set(sku_uid.get(sty, ())) | set(mut_uid.get(sty, ()))
         if uids:
@@ -242,10 +243,12 @@ def load_26fw_hero_goods(sheets) -> dict:
                 "SKU" if sku_uid.get(sty) else "무탠")
         for u in uids:
             goods_to_hero[u] = s["hero"]
+            goods_to_style[u] = sty
 
     return {"season": "26FW",
             "style_to_hero": {k: v["hero"] for k, v in styles.items()},
             "goods_to_hero": goods_to_hero,
+            "goods_to_style": goods_to_style,
             "styles": styles}
 
 
