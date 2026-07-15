@@ -1007,7 +1007,8 @@ try:
 
         def _perd_fw(hero, per):
             P = hero_perf_fw.setdefault(hero, {"periods": {}, "season": "26FW"})
-            return P["periods"].setdefault(per, {"gmv": 0, "pmkt_gmv": 0, "pdp_real": 0, "conv": 0,
+            return P["periods"].setdefault(per, {"gmv": 0, "qty": 0, "gmv_ly": 0,
+                                                 "pmkt_gmv": 0, "pdp_real": 0, "conv": 0,
                                                  "ad_gmv": 0, "pdp_ad": 0})
 
         def _perd(hero, per):
@@ -1024,7 +1025,19 @@ try:
                     _perd(hero, _per)["gmv"] += round(_num(r.get("gmv")))
                 hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))   # 26FW 기준 별도 롤업
                 if hero_fw:
-                    _perd_fw(hero_fw, _per)["gmv"] += round(_num(r.get("gmv")))
+                    _dfw = _perd_fw(hero_fw, _per)
+                    _dfw["gmv"] += round(_num(r.get("gmv")))
+                    _dfw["qty"] += round(_num(r.get("qty")))
+        # 26FW 전년 동기간(YoY 분모) — 전년YTD/전년MTD/전년WEEK 탭을 26FW 매핑으로 롤업.
+        #   ★프론트가 26SS DASHBOARD를 이름으로 조인해 쓰지 않도록 26FW 자체 기간·전년을 갖춘다.
+        for _per in _PERIODS:
+            try:
+                for r in read_tab(sheets, SALES_SHEET_ID, "전년" + _per):
+                    hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))
+                    if hero_fw:
+                        _perd_fw(hero_fw, _per)["gmv_ly"] += round(_num(r.get("gmv")))
+            except Exception as _ely:
+                _HEALTH.append(f"26FW 전년{_per} 로드 실패({type(_ely).__name__}) — YoY 미표시")
         # (1b) PMKT기간 — 퍼널 지표(전환=buy_uv/pdp_uv · 마케팅기여=mkt_gmv/mkt_pdp_uv, 캠페인기획전+외부유입)
         #      + 마케팅기여율 분모용 pmkt_gmv(직접경로 GMV). 헤드라인 GMV는 위 누판을 쓰므로 여기 gmv는 pmkt_gmv로만.
         for r in read_tab(sheets, SALES_SHEET_ID, "PMKT기간"):
@@ -1290,7 +1303,15 @@ try:
                 _pdp = _y.get("pdp_real") or 0        # PDP 조회 UV
                 _buy = _y.get("conv") or 0            # 구매 UV
                 _pmkt = _y.get("pmkt_gmv") or 0       # 직접경로 거래액(마케팅기여 분모)
-                sales = {"gmv": _g,
+                # 기간별(주간/당월/누계) gmv·수량·전년비 — 전부 26FW 스타일 기준.
+                #   프론트 홈 26FW 컬럼이 이걸 그대로 씀(26SS 이름 조인 폐기).
+                _pp = {}
+                for _p in _PERIODS:
+                    _d = (sp.get("periods") or {}).get(_p) or {}
+                    _ly = _d.get("gmv_ly") or 0
+                    _pp[_p.lower()] = {"gmv": _d.get("gmv", 0), "qty": _d.get("qty", 0),
+                                       "yoy": ((_d.get("gmv", 0) - _ly) / _ly) if _ly else None}
+                sales = {"gmv": _g, "periods": _pp,
                          # 전환율 = 구매UV/PDP조회UV (실적·퍼널 정의 통일)
                          "conv": round(_buy / _pdp * 100, 1) if _pdp else None,
                          # 마케팅기여 = 마케팅 유입(캠페인/기획전+외부) 거래액 / PMKT 직접경로 거래액
