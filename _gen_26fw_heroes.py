@@ -335,10 +335,46 @@ GOAL_TAB = "히어로 마케팅 목표"
 MKT_SHEET_ID = "16jqlhmynIxXckdrpjICaDNajZd-xjnrl0x332qDCtzg"  # 마케팅팀 MKT calendar (캠페인 레벨/진행상황·에너지/바이럴)
 
 
+_TAB_TITLES = {}  # sid → 실제 탭 제목 목록(1회 조회 캐시)
+
+
+def _sheet_tabs(sid):
+    if sid not in _TAB_TITLES:
+        try:
+            meta = sheets.spreadsheets().get(spreadsheetId=sid, fields="sheets.properties.title").execute()
+            _TAB_TITLES[sid] = [s["properties"]["title"] for s in meta.get("sheets", [])]
+        except Exception as _e:
+            _HEALTH.append(f"탭 목록 조회 실패({type(_e).__name__}) — 권한 확인")
+            _TAB_TITLES[sid] = []
+    return _TAB_TITLES[sid]
+
+
+def _match_tabs(key, sid=None):
+    """제목에 key가 들어간 실제 탭 전부(정렬). 기간 분할 탭(예: 오피셜 IG (26.7~)/(~26.6)) 대응."""
+    return sorted(t for t in _sheet_tabs(sid or SNS_SHEET_ID) if key in t)
+
+
+def _resolve_tab(tab, sid=None):
+    """논리 탭명 → 실제 탭명. 정확일치 없으면 접두일치로 해석(운영팀이 '(26.7~)' 같은 기간 접미사를
+    붙여도 조용히 0건이 되지 않게). 후보 여러 개면 첫 번째 + 경고."""
+    titles = _sheet_tabs(sid or SNS_SHEET_ID)
+    if not titles or tab in titles:
+        return tab
+    cands = [t for t in titles if t.startswith(tab)]
+    if not cands:
+        return tab  # 아래 읽기에서 실패로 처리 → _HEALTH 경고
+    if len(cands) > 1:
+        _HEALTH.append(f"'{tab}' 후보 여러 개 {cands} → '{cands[0]}' 사용")
+    else:
+        _HEALTH.append(f"'{tab}' → '{cands[0]}'로 해석(탭 이름 변경 감지)")
+    return cands[0]
+
+
 def _sns_table(tab, keys, last_col="AB", max_row=900, scan=20, optional=(), sid=None):
     """탭을 읽어 (데이터행, {key: colidx}) 반환. keys={key:[헤더 별칭...]}.
     헤더행은 별칭 매칭 수가 가장 많은 행으로 자동 탐색 → 컬럼 이동/삽입·헤더행 위치 변경에 강건(#4).
     optional: 시트마다 있을 수도/없을 수도 있는 컬럼(없어도 경고 안 함). sid: 다른 스프레드시트도 가능."""
+    tab = _resolve_tab(tab, sid)
     try:
         rows = sheets.spreadsheets().values().get(
             spreadsheetId=sid or SNS_SHEET_ID, range=f"'{tab}'!A1:{last_col}{max_row}",
@@ -809,33 +845,51 @@ try:
         d = _re3.sub(r"[^\d]", "", str(s or ""))
         return int(d) if d else 0
 
-    def _agg_ig(tab, ch):  # 헤더명 기반(#4)
-        # 우먼(4-2)은 유형·인기게시물·히어로콘텐츠 컬럼이 없음 → optional 처리(오탐 방지)
-        rows, cm = _sns_table(tab, {"date": ["발행일"], "title": ["소재"], "form": ["유형"],
-                                    "views": ["조회"], "reach": ["도달"], "likes": ["좋아요"],
-                                    "popular": ["인기게시물", "인기 게시물"], "hero": ["히어로콘텐츠", "히어로 콘텐츠"]},
-                              optional=("form", "popular", "hero"))
+    def _agg_ig(key, ch):  # 헤더명 기반(#4)
+        # ★운영팀이 성과 탭을 기간별로 쪼갬(오피셜 IG = '(26.7~)' + '(~26.6)') → 제목에 key가 든 탭
+        #   전부 합산. 앞으로 '(26.10~)'이 더 생겨도 자동 편입. 두 탭에 같은 게시물이 겹쳐 있어
+        #   (발행일+소재)로 중복 제거.
+        tabs = _match_tabs(key)
+        if not tabs:
+            _HEALTH.append(f"성과 탭 '{key}' 없음 — 시트 탭 이름 확인")
         agg = {"posts": 0, "views": 0, "reach": 0, "likes": 0, "hero": 0, "popular": 0}
         tops = []
-        for r in rows:
-            title, v = _gv(r, cm, "title"), _n(_gv(r, cm, "views"))
-            if not title or (v == 0 and _n(_gv(r, cm, "reach")) == 0):
-                continue
-            agg["posts"] += 1
-            agg["views"] += v
-            agg["reach"] += _n(_gv(r, cm, "reach"))
-            agg["likes"] += _n(_gv(r, cm, "likes"))
-            if _gv(r, cm, "popular").upper() == "O":
-                agg["popular"] += 1
-            if _gv(r, cm, "hero").upper() == "O":
-                agg["hero"] += 1
-                tops.append({"ch": ch, "title": title[:40], "date": _gv(r, cm, "date"), "views": v, "type": _gv(r, cm, "form")})
+        # ★중복 제거는 '탭 간'만. 한 탭 안의 같은 (발행일+소재)는 서로 다른 게시물일 수 있어
+        #   (우먼 탭은 유형 컬럼이 없어 피드/릴스 구분 불가) 건드리지 않는다.
+        seen_prev, dupes = set(), 0
+        for tab in tabs:
+            cur = set()
+            # 우먼(4-2)은 유형·인기게시물·히어로콘텐츠 컬럼이 없음 → optional 처리(오탐 방지)
+            rows, cm = _sns_table(tab, {"date": ["발행일"], "title": ["소재"], "form": ["유형"],
+                                        "views": ["조회"], "reach": ["도달"], "likes": ["좋아요"],
+                                        "popular": ["인기게시물", "인기 게시물"], "hero": ["히어로콘텐츠", "히어로 콘텐츠"]},
+                                  optional=("form", "popular", "hero"))
+            for r in rows:
+                title, v = _gv(r, cm, "title"), _n(_gv(r, cm, "views"))
+                if not title or (v == 0 and _n(_gv(r, cm, "reach")) == 0):
+                    continue
+                sig = (_gv(r, cm, "date"), title)
+                if sig in seen_prev:  # 앞선 탭에 이미 있는 게시물(기간 분할 경계 중복)
+                    dupes += 1
+                    continue
+                cur.add(sig)
+                agg["posts"] += 1
+                agg["views"] += v
+                agg["reach"] += _n(_gv(r, cm, "reach"))
+                agg["likes"] += _n(_gv(r, cm, "likes"))
+                if _gv(r, cm, "popular").upper() == "O":
+                    agg["popular"] += 1
+                if _gv(r, cm, "hero").upper() == "O":
+                    agg["hero"] += 1
+                    tops.append({"ch": ch, "title": title[:40], "date": _gv(r, cm, "date"), "views": v, "type": _gv(r, cm, "form")})
+            seen_prev |= cur
+        print(f"성과 '{ch} IG': 탭 {tabs} → {agg['posts']}건(탭간 중복 {dupes} 제외)")
         if agg["posts"] == 0:
-            _HEALTH.append(f"성과 '{tab}' 0건")
+            _HEALTH.append(f"성과 '{key}' 0건")
         return agg, tops
 
-    agg_off, tops_off = _agg_ig("4-1)성과_오피셜 IG", "오피셜")
-    agg_wm, tops_wm = _agg_ig("4-2)성과_우먼 IG", "우먼")
+    agg_off, tops_off = _agg_ig("성과_오피셜 IG", "오피셜")
+    agg_wm, tops_wm = _agg_ig("성과_우먼 IG", "우먼")
 
     # CRM(시트16): 채널/발송수/GMV/ROAS (헤더명 기반)
     crm = {"count": 0, "sends": 0, "gmv": 0, "roas": 0}
@@ -1011,6 +1065,28 @@ try:
     if not hero_list:
         _HEALTH.append("히어로 PMKT 성과 0건 — 트래커 구조 확인")
     print("IMC 히어로 시즌: " + ", ".join(f"{h['name']}={h['season']}" for h in hero_list))
+
+    # ★조용한 0 덮어쓰기 방지(2026-07-15). 소스 탭 읽기가 실패하면(이름 변경·권한·일시 오류) 집계가
+    #   0으로 나오는데 그대로 주입하면 라이브 실데이터가 지워진다 — 실제로 오피셜 IG 탭이
+    #   '(26.7~)'로 개명되며 posts 374→0·reach 11.6M→0으로 매일 CI가 덮어썼다.
+    #   0건이면 앱 HTML에 이미 있는 직전 값을 보존한다(다음 정상 실행 때 자동 복구).
+    _mprev = re.search(r"const IMC_PERF = (\{.*?\});", html2, re.DOTALL)
+    try:
+        _prev = json.loads(_mprev.group(1)) if _mprev else {}
+    except Exception:
+        _prev = {}
+
+    for _ch, _agg in (("오피셜", agg_off), ("우먼", agg_wm)):
+        if _agg["posts"] == 0:
+            _old = ((_prev.get("ig") or {}).get(_ch)) or {}
+            if _old.get("posts"):
+                _agg.update(_old)
+                _HEALTH.append(f"성과 '{_ch} IG' 0건 → 기존값 보존({_old['posts']}건)")
+                print(f"[보존] '{_ch} IG' 읽기 0건 — 앱 기존값 유지({_old['posts']}건)")
+    if crm["count"] == 0 and (_prev.get("crm") or {}).get("count"):
+        crm = dict(_prev["crm"])
+        _HEALTH.append(f"CRM 성과 0건 → 기존값 보존({crm['count']}건)")
+        print(f"[보존] CRM 읽기 0건 — 앱 기존값 유지({crm['count']}건)")
 
     perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget,
             "highlights": highlights, "hero": hero_list, "weeks": _wk_labels,
