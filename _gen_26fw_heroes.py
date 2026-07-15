@@ -959,8 +959,6 @@ try:
         return [j for j, c in enumerate(hdr) if kw in str(c or "")]
 
     hero_perf = {}
-    _wk_labels = []        # 주차 추세 라벨(글로벌 주차축), 모든 히어로 wk 배열과 1:1
-    _pdp_wk_labels = []
     _PERIODS = ["YTD", "MTD", "WEEK"]   # PMKT기간 탭의 period 값. 프론트 토글과 1:1.
 
     def _num(v):   # read_tab은 UNFORMATTED_VALUE라 숫자를 실제 number로 줌 → float 직접(★_n은 float ".0"를 ×10로 깨뜨림)
@@ -1041,8 +1039,20 @@ try:
 
         def _perd(hero, per):
             P = hero_perf.setdefault(hero, {"periods": {}, "season": _HERO_SEASON})
-            return P["periods"].setdefault(per, {"gmv": 0, "pmkt_gmv": 0, "pdp_real": 0, "conv": 0, "ad_gmv": 0, "pdp_ad": 0,
-                                                 "pdp_real_ly": 0, "conv_ly": 0, "pmkt_gmv_ly": 0})
+            # _ly = 전년 동기간(YoY 분모). gmv_ly=실적누판 전년(전년매출탭), 나머지=PMKT기간 *_ly.
+            #   ad_gmv_ly/pdp_ad_ly = 마케팅기여·유입기여 YoY 분자(전년) — DBX 노트북 mkt_*_ly 백필 후 채워짐(없으면 0).
+            return P["periods"].setdefault(per, {"gmv": 0, "gmv_ly": 0, "pmkt_gmv": 0, "pdp_real": 0, "conv": 0,
+                                                 "ad_gmv": 0, "pdp_ad": 0,
+                                                 "pdp_real_ly": 0, "conv_ly": 0, "pmkt_gmv_ly": 0,
+                                                 "ad_gmv_ly": 0, "pdp_ad_ly": 0})
+
+        # 히어로 STY별 성과(드릴다운) — style_no(품번) 단위 PMKT direct 유입·전환·거래액.
+        #   hero → {품번: {기간: {pdp, buy, gmv, pdp_ly, buy_ly, name}}}
+        hero_sty = {}
+
+        def _hsty(hero, base, per):
+            return hero_sty.setdefault(hero, {}).setdefault(base, {}).setdefault(
+                per, {"pdp": 0, "buy": 0, "gmv": 0, "pdp_ly": 0, "buy_ly": 0})
 
         # (1a) 성과 GMV = 실적 누판(gmv=실판매가) — 매출 YTD/MTD/WEEK 탭을 신품번→히어로로 롤업.
         #      PMKT의 gmv는 직접경로 어트리뷰션이라 실적보다 작음 → 헤드라인 GMV엔 누판을 씀.
@@ -1070,8 +1080,11 @@ try:
                     hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))
                     if hero_fw:
                         _perd_fw(hero_fw, _per)["gmv_ly"] += round(_num(r.get("gmv")))
+                    hero = _hero_of(r.get("style_no"), r.get("goods_no"))   # 26SS 성과탭 거래액 YoY
+                    if hero:
+                        _perd(hero, _per)["gmv_ly"] += round(_num(r.get("gmv")))
             except Exception as _ely:
-                _HEALTH.append(f"26FW 전년{_per} 로드 실패({type(_ely).__name__}) — YoY 미표시")
+                _HEALTH.append(f"전년{_per} 로드 실패({type(_ely).__name__}) — 거래액 YoY 미표시")
         # (1b) PMKT기간 — 퍼널 지표(전환=buy_uv/pdp_uv · 마케팅기여=mkt_gmv/mkt_pdp_uv, 캠페인기획전+외부유입)
         #      + 마케팅기여율 분모용 pmkt_gmv(직접경로 GMV). 헤드라인 GMV는 위 누판을 쓰므로 여기 gmv는 pmkt_gmv로만.
         for r in read_tab(sheets, SALES_SHEET_ID, "PMKT기간"):
@@ -1097,10 +1110,23 @@ try:
             d["pdp_real_ly"] += round(_num(r.get("pdp_uv_ly")))
             d["conv_ly"] += round(_num(r.get("buy_uv_ly")))
             d["pmkt_gmv_ly"] += round(_num(r.get("gmv_ly")))
-        # (2) PMKT주차 — goods×ISO주차 → 히어로별 주차 시계열(거래액/PDP 스파크라인, 기간 무관)
+            # 마케팅기여·유입기여 YoY 분자(전년) — mkt_gmv_ly/mkt_pdp_uv_ly. DBX 백필 전엔 컬럼 없음→0.
+            d["ad_gmv_ly"] += round(_num(r.get("mkt_gmv_ly")))
+            d["pdp_ad_ly"] += round(_num(r.get("mkt_pdp_uv_ly")))
+            # STY(품번)별 드릴다운 — 유입(pdp)·구매전환(buy)·거래액(direct), 전년(YoY)
+            _sb = str(r.get("style_no") or "").split("-")[0].strip()
+            if _sb:
+                s = _hsty(hero, _sb, per)
+                s["pdp"] += round(_num(r.get("pdp_uv")))
+                s["buy"] += round(_num(r.get("buy_uv")))
+                s["gmv"] += round(_num(r.get("gmv")))
+                s["pdp_ly"] += round(_num(r.get("pdp_uv_ly")))
+                s["buy_ly"] += round(_num(r.get("buy_uv_ly")))
+        # (2) PMKT주차 — goods×ISO주차 → 히어로별 최근 2주(WoW). 스파크라인 폐기(가시성↓, 사용자 요청).
+        #   WoW = 최근 완료주 vs 직전주. pdp(유입)·buy(구매UV)·gmv(direct 거래액). 전환율 WoW는 프론트서 buy/pdp.
         _wk_keys, _hero_wk, _wk_label = set(), {}, {}
         for r in read_tab(sheets, SALES_SHEET_ID, "PMKT주차"):
-            hero = _hero_of(r.get("style_no"))
+            hero = _hero_of(r.get("style_no"), r.get("goods_no"))
             if not hero:
                 continue
             try:
@@ -1108,20 +1134,42 @@ try:
             except (TypeError, ValueError):
                 continue
             _wk_keys.add(_key)
-            W = _hero_wk.setdefault(hero, {}).setdefault(_key, {"gmv": 0, "pdp": 0, "mkt": 0})
-            W["gmv"] += round(_num(r.get("gmv"))); W["pdp"] += round(_num(r.get("pdp_uv")))
-            W["mkt"] += round(_num(r.get("mkt_gmv")))    # 주차별 마케팅기여 거래액(캠페인/기획전+외부유입) → 프론트 마케팅기여율 추세
-            if _key not in _wk_label:
-                _ws = str(r.get("week_start") or "")[5:].replace("-", "/")     # 'YYYY-MM-DD'→'MM/DD'
-                _wk_label[_key] = f"W{_key[1]}" + (f" ({_ws})" if _ws else "")
+            W = _hero_wk.setdefault(hero, {}).setdefault(_key, {"gmv": 0, "pdp": 0, "buy": 0})
+            W["gmv"] += round(_num(r.get("gmv")))
+            W["pdp"] += round(_num(r.get("pdp_uv")))
+            W["buy"] += round(_num(r.get("buy_uv")))
+            _wk_label.setdefault(_key, str(r.get("week_start") or "")[5:].replace("-", "/"))
         _wk_axis = sorted(_wk_keys)
-        _wk_labels = [_wk_label.get(k, f"W{k[1]}") for k in _wk_axis]
-        _pdp_wk_labels = _wk_labels
+        # 최근 2주(직전=prev, 최근=cur). 데이터 마지막 주가 진행중일 수 있으나 모멘텀 지표로 사용.
+        _cur_k = _wk_axis[-1] if _wk_axis else None
+        _prev_k = _wk_axis[-2] if len(_wk_axis) >= 2 else None
         for hero, P in hero_perf.items():
             _hw = _hero_wk.get(hero, {})
-            P["wk"] = [_hw.get(k, {}).get("gmv", 0) for k in _wk_axis]
-            P["pdp_wk"] = [_hw.get(k, {}).get("pdp", 0) for k in _wk_axis]
-            P["mkt_wk"] = [_hw.get(k, {}).get("mkt", 0) for k in _wk_axis]
+            _c = _hw.get(_cur_k, {}) if _cur_k else {}
+            _p = _hw.get(_prev_k, {}) if _prev_k else {}
+            P["wow"] = {
+                "cur_w": f"W{_cur_k[1]}" if _cur_k else "", "prev_w": f"W{_prev_k[1]}" if _prev_k else "",
+                "cur_from": _wk_label.get(_cur_k, ""), "prev_from": _wk_label.get(_prev_k, ""),
+                "pdp": _c.get("pdp", 0), "pdp_p": _p.get("pdp", 0),
+                "buy": _c.get("buy", 0), "buy_p": _p.get("buy", 0),
+                "gmv": _c.get("gmv", 0), "gmv_p": _p.get("gmv", 0),
+            }
+        # STY 드릴다운 배열을 각 히어로 P에 주입(유입순 상위, 잡음 제거 위해 pdp>0만)
+        for hero, P in hero_perf.items():
+            _stys = []
+            for _b, _pers in hero_sty.get(hero, {}).items():
+                _y = _pers.get("YTD", {})
+                if (_y.get("pdp", 0) or 0) <= 0:
+                    continue
+                _stys.append({"style": _b, "periods": {
+                    _pp: {"pdp": (_pers.get(_pp) or {}).get("pdp", 0), "buy": (_pers.get(_pp) or {}).get("buy", 0),
+                          "gmv": (_pers.get(_pp) or {}).get("gmv", 0),
+                          "pdp_ly": (_pers.get(_pp) or {}).get("pdp_ly", 0), "buy_ly": (_pers.get(_pp) or {}).get("buy_ly", 0)}
+                    for _pp in _PERIODS}})
+            _stys.sort(key=lambda x: -x["periods"]["YTD"]["pdp"])
+            P["stys"] = _stys
+        _wk_labels = []
+        _pdp_wk_labels = []
     except Exception as _eh:
         _HEALTH.append(f"히어로 PMKT 성과 로드 실패: {type(_eh).__name__}")
 
@@ -1149,8 +1197,7 @@ try:
     #   26FW 전환 시엔 스냅샷 파일만 교체(season·style_to_hero).
     hero_list = sorted(
         [{"name": k, "periods": v.get("periods", {}),
-          "wk": v.get("wk", []), "pdp_wk": v.get("pdp_wk", []),
-          "mkt_wk": v.get("mkt_wk", []),
+          "wow": v.get("wow", {}), "stys": v.get("stys", []),
           "season": v.get("season", ""),
           "goal": _goals.get(k, {}).get("gmv", 0),
           "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in hero_perf.items()],
@@ -1182,8 +1229,7 @@ try:
         print(f"[보존] CRM 읽기 0건 — 앱 기존값 유지({crm['count']}건)")
 
     perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget,
-            "highlights": highlights, "hero": hero_list, "weeks": _wk_labels,
-            "pdp_weeks": _pdp_wk_labels}
+            "highlights": highlights, "hero": hero_list}
     perf_block = "const IMC_PERF = " + json.dumps(perf, ensure_ascii=False) + ";"
     html2, nperf = re.subn(r"const IMC_PERF = \{.*?\};", perf_block, html2, count=1, flags=re.DOTALL)
     assert nperf == 1, f"IMC_PERF 교체 실패 (matched {nperf})"
