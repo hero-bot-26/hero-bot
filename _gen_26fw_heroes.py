@@ -318,8 +318,16 @@ try:
     html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
     assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
     print(f"DASHBOARD: 히어로 {len(dash['heroes'])}개 주입 (매핑 {dash['_stats']['mapped']}/{dash['_stats']['rows']})")
-    # 스타일명(발매센터 스타일별 세부 표시용) — 시트39 품명
-    _sty_names = _map26.get("style_names", {})
+    # 스타일명(발매센터·홈 26FW STY 드릴다운 표시용) — 26SS 시트39 품명 + 26FW MSTRD 품명(M열) 병합.
+    #   26FW STY(양말 7팩·10팩 등)가 STY_NAMES에 없어 '기타'로 폴백되던 것 보강.
+    _sty_names = dict(_map26.get("style_names", {}))
+    try:
+        _fw_snap = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
+        for _b, _s in _fw_snap.get("styles", {}).items():
+            if _s.get("name") and _b not in _sty_names:
+                _sty_names[_b] = _s["name"]
+    except Exception:
+        pass    # 26FW 스냅샷 없으면 26SS 품명만(첫 실행 등)
     sn_block = "const STY_NAMES = " + json.dumps(_sty_names, ensure_ascii=False) + ";"
     html2, nsn = re.subn(r"const STY_NAMES = \{.*?\};", lambda _m: sn_block, html2, count=1, flags=re.DOTALL)
     print(f"STY_NAMES 주입: {len(_sty_names)}개 (교체 {nsn})")
