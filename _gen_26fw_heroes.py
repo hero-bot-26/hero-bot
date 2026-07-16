@@ -437,6 +437,19 @@ except Exception as e:
     print(f"[주의] 무탠 발매일자 로드 실패 — 발매스케줄 폴백: {type(e).__name__}: {e}")
 _MUT_BY_KEY = {_ser_key(s): h for s, h in _MUTAN_REL.get("heroes", {}).items()}
 
+# 26FW 히어로 스타일 진실소스(MSTRD 'HERO STY' B열=HERO/HERO SUB) — 발매 캘린더/실적 공통 기준.
+#   ★발매 이벤트를 이 품번 집합으로 필터(사용자 지시): 무탠 히어로(26FW) 탭엔 스웨터·가방·코트·
+#   데일리푸퍼·머플러·스웨트집업 등 15히어로 외 시리즈도 있어 발매에 새므로 HERO STY 품번만 남긴다.
+#   hero_perf 블록에서 재사용(재로드 방지). 실패 시 필터 스킵(기존 동작=전체 주입).
+_FW_HERO_MAP = None
+_FW_STY_NUMS = None
+try:
+    _FW_HERO_MAP = _IMCT0.load_26fw_hero_goods(sheets)
+    _FW_STY_NUMS = set(_FW_HERO_MAP["style_to_hero"].keys())
+    print(f"HERO STY 발매 필터 기준: {len(_FW_STY_NUMS)} 품번 (15 시리즈)")
+except Exception as e:
+    print(f"[주의] HERO STY 로드 실패 — 발매 시리즈 필터 스킵: {type(e).__name__}: {e}")
+
 
 # ── IMC 통합(과거·현재·미래) 주입 → const IMC ──
 # 소스: 발매/캠페인/오프라인/발매이슈/기획전(imc_triggers, 별도 파일) + SNS/CRM 콘텐츠 통합 관리 시트
@@ -467,9 +480,17 @@ try:
     # 1) 발매 이벤트 = 무탠본부 아이템마스터 진실소스 단독(대표품번=STY 단위, 정확한 발매일).
     #    ★발매스케줄(상품MAP)은 stale STY(슬랙스 옛 20FW품번을 26FW신규로 오기 등)가 섞여 있어 폐기.
     #    무탠 26FW 발매일 있는 히어로 STY만(등급 HERO/HERO SUB) 정확일자로 매핑.
+    _rel_skip = 0
     for _ser, _h in _MUTAN_REL.get("heroes", {}).items():
         for _e in _h.get("events", []):
+            # ★HERO STY 품번(B열 HERO/HERO SUB)만 발매 대상. 대표품번이 그 집합에 없으면 제외
+            #   (스웨터·가방·코트·데일리푸퍼·머플러·스웨트집업 = 무탠 등록됐으나 앱 히어로 아님).
+            if _FW_STY_NUMS is not None and _e["style"] not in _FW_STY_NUMS:
+                _rel_skip += 1
+                continue
             _add("발매", "발매", _e["release"].isoformat(), _e["name"], f"{_ser}/{_e.get('grade', 'HERO')}")
+    if _rel_skip:
+        print(f"발매 필터: HERO STY 외 {_rel_skip}건 제외")
     # (캠페인/오프라인/발매이슈/기획전은 기존 소스 유지)
     for c in _IMCT.load_campaigns(sheets):
         _add("캠페인", "캠페인", c["start"].isoformat(), c["name"], c["gubun"], c["owner"])
@@ -987,7 +1008,7 @@ try:
         _fw2h_sty, _fw2h_goods, _fw2sty = {}, {}, {}
         try:
             from soo.hero_ops.imc_triggers import load_26fw_hero_goods
-            _fwm = load_26fw_hero_goods(sheets)
+            _fwm = _FW_HERO_MAP if _FW_HERO_MAP is not None else load_26fw_hero_goods(sheets)   # 발매필터서 이미 로드했으면 재사용
             _fw2h_sty, _fw2h_goods, _fw2sty = _fwm["style_to_hero"], _fwm["goods_to_hero"], _fwm["goods_to_style"]
             json.dump({k: _fwm[k] for k in ("season", "style_to_hero", "goods_to_hero", "goods_to_style", "styles")},
                       open(ROOT / "hero_goods_26fw.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
