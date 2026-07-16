@@ -1162,16 +1162,21 @@ try:
             except (TypeError, ValueError):
                 continue
             _wk_keys.add(_key)
-            W = _hero_wk.setdefault(hero, {}).setdefault(_key, {"gmv": 0, "pdp": 0, "buy": 0})
+            W = _hero_wk.setdefault(hero, {}).setdefault(_key, {"gmv": 0, "pdp": 0, "buy": 0, "mkt_gmv": 0, "mkt_pdp": 0})
             W["gmv"] += round(_num(r.get("gmv")))
             W["pdp"] += round(_num(r.get("pdp_uv")))
             W["buy"] += round(_num(r.get("buy_uv")))
-            # STY(품번) 단위 주차 롤업 — STY 드릴다운 전주비(PDP·전환)용
+            W["mkt_gmv"] += round(_num(r.get("mkt_gmv")))     # 마케팅기여 WoW 분자
+            W["mkt_pdp"] += round(_num(r.get("mkt_pdp_uv")))  # 유입기여 WoW 분자
+            # STY(품번) 단위 주차 롤업 — STY 드릴다운 전주비(PDP·전환·마케팅기여·유입기여)용
             _swb = str(r.get("style_no") or "").split("-")[0].strip()
             if _swb:
-                SW = _sty_wk.setdefault(hero, {}).setdefault(_swb, {}).setdefault(_key, {"pdp": 0, "buy": 0})
+                SW = _sty_wk.setdefault(hero, {}).setdefault(_swb, {}).setdefault(_key, {"pdp": 0, "buy": 0, "gmv": 0, "mkt_gmv": 0, "mkt_pdp": 0})
                 SW["pdp"] += round(_num(r.get("pdp_uv")))
                 SW["buy"] += round(_num(r.get("buy_uv")))
+                SW["gmv"] += round(_num(r.get("gmv")))
+                SW["mkt_gmv"] += round(_num(r.get("mkt_gmv")))
+                SW["mkt_pdp"] += round(_num(r.get("mkt_pdp_uv")))
             _wk_label.setdefault(_key, str(r.get("week_start") or "")[5:].replace("-", "/"))
             # 주 일수(span) — 소스 주 경계가 불규칙(W29=1일, W28=5일 등, 데이터 경계로 잘림).
             #   진행중(1일짜리) 주는 WoW에서 제외하고, 남은 주는 '일평균'으로 정규화해 공정 비교.
@@ -1200,6 +1205,9 @@ try:
                 "pdp": round(_c.get("pdp", 0) / _cd), "pdp_p": round(_p.get("pdp", 0) / _pd),
                 "buy": round(_c.get("buy", 0) / _cd), "buy_p": round(_p.get("buy", 0) / _pd),
                 "gmv": round(_c.get("gmv", 0) / _cd), "gmv_p": round(_p.get("gmv", 0) / _pd),
+                # 마케팅기여 WoW = (mkt_gmv/gmv) · 유입기여 WoW = (mkt_pdp/pdp) — 프론트서 비율 계산(정규화 무관)
+                "mkt_gmv": round(_c.get("mkt_gmv", 0) / _cd), "mkt_gmv_p": round(_p.get("mkt_gmv", 0) / _pd),
+                "mkt_pdp": round(_c.get("mkt_pdp", 0) / _cd), "mkt_pdp_p": round(_p.get("mkt_pdp", 0) / _pd),
             }
         # STY 드릴다운 배열을 각 히어로 P에 주입(유입순 상위, 잡음 제거 위해 pdp>0만)
         for hero, P in hero_perf.items():
@@ -1209,12 +1217,15 @@ try:
                 _y = _pers.get("YTD", {})
                 if (_y.get("pdp", 0) or 0) <= 0:
                     continue
-                # STY 전주비 — 히어로와 동일하게 최근 완료주 vs 직전주(일평균 정규화). pdp·buy만(전환율 WoW=buy/pdp).
+                # STY 전주비 — 히어로와 동일하게 최근 완료주 vs 직전주(일평균 정규화). PDP·전환·마케팅기여·유입기여.
                 _swc = (_swh.get(_b, {}).get(_cur_k, {}) if _cur_k else {})
                 _swp = (_swh.get(_b, {}).get(_prev_k, {}) if _prev_k else {})
                 _stys.append({"style": _b,
                     "wow": {"pdp": round(_swc.get("pdp", 0) / _cd), "pdp_p": round(_swp.get("pdp", 0) / _pd),
-                            "buy": round(_swc.get("buy", 0) / _cd), "buy_p": round(_swp.get("buy", 0) / _pd)},
+                            "buy": round(_swc.get("buy", 0) / _cd), "buy_p": round(_swp.get("buy", 0) / _pd),
+                            "gmv": round(_swc.get("gmv", 0) / _cd), "gmv_p": round(_swp.get("gmv", 0) / _pd),
+                            "mkt_gmv": round(_swc.get("mkt_gmv", 0) / _cd), "mkt_gmv_p": round(_swp.get("mkt_gmv", 0) / _pd),
+                            "mkt_pdp": round(_swc.get("mkt_pdp", 0) / _cd), "mkt_pdp_p": round(_swp.get("mkt_pdp", 0) / _pd)},
                     "periods": {
                     _pp: {"pdp": (_pers.get(_pp) or {}).get("pdp", 0), "buy": (_pers.get(_pp) or {}).get("buy", 0),
                           "gmv": (_pers.get(_pp) or {}).get("gmv", 0),
