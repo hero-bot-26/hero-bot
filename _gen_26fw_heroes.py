@@ -1073,7 +1073,8 @@ try:
 
         def _hsty(hero, base, per):
             return hero_sty.setdefault(hero, {}).setdefault(base, {}).setdefault(
-                per, {"pdp": 0, "buy": 0, "gmv": 0, "pdp_ly": 0, "buy_ly": 0})
+                per, {"pdp": 0, "buy": 0, "gmv": 0, "pdp_ly": 0, "buy_ly": 0, "gmv_ly": 0,
+                      "mkt_gmv": 0, "mkt_pdp": 0, "mkt_gmv_ly": 0, "mkt_pdp_ly": 0})
 
         # (1a) 성과 GMV = 실적 누판(gmv=실판매가) — 매출 YTD/MTD/WEEK 탭을 신품번→히어로로 롤업.
         #      PMKT의 gmv는 직접경로 어트리뷰션이라 실적보다 작음 → 헤드라인 GMV엔 누판을 씀.
@@ -1143,6 +1144,12 @@ try:
                 s["gmv"] += round(_num(r.get("gmv")))
                 s["pdp_ly"] += round(_num(r.get("pdp_uv_ly")))
                 s["buy_ly"] += round(_num(r.get("buy_uv_ly")))
+                s["gmv_ly"] += round(_num(r.get("gmv_ly")))   # direct GMV 전년(마케팅기여 YoY 분모)
+                # 마케팅기여(mkt_gmv/gmv)·유입기여(mkt_pdp/pdp) — 히어로와 동일 소스, 품번단위. *_ly는 백필 전 0.
+                s["mkt_gmv"] += round(_num(r.get("mkt_gmv")))
+                s["mkt_pdp"] += round(_num(r.get("mkt_pdp_uv")))
+                s["mkt_gmv_ly"] += round(_num(r.get("mkt_gmv_ly")))
+                s["mkt_pdp_ly"] += round(_num(r.get("mkt_pdp_uv_ly")))
         # (2) PMKT주차 — goods×ISO주차 → 히어로별 최근 2주(WoW). 스파크라인 폐기(가시성↓, 사용자 요청).
         #   WoW = 최근 완료주 vs 직전주. pdp(유입)·buy(구매UV)·gmv(direct 거래액). 전환율 WoW는 프론트서 buy/pdp.
         _wk_keys, _hero_wk, _wk_label, _wk_span = set(), {}, {}, {}
@@ -1198,7 +1205,10 @@ try:
                 _stys.append({"style": _b, "periods": {
                     _pp: {"pdp": (_pers.get(_pp) or {}).get("pdp", 0), "buy": (_pers.get(_pp) or {}).get("buy", 0),
                           "gmv": (_pers.get(_pp) or {}).get("gmv", 0),
-                          "pdp_ly": (_pers.get(_pp) or {}).get("pdp_ly", 0), "buy_ly": (_pers.get(_pp) or {}).get("buy_ly", 0)}
+                          "pdp_ly": (_pers.get(_pp) or {}).get("pdp_ly", 0), "buy_ly": (_pers.get(_pp) or {}).get("buy_ly", 0),
+                          "gmv_ly": (_pers.get(_pp) or {}).get("gmv_ly", 0),
+                          "mkt_gmv": (_pers.get(_pp) or {}).get("mkt_gmv", 0), "mkt_pdp": (_pers.get(_pp) or {}).get("mkt_pdp", 0),
+                          "mkt_gmv_ly": (_pers.get(_pp) or {}).get("mkt_gmv_ly", 0), "mkt_pdp_ly": (_pers.get(_pp) or {}).get("mkt_pdp_ly", 0)}
                     for _pp in _PERIODS}})
             _stys.sort(key=lambda x: -x["periods"]["YTD"]["pdp"])
             P["stys"] = _stys
