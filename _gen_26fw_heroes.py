@@ -1152,7 +1152,7 @@ try:
                 s["mkt_pdp_ly"] += round(_num(r.get("mkt_pdp_uv_ly")))
         # (2) PMKT주차 — goods×ISO주차 → 히어로별 최근 2주(WoW). 스파크라인 폐기(가시성↓, 사용자 요청).
         #   WoW = 최근 완료주 vs 직전주. pdp(유입)·buy(구매UV)·gmv(direct 거래액). 전환율 WoW는 프론트서 buy/pdp.
-        _wk_keys, _hero_wk, _wk_label, _wk_span = set(), {}, {}, {}
+        _wk_keys, _hero_wk, _wk_label, _wk_span, _sty_wk = set(), {}, {}, {}, {}
         for r in read_tab(sheets, SALES_SHEET_ID, "PMKT주차"):
             hero = _hero_of(r.get("style_no"), r.get("goods_no"))
             if not hero:
@@ -1166,6 +1166,12 @@ try:
             W["gmv"] += round(_num(r.get("gmv")))
             W["pdp"] += round(_num(r.get("pdp_uv")))
             W["buy"] += round(_num(r.get("buy_uv")))
+            # STY(품번) 단위 주차 롤업 — STY 드릴다운 전주비(PDP·전환)용
+            _swb = str(r.get("style_no") or "").split("-")[0].strip()
+            if _swb:
+                SW = _sty_wk.setdefault(hero, {}).setdefault(_swb, {}).setdefault(_key, {"pdp": 0, "buy": 0})
+                SW["pdp"] += round(_num(r.get("pdp_uv")))
+                SW["buy"] += round(_num(r.get("buy_uv")))
             _wk_label.setdefault(_key, str(r.get("week_start") or "")[5:].replace("-", "/"))
             # 주 일수(span) — 소스 주 경계가 불규칙(W29=1일, W28=5일 등, 데이터 경계로 잘림).
             #   진행중(1일짜리) 주는 WoW에서 제외하고, 남은 주는 '일평균'으로 정규화해 공정 비교.
@@ -1198,11 +1204,18 @@ try:
         # STY 드릴다운 배열을 각 히어로 P에 주입(유입순 상위, 잡음 제거 위해 pdp>0만)
         for hero, P in hero_perf.items():
             _stys = []
+            _swh = _sty_wk.get(hero, {})
             for _b, _pers in hero_sty.get(hero, {}).items():
                 _y = _pers.get("YTD", {})
                 if (_y.get("pdp", 0) or 0) <= 0:
                     continue
-                _stys.append({"style": _b, "periods": {
+                # STY 전주비 — 히어로와 동일하게 최근 완료주 vs 직전주(일평균 정규화). pdp·buy만(전환율 WoW=buy/pdp).
+                _swc = (_swh.get(_b, {}).get(_cur_k, {}) if _cur_k else {})
+                _swp = (_swh.get(_b, {}).get(_prev_k, {}) if _prev_k else {})
+                _stys.append({"style": _b,
+                    "wow": {"pdp": round(_swc.get("pdp", 0) / _cd), "pdp_p": round(_swp.get("pdp", 0) / _pd),
+                            "buy": round(_swc.get("buy", 0) / _cd), "buy_p": round(_swp.get("buy", 0) / _pd)},
+                    "periods": {
                     _pp: {"pdp": (_pers.get(_pp) or {}).get("pdp", 0), "buy": (_pers.get(_pp) or {}).get("buy", 0),
                           "gmv": (_pers.get(_pp) or {}).get("gmv", 0),
                           "pdp_ly": (_pers.get(_pp) or {}).get("pdp_ly", 0), "buy_ly": (_pers.get(_pp) or {}).get("buy_ly", 0),
