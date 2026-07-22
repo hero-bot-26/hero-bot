@@ -1074,7 +1074,8 @@ try:
         def _hsty(hero, base, per):
             return hero_sty.setdefault(hero, {}).setdefault(base, {}).setdefault(
                 per, {"pdp": 0, "buy": 0, "gmv": 0, "pdp_ly": 0, "buy_ly": 0, "gmv_ly": 0,
-                      "mkt_gmv": 0, "mkt_pdp": 0, "mkt_gmv_ly": 0, "mkt_pdp_ly": 0})
+                      "mkt_gmv": 0, "mkt_pdp": 0, "mkt_gmv_ly": 0, "mkt_pdp_ly": 0,
+                      "sales_gmv": 0, "sales_gmv_ly": 0})   # 누판(실판매가) — 표시용 거래액. gmv(direct)는 마케팅기여 분모 전용.
 
         # (1a) 성과 GMV = 실적 누판(gmv=실판매가) — 매출 YTD/MTD/WEEK 탭을 신품번→히어로로 롤업.
         #      PMKT의 gmv는 직접경로 어트리뷰션이라 실적보다 작음 → 헤드라인 GMV엔 누판을 씀.
@@ -1082,7 +1083,13 @@ try:
             for r in read_tab(sheets, SALES_SHEET_ID, _per):
                 hero = _hero_of(r.get("style_no"), r.get("goods_no"))
                 if hero:
-                    _perd(hero, _per)["gmv"] += round(_num(r.get("gmv")))
+                    _g26 = round(_num(r.get("gmv")))
+                    _perd(hero, _per)["gmv"] += _g26
+                    # STY별 누판 — 성과탭 드릴다운 '거래액'을 히어로 행과 같은 누판 기준으로 통일(직접경로 표시 폐기).
+                    #   style_no 빈칸(uid 폴백 매칭)은 STY로 못 갈라 히어로 합에만 반영(STY합≈히어로, 미세 차이 허용).
+                    _sb26 = str(r.get("style_no") or "").split("-")[0].strip()
+                    if _sb26:
+                        _hsty(hero, _sb26, _per)["sales_gmv"] += _g26
                 hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))   # 26FW 기준 별도 롤업
                 if hero_fw:
                     _dfw = _perd_fw(hero_fw, _per)
@@ -1104,7 +1111,11 @@ try:
                         _perd_fw(hero_fw, _per)["gmv_ly"] += round(_num(r.get("gmv")))
                     hero = _hero_of(r.get("style_no"), r.get("goods_no"))   # 26SS 성과탭 거래액 YoY
                     if hero:
-                        _perd(hero, _per)["gmv_ly"] += round(_num(r.get("gmv")))
+                        _gly26 = round(_num(r.get("gmv")))
+                        _perd(hero, _per)["gmv_ly"] += _gly26
+                        _sbly = str(r.get("style_no") or "").split("-")[0].strip()
+                        if _sbly:
+                            _hsty(hero, _sbly, _per)["sales_gmv_ly"] += _gly26   # STY 누판 전년(드릴다운 거래액 YoY)
             except Exception as _ely:
                 _HEALTH.append(f"전년{_per} 로드 실패({type(_ely).__name__}) — 거래액 YoY 미표시")
         # (1b) PMKT기간 — 퍼널 지표(전환=buy_uv/pdp_uv · 마케팅기여=mkt_gmv/mkt_pdp_uv, 캠페인기획전+외부유입)
@@ -1215,7 +1226,9 @@ try:
             _swh = _sty_wk.get(hero, {})
             for _b, _pers in hero_sty.get(hero, {}).items():
                 _y = _pers.get("YTD", {})
-                if (_y.get("pdp", 0) or 0) <= 0:
+                # 유입 또는 누판 거래액이 있으면 포함 — 거래액=누판 통일 후 STY합≈히어로 행이 되도록
+                #   (PMKT 미등장·매출만 있는 STY도 노출, 유입 지표는 '-').
+                if (_y.get("pdp", 0) or 0) <= 0 and (_y.get("sales_gmv", 0) or 0) <= 0:
                     continue
                 # STY 전주비 — 히어로와 동일하게 최근 완료주 vs 직전주(일평균 정규화). PDP·전환·마케팅기여·유입기여.
                 _swc = (_swh.get(_b, {}).get(_cur_k, {}) if _cur_k else {})
@@ -1232,7 +1245,8 @@ try:
                           "pdp_ly": (_pers.get(_pp) or {}).get("pdp_ly", 0), "buy_ly": (_pers.get(_pp) or {}).get("buy_ly", 0),
                           "gmv_ly": (_pers.get(_pp) or {}).get("gmv_ly", 0),
                           "mkt_gmv": (_pers.get(_pp) or {}).get("mkt_gmv", 0), "mkt_pdp": (_pers.get(_pp) or {}).get("mkt_pdp", 0),
-                          "mkt_gmv_ly": (_pers.get(_pp) or {}).get("mkt_gmv_ly", 0), "mkt_pdp_ly": (_pers.get(_pp) or {}).get("mkt_pdp_ly", 0)}
+                          "mkt_gmv_ly": (_pers.get(_pp) or {}).get("mkt_gmv_ly", 0), "mkt_pdp_ly": (_pers.get(_pp) or {}).get("mkt_pdp_ly", 0),
+                          "sales_gmv": (_pers.get(_pp) or {}).get("sales_gmv", 0), "sales_gmv_ly": (_pers.get(_pp) or {}).get("sales_gmv_ly", 0)}
                     for _pp in _PERIODS}})
             _stys.sort(key=lambda x: -x["periods"]["YTD"]["pdp"])
             P["stys"] = _stys
