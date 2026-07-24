@@ -1310,6 +1310,19 @@ try:
         _HEALTH.append(f"CRM 성과 0건 → 기존값 보존({crm['count']}건)")
         print(f"[보존] CRM 읽기 0건 — 앱 기존값 유지({crm['count']}건)")
 
+    # ★hero PMKT 조용한 0 방지(2026-07-24) — PMKT기간/주차 읽기가 일시 실패하면(429/타임아웃) pdp_real·conv·
+    #   마케팅기여·wow가 전 히어로 0이 된다. gmv는 매출탭 소스라 살아남아 '거래액은 정상인데 유입만 0'으로 보인다.
+    #   IG/CRM 가드와 동일 철학: PMKT 신호(ΣYTD pdp_real)가 통째 0이면 앱 직전값을 보존한다
+    #   (거래액 포함 1일 stale, 다음 정상 실행 때 자동 복구). 정상 읽힌 날은 신호>0이라 가드 미발동=신선값 주입.
+    def _hsig(lst):
+        return sum((h.get("periods", {}).get("YTD", {}) or {}).get("pdp_real", 0) for h in (lst or []))
+    if hero_list and _hsig(hero_list) == 0:
+        _prev_heroes = _prev.get("hero") or []
+        if _hsig(_prev_heroes) > 0:
+            hero_list = _prev_heroes
+            _HEALTH.append(f"히어로 PMKT 0건 → 기존값 보존({len(_prev_heroes)}종)")
+            print(f"[보존] 히어로 PMKT 읽기 0 — 앱 기존값 유지({len(_prev_heroes)}종)")
+
     perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget,
             "highlights": highlights, "hero": hero_list}
     perf_block = "const IMC_PERF = " + json.dumps(perf, ensure_ascii=False) + ";"
