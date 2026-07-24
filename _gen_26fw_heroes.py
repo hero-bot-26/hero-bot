@@ -1198,6 +1198,24 @@ try:
                     _wk_span[_key] = (_we2 - _ws2).days + 1
                 except (ValueError, TypeError):
                     _wk_span[_key] = 7
+        # (3) 유입경로(prev_path1) x 기간 — 온사이트 경로 구성·전환율·유입 전년비. PMKT경로기간 탭(노트북 산출).
+        #   히어로별 {period: {path: {pdp,buy,pdp_ly,buy_ly}}}. 프론트가 비중(pdp/합)·전환율(buy/pdp)·전년비(pdp/pdp_ly) 계산.
+        try:
+            for r in read_tab(sheets, SALES_SHEET_ID, "PMKT경로기간"):
+                _phero = _hero_of(None, r.get("goods_no"))
+                _pper = str(r.get("period") or "").strip()
+                _ppath = str(r.get("path") or "").strip()
+                if not _phero or _pper not in _PERIODS or not _ppath:
+                    continue
+                _pbk = hero_perf.setdefault(_phero, {"periods": {}, "season": _HERO_SEASON}).setdefault("paths", {}).setdefault(_pper, {})
+                _pc = _pbk.setdefault(_ppath, {"pdp": 0, "buy": 0, "pdp_ly": 0, "buy_ly": 0})
+                _pc["pdp"] += round(_num(r.get("pdp_uv")))
+                _pc["buy"] += round(_num(r.get("buy_uv")))
+                _pc["pdp_ly"] += round(_num(r.get("pdp_uv_ly")))
+                _pc["buy_ly"] += round(_num(r.get("buy_uv_ly")))
+        except Exception as _epath:
+            _HEALTH.append(f"PMKT경로기간 로드 실패({type(_epath).__name__}) — 유입경로 뷰 미표시")
+
         # 진행중 주(span<2=사실상 1일) 제외 → 남은 최근 2주. 볼륨은 일평균(÷span)으로 비교.
         _usable = [k for k in sorted(_wk_keys) if _wk_span.get(k, 7) >= 2]
         _cur_k = _usable[-1] if _usable else None
@@ -1280,6 +1298,7 @@ try:
     hero_list = sorted(
         [{"name": k, "periods": v.get("periods", {}),
           "wow": v.get("wow", {}), "stys": v.get("stys", []),
+          "paths": v.get("paths", {}),
           "season": v.get("season", ""),
           "goal": _goals.get(k, {}).get("gmv", 0),
           "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in hero_perf.items()],
