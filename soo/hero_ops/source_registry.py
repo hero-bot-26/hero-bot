@@ -1,0 +1,93 @@
+# -*- coding: utf-8 -*-
+"""소스 레지스트리 — 생성기가 하드코딩 ID 대신 앱의 `_소스설정` 탭을 읽어 동적 로드.
+
+담당자가 앱 IMC "소스" 탭에서 원천 스프레드시트 링크만 갈아끼우면(권한·헤더 검증 후 저장)
+다음 자동 갱신부터 그 시트를 기준으로 데이터를 읽는다. 스펙: hero-master-app/docs/source-registry.md
+
+핵심 안전 규칙:
+  1. 레지스트리 탭이 없거나(=아직 아무도 저장 안 함) 읽기 실패해도 절대 예외를 던지지 않음 → {} 반환.
+  2. resolve()는 레지스트리에 항목이 없으면 DEFAULTS(현재 하드코딩 값)로 폴백 → 마이그레이션 중 무변화.
+  3. 스키마 불일치/접근 실패 시 '그 소스만' 스킵하고 이전 값 유지(호출부 가드가 담당). 절대 0/빈값으로 덮지 않음.
+
+즉 레지스트리가 비어 있는 현재는 출력이 기존과 동일하며, 링크가 채워지는 순간부터 그 소스만 바뀐다.
+"""
+from __future__ import annotations
+import re
+
+APP_SHEET_ID = "1_tZDl-heZyWT4VQYIAT3ZHFeMoQlK2FSOpEMyZjqvm0"  # 앱 시트(레지스트리 호스트)
+REG_TAB = "_소스설정"
+
+# 소스키(불변) → 현재 하드코딩 기본값. 레지스트리에 항목이 없을 때의 안전망.
+# id 는 _gen_26fw_heroes.py / imc_triggers.py / sales_rollup.py / baseline_ingest.py 의 현재 상수와 일치해야 함.
+DEFAULTS = {
+    "imc_calendar": {  # IMC 캘린더 액션 (SNS/CRM 통합 관리 시트의 2)일정·5)온사이트·6)PR·4)IG광고)
+        "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "2)일정", "range": "", "expected": []},
+    "sns_perf": {      # SNS(IG) 성과 (4-1/4-2 성과_오피셜/우먼 IG, 접두일치 다탭 합산)
+        "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "4-1)성과_오피셜 IG", "range": "", "expected": []},
+    "crm_perf": {      # CRM 성과 (시트16)
+        "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "시트16", "range": "", "expected": []},
+    "budget": {        # 월 예산 (PMKT/CRM 예산)
+        "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "PMKT/CRM 예산", "range": "", "expected": []},
+    "dashboard": {     # 실적 대시보드 (Databricks 잡이 채우는 전용 시트, raw/PMKT 탭)
+        "id": "1iHH2qG8Uj5vmlC3aXkey96usktWODmguDPD_ToT2rfA", "tab": "", "range": "", "expected": []},
+    "pdp_daily": {     # PDP 일별 유입 — 원천이 웨어하우스 뷰라 시트 ID 없음(#2에서 별도 처리)
+        "id": "", "tab": "", "range": "", "expected": []},
+    "mstrd": {         # 상품MAP 발매 (★MSTRD_26FW 상품MAP: HERO STY·SKU·발매스케줄)
+        "id": "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g", "tab": "HERO STY", "range": "", "expected": []},
+    "plm_27ss": {      # 27SS 작업의뢰/기획 관리판 (#.상세일정)
+        "id": "10guWc_5t06nu9QryPymTIl2oogQfV4qOEO81iXSgenI", "tab": "#.상세일정", "range": "", "expected": []},
+}
+
+
+def _parse_id(url: str) -> str:
+    m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", url or "")
+    return m.group(1) if m else (url or "")
+
+
+def load_registry(sheets) -> dict:
+    """`_소스설정` → { 소스키: {id, tab, range, expected[]} }. 마지막(최신) 행이 유효.
+
+    탭이 없거나 읽기 실패하면 {} 반환(절대 예외 안 던짐). sheets = googleapiclient sheets service.
+    """
+    try:
+        vals = sheets.spreadsheets().values().get(
+            spreadsheetId=APP_SHEET_ID, range=f"'{REG_TAB}'!A2:J"
+        ).execute().get("values", [])
+    except Exception:
+        return {}
+    reg = {}
+    for r in vals:
+        if not r or not r[0]:
+            continue
+        key = str(r[0]).strip()
+        _get = lambda i: (r[i] if len(r) > i and r[i] is not None else "")
+        sid = str(_get(3)).strip() or _parse_id(str(_get(2)))  # D열 파싱ID 우선, 없으면 C열 링크 재파싱
+        reg[key] = {  # append 방식: 같은 키가 여러 행이면 마지막이 최종
+            "id": sid,
+            "tab": str(_get(4)).strip(),
+            "range": str(_get(5)).strip(),
+            "expected": [h.strip() for h in str(_get(6)).split(",") if h.strip()],
+        }
+    return reg
+
+
+def resolve(key: str, reg: dict) -> dict:
+    """레지스트리 우선, 없으면 DEFAULTS. 레지스트리 행에 id가 비면(담당자 실수) DEFAULTS로 폴백."""
+    r = (reg or {}).get(key)
+    if r and r.get("id"):
+        return r
+    return DEFAULTS.get(key, {"id": "", "tab": "", "range": "", "expected": []})
+
+
+def source_id(key: str, reg: dict) -> str:
+    return resolve(key, reg).get("id") or ""
+
+
+def describe(reg: dict) -> list[str]:
+    """각 소스키가 레지스트리(담당자 설정)에서 왔는지 DEFAULT인지 로그용 요약. 안전규칙 #3(로그 남기기)."""
+    out = []
+    for k in DEFAULTS:
+        r = (reg or {}).get(k)
+        src = "레지스트리" if (r and r.get("id")) else "기본값"
+        out.append(f"{k}={source_id(k, reg) or '(없음)'} [{src}]")
+    return out

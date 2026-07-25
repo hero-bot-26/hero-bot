@@ -38,6 +38,17 @@ ROOT = Path(__file__).parent
 _svc = build_services(get_credentials(ROOT / "credentials.json", ROOT / "token.json"))
 sheets, drive = _svc["sheets"], _svc["drive"]
 
+# ── 소스 레지스트리(앱 "소스" 탭) → 원천 시트 링크 동적 로드 ──────────────────
+# 담당자가 앱에서 링크만 갈아끼우면 그 소스만 여기서 바뀜. 비어 있으면(현재) DEFAULTS=현재 하드코딩값.
+# 스펙: hero-master-app/docs/source-registry.md · 절대 예외/0덮어쓰기 없음(load_registry가 실패 시 {}).
+# ★sheets 정의 직후에 로드 — DASHBOARD 등 일부 주입 블록이 상수 정의부보다 앞서 _src()를 씀.
+from soo.hero_ops import source_registry as _SRCREG
+_REG = _SRCREG.load_registry(sheets)
+
+def _src(key):
+    """소스키 → 현재 유효 스프레드시트 ID(레지스트리 우선, 없으면 DEFAULTS)."""
+    return _SRCREG.source_id(key, _REG)
+
 ITEM_KO = {"Down": "다운", "Sweater": "니트", "Fleece": "플리스", "Pants": "팬츠",
            "Shirt": "셔츠", "T-Shirts": "티셔츠", "Acc": "액세서리", "Outer": "아우터"}
 STYLE_RE = re.compile(r"^M[A-Z0-9]{8}$")
@@ -308,10 +319,11 @@ nd = 0
 _DASH_HEROES = []   # IMC 히어로 시즌 판정용(대시보드 STY→시즌 큐레이션값)
 try:
     from soo.hero_ops.sales_rollup import build_dashboard, SALES_SHEET_ID, build_style_to_hero, read_tab
+    _SALES_ID = _src("dashboard") or SALES_SHEET_ID   # dashboard 소스키 오버라이드(실적 전용 시트)
     # 홈 실적 = 시트39 확정 26SS 매핑(uid+신품번, 사용자 검증 524.5억=525.4). 성과 탭과 동일 히어로 정의.
     _map26 = json.load(open(ROOT / "hero_goods_26ss.json", encoding="utf-8"))
     _dash_s2h = _map26["style_to_hero"]
-    dash = build_dashboard(sheets, drive, SALES_SHEET_ID, TODAY.isoformat(),
+    dash = build_dashboard(sheets, drive, _SALES_ID, TODAY.isoformat(),
                            style2hero=_dash_s2h, goods2hero=_map26["goods_to_hero"])
     _DASH_HEROES = dash.get("heroes", [])
     dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
@@ -341,6 +353,12 @@ TRACKER_SHEET_ID = "1oz6zM-x2nqaDSAufWJ2a-QZh-1F6LQipttNkVKoFAn8"  # 캠페인 �
 GOAL_SHEET_ID = "1_tZDl-heZyWT4VQYIAT3ZHFeMoQlK2FSOpEMyZjqvm0"  # PLM 시트(사용자 소유), '히어로 마케팅 목표' 탭=마케팅 입력란
 GOAL_TAB = "히어로 마케팅 목표"
 MKT_SHEET_ID = "16jqlhmynIxXckdrpjICaDNajZd-xjnrl0x332qDCtzg"  # 마케팅팀 MKT calendar (캠페인 레벨/진행상황·에너지/바이럴)
+
+# SNS 클러스터 4개 소스키는 현재 물리적으로 같은 시트에 공존(imc_calendar). 소스키별 독립 오버라이드 유지:
+#   imc_calendar → SNS_SHEET_ID 전역(일정/온사이트/PR/IG광고) · sns_perf/crm_perf/budget → 각 호출부 sid=
+# (_REG·_src 는 파일 상단 sheets 정의 직후에 로드됨 — DASHBOARD 주입 블록이 여기보다 앞서 _src 를 씀)
+SNS_SHEET_ID = _src("imc_calendar") or SNS_SHEET_ID
+print("[소스] " + " · ".join(_SRCREG.describe(_REG)))
 
 
 _TAB_TITLES = {}  # sid → 실제 탭 제목 목록(1회 조회 캐시)
@@ -444,7 +462,7 @@ _MUT_BY_KEY = {_ser_key(s): h for s, h in _MUTAN_REL.get("heroes", {}).items()}
 _FW_HERO_MAP = None
 _FW_STY_NUMS = None
 try:
-    _FW_HERO_MAP = _IMCT0.load_26fw_hero_goods(sheets)
+    _FW_HERO_MAP = _IMCT0.load_26fw_hero_goods(sheets, sid=_src("mstrd"))
     _FW_STY_NUMS = set(_FW_HERO_MAP["style_to_hero"].keys())
     print(f"HERO STY 발매 필터 기준: {len(_FW_STY_NUMS)} 품번 (15 시리즈)")
 except Exception as e:
@@ -878,7 +896,8 @@ try:
         # ★운영팀이 성과 탭을 기간별로 쪼갬(오피셜 IG = '(26.7~)' + '(~26.6)') → 제목에 key가 든 탭
         #   전부 합산. 앞으로 '(26.10~)'이 더 생겨도 자동 편입. 두 탭에 같은 게시물이 겹쳐 있어
         #   (발행일+소재)로 중복 제거.
-        tabs = _match_tabs(key)
+        _sperf = _src("sns_perf") or SNS_SHEET_ID   # sns_perf 소스키 오버라이드(현재 SNS 시트와 동일)
+        tabs = _match_tabs(key, sid=_sperf)
         if not tabs:
             _HEALTH.append(f"성과 탭 '{key}' 없음 — 시트 탭 이름 확인")
         agg = {"posts": 0, "views": 0, "reach": 0, "likes": 0, "hero": 0, "popular": 0}
@@ -892,7 +911,7 @@ try:
             rows, cm = _sns_table(tab, {"date": ["발행일"], "title": ["소재"], "form": ["유형"],
                                         "views": ["조회"], "reach": ["도달"], "likes": ["좋아요"],
                                         "popular": ["인기게시물", "인기 게시물"], "hero": ["히어로콘텐츠", "히어로 콘텐츠"]},
-                                  optional=("form", "popular", "hero"))
+                                  optional=("form", "popular", "hero"), sid=_sperf)
             for r in rows:
                 title, v = _gv(r, cm, "title"), _n(_gv(r, cm, "views"))
                 if not title or (v == 0 and _n(_gv(r, cm, "reach")) == 0):
@@ -923,7 +942,8 @@ try:
     # CRM(시트16): 채널/발송수/GMV/ROAS (헤더명 기반)
     crm = {"count": 0, "sends": 0, "gmv": 0, "roas": 0}
     _ro_sum = _ro_n = 0
-    rows, cm = _sns_table("시트16", {"ch": ["채널"], "sends": ["발송수"], "gmv": ["GMV"], "roas": ["ROAS"]})
+    rows, cm = _sns_table("시트16", {"ch": ["채널"], "sends": ["발송수"], "gmv": ["GMV"], "roas": ["ROAS"]},
+                          sid=_src("crm_perf") or SNS_SHEET_ID)
     for r in rows:
         g = _n(_gv(r, cm, "gmv"))
         if g == 0:
@@ -945,7 +965,8 @@ try:
     budget = {"months": _mlbl, "hero": [], "perf": []}
     _bkeys = {"gubun": ["구분"]}
     _bkeys.update({k: [lbl] for k, lbl in zip(_mkey, _mlbl)})
-    rows, cm = _sns_table("PMKT/CRM 예산", _bkeys, last_col="P", max_row=40)
+    rows, cm = _sns_table("PMKT/CRM 예산", _bkeys, last_col="P", max_row=40,
+                          sid=_src("budget") or SNS_SHEET_ID)
     _hrow = next((r for r in rows if _gv(r, cm, "gubun") == "Hero"), None)
     _prow = next((r for r in rows if "퍼포먼스" in _gv(r, cm, "gubun")), None)
     for k in _mkey:
@@ -1008,7 +1029,7 @@ try:
         _fw2h_sty, _fw2h_goods, _fw2sty = {}, {}, {}
         try:
             from soo.hero_ops.imc_triggers import load_26fw_hero_goods
-            _fwm = _FW_HERO_MAP if _FW_HERO_MAP is not None else load_26fw_hero_goods(sheets)   # 발매필터서 이미 로드했으면 재사용
+            _fwm = _FW_HERO_MAP if _FW_HERO_MAP is not None else load_26fw_hero_goods(sheets, sid=_src("mstrd"))   # 발매필터서 이미 로드했으면 재사용
             _fw2h_sty, _fw2h_goods, _fw2sty = _fwm["style_to_hero"], _fwm["goods_to_hero"], _fwm["goods_to_style"]
             json.dump({k: _fwm[k] for k in ("season", "style_to_hero", "goods_to_hero", "goods_to_style", "styles")},
                       open(ROOT / "hero_goods_26fw.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
@@ -1080,7 +1101,7 @@ try:
         # (1a) 성과 GMV = 실적 누판(gmv=실판매가) — 매출 YTD/MTD/WEEK 탭을 신품번→히어로로 롤업.
         #      PMKT의 gmv는 직접경로 어트리뷰션이라 실적보다 작음 → 헤드라인 GMV엔 누판을 씀.
         for _per in _PERIODS:
-            for r in read_tab(sheets, SALES_SHEET_ID, _per):
+            for r in read_tab(sheets, _SALES_ID, _per):
                 hero = _hero_of(r.get("style_no"), r.get("goods_no"))
                 if hero:
                     _g26 = round(_num(r.get("gmv")))
@@ -1105,7 +1126,7 @@ try:
         #   ★프론트가 26SS DASHBOARD를 이름으로 조인해 쓰지 않도록 26FW 자체 기간·전년을 갖춘다.
         for _per in _PERIODS:
             try:
-                for r in read_tab(sheets, SALES_SHEET_ID, "전년" + _per):
+                for r in read_tab(sheets, _SALES_ID, "전년" + _per):
                     hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))
                     if hero_fw:
                         _perd_fw(hero_fw, _per)["gmv_ly"] += round(_num(r.get("gmv")))
@@ -1120,7 +1141,7 @@ try:
                 _HEALTH.append(f"전년{_per} 로드 실패({type(_ely).__name__}) — 거래액 YoY 미표시")
         # (1b) PMKT기간 — 퍼널 지표(전환=buy_uv/pdp_uv · 마케팅기여=mkt_gmv/mkt_pdp_uv, 캠페인기획전+외부유입)
         #      + 마케팅기여율 분모용 pmkt_gmv(직접경로 GMV). 헤드라인 GMV는 위 누판을 쓰므로 여기 gmv는 pmkt_gmv로만.
-        for r in read_tab(sheets, SALES_SHEET_ID, "PMKT기간"):
+        for r in read_tab(sheets, _SALES_ID, "PMKT기간"):
             per = str(r.get("period") or "").strip()
             hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))   # 26FW 기준 퍼널 지표
             if hero_fw and per in _PERIODS:
@@ -1164,7 +1185,7 @@ try:
         # (2) PMKT주차 — goods×ISO주차 → 히어로별 최근 2주(WoW). 스파크라인 폐기(가시성↓, 사용자 요청).
         #   WoW = 최근 완료주 vs 직전주. pdp(유입)·buy(구매UV)·gmv(direct 거래액). 전환율 WoW는 프론트서 buy/pdp.
         _wk_keys, _hero_wk, _wk_label, _wk_span, _sty_wk = set(), {}, {}, {}, {}
-        for r in read_tab(sheets, SALES_SHEET_ID, "PMKT주차"):
+        for r in read_tab(sheets, _SALES_ID, "PMKT주차"):
             hero = _hero_of(r.get("style_no"), r.get("goods_no"))
             if not hero:
                 continue
@@ -1201,7 +1222,7 @@ try:
         # (3) 유입경로(prev_path1) x 기간 — 온사이트 경로 구성·전환율·유입 전년비. PMKT경로기간 탭(노트북 산출).
         #   히어로별 {period: {path: {pdp,buy,pdp_ly,buy_ly}}}. 프론트가 비중(pdp/합)·전환율(buy/pdp)·전년비(pdp/pdp_ly) 계산.
         try:
-            for r in read_tab(sheets, SALES_SHEET_ID, "PMKT경로기간"):
+            for r in read_tab(sheets, _SALES_ID, "PMKT경로기간"):
                 _phero = _hero_of(None, r.get("goods_no"))
                 _pper = str(r.get("period") or "").strip()
                 _ppath = str(r.get("path") or "").strip()
@@ -1386,7 +1407,7 @@ try:
     ranges = [f"'{sm27.tab}'!{col}{row}"
               for _, _, row, cols in CARD_STAGES for col in set(cols.values())]
     resp = sheets.spreadsheets().values().batchGet(
-        spreadsheetId=sm27.spreadsheet_id, ranges=ranges).execute()
+        spreadsheetId=(_src("plm_27ss") or sm27.spreadsheet_id), ranges=ranges).execute()
     cmap = {}
     for vr in resp.get("valueRanges", []):
         a1 = vr["range"].split("!")[-1]
@@ -1427,7 +1448,7 @@ except Exception as e:
 #   + 판매(IMC_PERF 현재 누판 YTD, 이름정규화 조인). 상태=발매일 vs TODAY 자동전환.
 nlaunch = 0
 try:
-    _26FW_MAP_ID = "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"   # ★MSTRD_26FW 상품MAP
+    _26FW_MAP_ID = _src("mstrd") or "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"   # ★MSTRD_26FW 상품MAP (mstrd 소스키)
     _FW_GRADE = {"라이트다운": "S", "힛탠다드": "S", "커브드팬츠": "S",
                  "웜 팬츠": "A", "빅토리아 울": "A", "그리드/메시 플리스": "A", "에센셜 플리스": "A", "리커버리": "A",
                  "헤비다운": "E", "슬랙스": "E", "데님팬츠": "E", "스웨트팬츠": "E", "벨트": "E", "양말": "E", "심리스 브라": "E"}

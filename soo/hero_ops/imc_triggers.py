@@ -179,8 +179,10 @@ MSTRD_SKU_TAB = "SKU"        # R4헤더/R5~: B=품번 I=uid
 MSTRD_STY_EXCEPTIONS = {"MMFFJBA01": "에센셜 플리스"}   # B열='핵심상품'이나 HERO SUB로 인정
 
 
-def load_26fw_hero_goods(sheets) -> dict:
+def load_26fw_hero_goods(sheets, sid=None) -> dict:
     """MSTRD HERO STY(B열 HERO/HERO SUB) → 26FW 히어로 스타일·uid 매핑.
+
+    sid: 소스 레지스트리(mstrd 소스키)로 상품MAP 시트가 갈아끼워지면 그 ID. None이면 기본 MSTRD_SHEET.
 
     반환 {"season": "26FW",
           "style_to_hero": {품번: 시리즈},
@@ -189,12 +191,14 @@ def load_26fw_hero_goods(sheets) -> dict:
     ★uid가 아직 생성 안 된 스타일(발주전/미발매)은 goods_to_hero에 안 들어감 — 생성되면
       다음 실행에서 자동 편입(무탠 C열이 실시간 소스).
     """
+    _sid = sid or MSTRD_SHEET
+
     def g(r, j):
         return str(r[j]).strip() if j < len(r) and r[j] is not None else ""
 
     # 1) HERO STY → 히어로 스타일 정답
     sv = sheets.spreadsheets().values().get(
-        spreadsheetId=MSTRD_SHEET, range=f"'{MSTRD_STY_TAB}'!A7:N1100").execute().get("values", [])
+        spreadsheetId=_sid, range=f"'{MSTRD_STY_TAB}'!A7:N1100").execute().get("values", [])
     styles: dict[str, dict] = {}
     for r in sv:
         sty = g(r, 0) or g(r, 2)
@@ -215,7 +219,7 @@ def load_26fw_hero_goods(sheets) -> dict:
 
     # 2) SKU 탭: 품번 → uid
     kv = sheets.spreadsheets().values().get(
-        spreadsheetId=MSTRD_SHEET, range=f"'{MSTRD_SKU_TAB}'!A5:I16000").execute().get("values", [])
+        spreadsheetId=_sid, range=f"'{MSTRD_SKU_TAB}'!A5:I16000").execute().get("values", [])
     sku_uid: dict[str, set] = defaultdict(set)
     for r in kv:
         sty, uid = g(r, 1), g(r, 8)
