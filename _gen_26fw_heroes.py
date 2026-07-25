@@ -296,6 +296,11 @@ html2, nt = re.subn(r"const APP_TODAY = '[^']*';",
 # 홈 화면 실적 카드 기준일(하드코딩 SALES_AS_OF)도 DASHBOARD.as_of와 동일하게 매일 갱신
 html2, nsa = re.subn(r"const SALES_AS_OF = '[^']*';",
                      f"const SALES_AS_OF = '{TODAY.isoformat()}';", html2, count=1)
+# 실제 생성(갱신) 시각(KST). GitHub Actions 스케줄 지연으로 '매일 10시' 고정표기가 실제(≈13시)와
+# 어긋나므로, 화면엔 하드코딩 시각 대신 이 실측 타임스탬프를 노출한다. CI는 UTC라 +9h.
+_GEN_KST = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
+html2, nga = re.subn(r"const GEN_AT = '[^']*';",
+                     f"const GEN_AT = '{_GEN_KST.strftime('%Y-%m-%d %H:%M')}';", html2, count=1)
 
 # ── 히어로 등급 기록 주입(담당자 웹 '등급 설정' → 시트 → 앱, 재생성해도 유지) ──
 _grade_block = "const HERO_GRADE_SAVED = " + json.dumps(grade_saved, ensure_ascii=False) + ";"
@@ -1590,7 +1595,7 @@ except Exception as e:
 
 HTML.write_text(html2, encoding="utf-8")
 
-print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch}) · INBOUND_BOARD(교체 {ninb})")
+print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · GEN_AT→{_GEN_KST.strftime('%Y-%m-%d %H:%M')}(교체 {nga}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch}) · INBOUND_BOARD(교체 {ninb})")
 for h in heroes:
     done = sum(1 for s in h["stages"] if s == "done")
     prog = sum(1 for s in h["stages"] if s == "progress")
