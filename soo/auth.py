@@ -121,7 +121,31 @@ def get_credentials(
     return creds
 
 
+def _install_http_retry(num_retries: int = 6) -> None:
+    """Sheets 429(분당 60읽기 초과)·5xx 일시 오류를 지수 백오프로 자동 재시도.
+
+    ★2026-07-27: daily CI가 429 연쇄로 발매/DASHBOARD/PMKT 소스를 통째로 놓쳐
+    IMC 발매 107건이 0으로 덮인 사고. googleapiclient는 execute(num_retries=N)을
+    줘야만 재시도(429·5xx 대상)하므로 기본값을 주입해 모든 호출에 적용한다.
+    (분당 쿼터라 수십 초 대기면 대개 회복 — 실패 시 기존 예외 경로 그대로.)
+    """
+    try:
+        from googleapiclient import http as _ghttp
+    except ImportError:
+        return
+    if getattr(_ghttp.HttpRequest, "_soo_retry_installed", False):
+        return
+    _orig_execute = _ghttp.HttpRequest.execute
+
+    def _execute(self, http=None, num_retries=num_retries):
+        return _orig_execute(self, http=http, num_retries=num_retries)
+
+    _ghttp.HttpRequest.execute = _execute
+    _ghttp.HttpRequest._soo_retry_installed = True
+
+
 def build_services(creds: Credentials) -> dict:
+    _install_http_retry()
     return {
         "drive": build("drive", "v3", credentials=creds, cache_discovery=False),
         "slides": build("slides", "v1", credentials=creds, cache_discovery=False),

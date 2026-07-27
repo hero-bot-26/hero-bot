@@ -861,6 +861,23 @@ try:
     print(f"2)일정 마스터: {_n_master_raw}건(히어로 {_n_master_hero}) 전량 유지 — 토글로 가림")
     for x in _items:
         x["status"] = "past" if x["date"] < _t else ("today" if x["date"] == _t else "future")
+    # ★발매 0건 가드(2026-07-27). 발매 소스(무탠 아이템마스터)와 폴백(발매스케줄)이 둘 다 실패하면
+    #   (2026-07-27 09:02 CI: Sheets 429 연쇄) 발매 이벤트 0건이 조용히 주입돼 IMC 발매가 통째로 사라진다.
+    #   IG/CRM/히어로PMKT 가드와 동일 철학 — 0건이면 앱 HTML의 직전 발매 항목을 보존(다음 정상 실행 때 자동 갱신).
+    if not any(x["type"] == "발매" for x in _items):
+        try:
+            _mimc = re.search(r"const IMC = (\{.*?\});", html2, re.DOTALL)
+            _prev_rel = [x for x in (json.loads(_mimc.group(1)).get("items") or []) if x.get("type") == "발매"] if _mimc else []
+        except Exception:
+            _prev_rel = []
+        _prev_rel = [x for x in _prev_rel if _back <= str(x.get("date", "")) <= _fwd]   # 오늘 윈도우로 재필터
+        if _prev_rel:
+            for x in _prev_rel:                                  # 보존분도 오늘 기준으로 과거/오늘/미래 재계산
+                x["status"] = "past" if x["date"] < _t else ("today" if x["date"] == _t else "future")
+            _items = sorted(_items + _prev_rel, key=lambda x: x["date"])
+            _HEALTH.append(f"발매 이벤트 0건 → 기존값 보존({len(_prev_rel)}건)")
+            print(f"[보존] 발매 이벤트 0건 — 앱 기존값 유지({len(_prev_rel)}건)")
+
     imc_block = "const IMC = " + json.dumps({"as_of": _t, "items": _items}, ensure_ascii=False) + ";"
     # 람다 치환 — 치환문자열의 \n·\g 등 백슬래시 이스케이프 처리 방지(값에 \ 남아도 안전)
     html2, nimc = re.subn(r"const IMC = \{.*?\};", lambda _m: imc_block, html2, count=1, flags=re.DOTALL)
