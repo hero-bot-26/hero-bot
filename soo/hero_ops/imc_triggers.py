@@ -606,6 +606,10 @@ def load_online_monthly(sheets) -> list[dict]:
     return out
 
 
+# 전사(무신사 전체) 레벨 캠페인 그룹 — 히어로 무관하게 앱 어디서나 항상 노출한다.
+COMPANY_KINDS = {"빅캠페인", "전사 캠페인", "멤버스/브랜드위크", "월간 프로모션", "무신사 스탠다드"}
+
+
 def load_online_annual(sheets, skip_months=()) -> list[dict]:
     """'26년 캠페인 스케줄' 가로 그리드 → 2026 전사/무탠 캠페인 백본.
     월(R3)×일(R4) 컬럼→날짜 매핑. -2026 전사 블록 + 주요이슈 + CPCMS 행만 추출."""
@@ -670,6 +674,9 @@ def load_online_annual(sheets, skip_months=()) -> list[dict]:
         return {"그 외 전사캠페인": "전사 캠페인", "멤버스/브랜드위크": "멤버스/브랜드위크",
                 "무신사 스탠다드": "무신사 스탠다드"}.get(g, g) or "전사 캠페인"
 
+    # ★전사 캠페인(무진장·빅세일·멤버스데이 등)은 월별 SUMMARY에 없는 전사 레벨 일정 →
+    #   월별 상세가 있는 달이어도 skip 하지 않는다(사용자 지시 2026-07-27: "무진장 같은 건 반드시 표시").
+
     best = {}   # (그룹, 정규화명, 월) → 최초일 (같은 캠페인 병합셀/반복 dedup)
     for group, r in targets:
         g = _grp(group)
@@ -678,7 +685,7 @@ def load_online_annual(sheets, skip_months=()) -> list[dict]:
             if not s or s == "0":
                 continue
             d = col_date(j)
-            if d is None or d.month in skip_months:
+            if d is None or (d.month in skip_months and g not in COMPANY_KINDS):
                 continue
             name = re.split(r"[(（]", s)[0].strip()
             if len(name) < 2:
@@ -686,7 +693,8 @@ def load_online_annual(sheets, skip_months=()) -> list[dict]:
             key = (g, name.replace(" ", ""), d.month)
             if key not in best or d < best[key][0]:
                 best[key] = (d, name, g)
-    return [{"date": d, "name": name, "kind": g} for (d, name, g) in best.values()]
+    return [{"date": d, "name": name, "kind": g, "company": g in COMPANY_KINDS}
+            for (d, name, g) in best.values()]
 
 
 def load_online(sheets) -> list[dict]:
@@ -705,7 +713,7 @@ def load_online(sheets) -> list[dict]:
                     "approx": False, "guide": it.get("guide", "")})
     for it in annual:
         out.append({"name": it["name"], "sub": f"전사 · {it['kind']}", "date": it["date"],
-                    "end": None, "approx": True, "guide": ""})
+                    "end": None, "approx": True, "guide": "", "company": it.get("company", False)})
     return out
 
 

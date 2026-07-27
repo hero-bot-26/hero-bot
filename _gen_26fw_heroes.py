@@ -531,7 +531,10 @@ try:
     _n_on = 0
     try:
         for it in _IMCT.load_online(sheets):
-            if _add("온라인", "온라인", it["date"].isoformat(), it["name"], it["sub"],
+            # 전사 캠페인(무진장·빅세일·멤버스데이 등)은 별도 타입 '전사' — 프론트가 히어로 필터와
+            # 채널 토글을 우회해 항상 노출(사용자 지시 2026-07-27).
+            _ty = "전사" if it.get("company") else "온라인"
+            if _add(_ty, _ty, it["date"].isoformat(), it["name"], it["sub"],
                     approx=it.get("approx", False),
                     end=(it["end"].isoformat() if it.get("end") else ""), guide=it.get("guide", "")):
                 _n_on += 1
@@ -1654,7 +1657,7 @@ try:
         _CH = {"IG": "IG", "SNS": "IG", "PR": "PR", "CRM": "CRM",
                "발매": "입고알람", "입고알람": "입고알람",
                "캠페인": "프로모션", "기획전": "프로모션", "온라인": "프로모션", "온사이트": "프로모션",
-               "에너지": "바이럴", "오프라인": "오프라인"}
+               "에너지": "바이럴", "오프라인": "오프라인", "전사": "전사"}
         _h2n = {h.replace(" ", ""): h for h in _order[1:]}
         # 별칭(라이트 다운/커브드 데님 등) → 시리즈명. 시계열에 있는 히어로만.
         _pdp_al, _amb = {}, set()
@@ -1678,7 +1681,7 @@ try:
 
         _acts = []
         for _it in _items:                                               # 이미 윈도우 필터됨
-            if not _it.get("hero_related"):
+            if not _it.get("hero_related") and _it.get("type") != "전사":   # 전사 캠페인은 히어로 무관 항상
                 continue
             _ch = _CH.get(_it.get("type")) or _CH.get(_it.get("channel"))
             _dd = str(_it.get("date") or "")[:10]
