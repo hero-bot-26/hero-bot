@@ -15,3 +15,9 @@ venv/
 .vscode/
 
 dbx_token.txt
+.dbx_token
+databricks/_nb_workspace_backup.py
+databricks/_nb_workspace_pre_mktyoy.py
+databricks/_nb_workspace_post_mktyoy.py
+_nb_pmkt_tmp.py
+_pmkt_run_id.txt

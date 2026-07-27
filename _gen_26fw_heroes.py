@@ -1593,9 +1593,105 @@ try:
 except Exception as e:
     print(f"[주의] INBOUND_BOARD 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
+# ── PDP 일별 유입 트렌드 주입 → window.__PDP_DAILY (성과탭 상단, PR #18) ──
+# 소스=PDP일별 탭(히어로별 일별 pdp_uv, team.sales.pdp_path_daily_summary_v · direct).
+# series=실수치 / heroes·grade=26FW / actions=IMC.items(hero_related)에서 유도. 실패 시 샘플 유지.
+npdp = 0
+try:
+    from soo.hero_ops.sales_rollup import read_tab as _read_tab, SALES_SHEET_ID as _SALES_DEF
+    _pdp_sid = _src("dashboard") or _SALES_DEF
+    # 노트북 산출 = date, goods_no, style_no, pdp_uv (goods 단위) → 여기서 26FW 히어로로 롤업.
+    #   ★히어로 매핑을 생성기 한 곳(_hero_of_fw)에만 두려는 것(노트북엔 uid 목록만). 구 포맷(hero 컬럼)도 호환.
+    _pdp_rows = _read_tab(sheets, _pdp_sid, "PDP일별")
+    _pdp_h_of = globals().get("_hero_of_fw")
+    _pdp_by, _pdp_dates = {}, set()
+    for _r in _pdp_rows:
+        _d = str(_r.get("date") or "")[:10]
+        _h = str(_r.get("hero") or "").strip()
+        if not _h and _pdp_h_of:
+            _h = _pdp_h_of(_r.get("style_no"), _r.get("goods_no")) or ""
+        try:
+            _u = int(float(_r.get("pdp_uv")))
+        except (TypeError, ValueError):
+            continue
+        if not _d or not _h or _u <= 0:
+            continue
+        _hd = _pdp_by.setdefault(_h, {})
+        _hd[_d] = _hd.get(_d, 0) + _u
+        _pdp_dates.add(_d)
+    _pdp_dates = sorted(_pdp_dates)
+    if "전체" not in _pdp_by and _pdp_by:                                 # 전체 = 히어로 합(구 포맷은 시트에 이미 있음)
+        _pdp_by["전체"] = {d: sum(v.get(d, 0) for v in _pdp_by.values()) for d in _pdp_dates}
+    if _pdp_dates and "전체" in _pdp_by:
+        _tot = {h: sum(v.values()) for h, v in _pdp_by.items() if h != "전체"}
+        _order = ["전체"] + sorted(_tot, key=lambda h: -_tot[h])          # 전체 먼저 + 총UV 내림차순
+        _series = {h: [_pdp_by[h].get(d, 0) for d in _pdp_dates] for h in _order}
+        _grade = {}                                                       # 26FW 등급(S/A/E)
+        for h in _order[1:]:
+            g = _FW_GRADE.get(h) or next((v for k, v in _FW_GRADE.items()
+                                          if k.replace(" ", "") == h.replace(" ", "")), None)
+            if g:
+                _grade[h] = g
+        # actions = IMC.items(윈도우 필터·hero_related 태깅됨) 전량 → PDP 채널 7종으로 묶음.
+        # ★규칙=히어로 관련 IMC 액션은 전부 핀으로(캘린더와 1:1). type 기준(channel은 'SNS광고' 등 변형 있음).
+        _CH = {"IG": "IG", "SNS": "IG", "PR": "PR", "CRM": "CRM",
+               "발매": "입고알람", "입고알람": "입고알람",
+               "캠페인": "프로모션", "기획전": "프로모션", "온라인": "프로모션", "온사이트": "프로모션",
+               "에너지": "바이럴", "오프라인": "오프라인"}
+        _h2n = {h.replace(" ", ""): h for h in _order[1:]}
+        # 별칭(라이트 다운/커브드 데님 등) → 시리즈명. 시계열에 있는 히어로만.
+        _pdp_al, _amb = {}, set()
+        for _hn, _als in (globals().get("_hero_alias") or {}).items():
+            _tgt = _h2n.get(_hn.replace(" ", ""))
+            if not _tgt:
+                continue
+            for _al in _als:
+                _k = _al.replace(" ", "")
+                if _pdp_al.get(_k, _tgt) != _tgt:
+                    _amb.add(_k)                                         # 2개 히어로가 다투는 별칭(예: '플리스')=버림
+                _pdp_al[_k] = _tgt
+        for _k in _amb:
+            _pdp_al.pop(_k, None)
+        _pdp_al.update(_h2n)                                             # 정식명은 항상 우선
+        _pdp_keys = sorted(_pdp_al, key=len, reverse=True)               # 긴 별칭 우선(부분일치 오탐 방지)
+
+        def _pdp_hero_of(_it):
+            _blob = (_it.get("title", "") + " " + _it.get("sub", "")).replace(" ", "")
+            return next((_pdp_al[k] for k in _pdp_keys if k in _blob), "")
+
+        _acts = []
+        for _it in _items:                                               # 이미 윈도우 필터됨
+            if not _it.get("hero_related"):
+                continue
+            _ch = _CH.get(_it.get("type")) or _CH.get(_it.get("channel"))
+            _dd = str(_it.get("date") or "")[:10]
+            if not _ch or _dd < _pdp_dates[0] or _dd > _pdp_dates[-1]:
+                continue
+            # owner 없으면 IG/CRM은 sub(오피셜·우먼 등 발행 주체)로 폴백
+            _ow = (_it.get("owner") or "").strip()
+            if not _ow and _it.get("type") in ("IG", "SNS", "CRM"):
+                _ow = (_it.get("sub") or "").strip()[:12]
+            _a = {"date": _dd, "ch": _ch, "title": _it["title"], "owner": _ow}
+            _hv = _pdp_hero_of(_it)
+            if _hv:
+                _a["hero"] = _hv
+            _acts.append(_a)
+        _pdp_obj = {"as_of": TODAY.isoformat(), "sample": False, "dates": _pdp_dates,
+                    "series": _series, "heroes": _order, "grade": _grade, "actions": _acts}
+        html2, npdp = re.subn(r"window\.__PDP_DAILY = [^\n]*?;",
+                              lambda _m: "window.__PDP_DAILY = " + json.dumps(_pdp_obj, ensure_ascii=False) + ";",
+                              html2, count=1)
+        print(f"PDP일별 주입: {len(_pdp_dates)}일 · 히어로 {len(_order) - 1} · actions {len(_acts)} (교체 {npdp})")
+        if npdp != 1:
+            _HEALTH.append("window.__PDP_DAILY 교체 실패(앱 플레이스홀더 확인)")
+    else:
+        _HEALTH.append("PDP일별 데이터 없음/전체 누락 — 트렌드 샘플 유지")
+except Exception as e:
+    print(f"[주의] PDP일별 주입 실패 — 트렌드 샘플 유지: {type(e).__name__}: {e}")
+
 HTML.write_text(html2, encoding="utf-8")
 
-print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · GEN_AT→{_GEN_KST.strftime('%Y-%m-%d %H:%M')}(교체 {nga}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch}) · INBOUND_BOARD(교체 {ninb})")
+print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · GEN_AT→{_GEN_KST.strftime('%Y-%m-%d %H:%M')}(교체 {nga}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch}) · PDP일별(교체 {npdp}) · INBOUND_BOARD(교체 {ninb})")
 for h in heroes:
     done = sum(1 for s in h["stages"] if s == "done")
     prog = sum(1 for s in h["stages"] if s == "progress")
