@@ -709,8 +709,10 @@ def load_online(sheets) -> list[dict]:
         rng = _md(sd) + (f"~{_md(ed)}" if ed and ed != sd else "")
         parts = [p for p in (it.get("brand"), it.get("kind")) if p]
         sub = " · ".join(parts) + (f" · {rng}" if rng else "")
+        # month/brand는 생성기의 월별 SUMMARY 감시용(어느 달·어느 브랜드가 비었는지) — 주입엔 안 씀.
         out.append({"name": it["name"], "sub": sub, "date": sd, "end": ed,
-                    "approx": False, "guide": it.get("guide", "")})
+                    "approx": False, "guide": it.get("guide", ""),
+                    "month": it.get("month"), "brand": it.get("brand", "")})
     for it in annual:
         out.append({"name": it["name"], "sub": f"전사 · {it['kind']}", "date": it["date"],
                     "end": None, "approx": True, "guide": "", "company": it.get("company", False)})

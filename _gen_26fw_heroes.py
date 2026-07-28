@@ -555,7 +555,8 @@ try:
     # 온라인 캠페인 스케줄('[통합] 26년 프로모션 스케줄') — 월별 SUMMARY 상세(1~7월, 자가확장) + 연간 백본(8~12월)
     _n_on = 0
     try:
-        for it in _IMCT.load_online(sheets):
+        _on_items = _IMCT.load_online(sheets)
+        for it in _on_items:
             # 전사 캠페인(무진장·빅세일·멤버스데이 등)은 별도 타입 '전사' — 프론트가 히어로 필터와
             # 채널 토글을 우회해 항상 노출(사용자 지시 2026-07-27).
             _ty = "전사" if it.get("company") else "온라인"
@@ -566,6 +567,31 @@ try:
         print(f"IMC 온라인 캠페인 로드: {_n_on}건")
         if _n_on == 0:
             _HEALTH.append("온라인 캠페인 0건 — 시트 권한/구조 확인")
+
+        # ★월별 SUMMARY 감시(사용자 지시 2026-07-28: "매일 업데이트할 때 놓치지 말고 봐야 한다").
+        #   매월 말 다음 달 상세 탭("26' N월 SUMMARY")이 새로 생긴다. 탭 이름이 달라지거나 담당자가
+        #   안 채우면 조용히 연간 백본만 남아 캘린더가 헐거워지는데, 지금껏 아무 신호가 없었다.
+        #   (실제로 7·8월 '맨'이 통째로 비어 있었는데 두 달간 아무도 몰랐다.)
+        #   → 매일 갱신에서 ①이번 달 ②다음 달 ③브랜드 실종을 헬스체크로 잡아 슬랙 통지.
+        _mon_by = {}
+        for _x in _on_items:
+            if _x.get("month"):
+                _mon_by.setdefault(_x["month"], []).append(_x.get("brand") or "(공백)")
+        _m_now = TODAY.month
+        _m_next = _m_now % 12 + 1
+        print("월별 SUMMARY 커버리지: "
+              + " · ".join(f"{m}월 {len(v)}" for m, v in sorted(_mon_by.items())))
+        if _m_now not in _mon_by:
+            _HEALTH.append(f"온라인 {_m_now}월 SUMMARY 상세 0건 — 탭명('26' {_m_now}월 SUMMARY')·헤더 확인")
+        if TODAY.day >= 25 and _m_next > _m_now and _m_next not in _mon_by:
+            _HEALTH.append(f"온라인 {_m_next}월 SUMMARY 아직 없음 — 월말이면 다음 달 상세가 나와야 함")
+        # 브랜드 실종: 직전 달에 3건 이상이던 브랜드가 이번·다음 달 모두 0건이면 원천 공백 의심.
+        _b_prev = Counter(_mon_by.get(_m_now - 1 or 12, []))
+        _b_cur = set(_mon_by.get(_m_now, [])) | set(_mon_by.get(_m_next, []))
+        _gone = sorted(b for b, n in _b_prev.items() if n >= 3 and b != "(공백)" and b not in _b_cur)
+        if _gone:
+            _HEALTH.append(f"온라인 SUMMARY 브랜드 실종: {'·'.join(_gone)} — "
+                           f"{_m_now}·{_m_next}월 0건(직전 달엔 있었음). 원천 미기입/이관 확인")
     except Exception as _e_on:
         _HEALTH.append(f"온라인 캠페인 로드 예외: {type(_e_on).__name__}")
         print(f"[주의] 온라인 캠페인 로드 실패(기존 소스 유지): {type(_e_on).__name__}: {_e_on}")
