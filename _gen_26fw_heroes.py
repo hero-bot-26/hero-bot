@@ -343,7 +343,7 @@ try:
             read_tab(sheets, _SALES_ID, "FWTD", max_row=2)
         except Exception:
             _fw_tabs["YTD"] = _PT["YTD"]     # 탭 없으면 폴백(노트북 잡 완료 전)
-            _HEALTH.append("FWTD 탭 없음 — 대시보드 26FW 누계를 달력 YTD로 폴백")
+            print("[주의] FWTD 탭 없음 — 대시보드 26FW 누계를 달력 YTD로 폴백")   # ★_HEALTH는 아직 미정의(380행)
         _dash_fw = build_dashboard(sheets, drive, _SALES_ID, TODAY.isoformat(),
                                    style2hero=_fw_map["style_to_hero"],
                                    goods2hero=_fw_map["goods_to_hero"],
