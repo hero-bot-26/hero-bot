@@ -825,8 +825,9 @@ try:
                         if len(_v) <= 2:
                             continue
                         _nv, _dd = _norm(_v), _dt.date.fromisoformat(_iso)
-                        # 이미 다른 소스(온라인 프로모션 스케줄 등)에 있는 같은 캠페인이면 중복추가 대신
-                        # 그 항목을 '전사'로 승격(무진장·빅세일·멤버스데이 등 이중 노출 방지).
+                        # 이미 다른 소스(온라인 프로모션 스케줄 등)에 같은 캠페인이 있으면 스킵(이중 노출 방지).
+                        #   ★타입은 건드리지 않는다 — '전사' 꼭지는 프로모션 스케줄 R17~R21(무신사 전사
+                        #   레벨=빅세일·무진장·멤버스데이·입점회) 전용이라는 게 사용자 정의(2026-07-28).
                         # ★부분일치 기준을 레인별로 다르게: 전사급 레인(쇼케이스/캠페인)은 4자,
                         #   품목 레인(맨/우먼/키즈/홈/라이브커머스)은 6자 — '쿨탠다드'·'밀리터리' 같은
                         #   짧은 공통어로 성격이 다른 액션끼리 잘못 합쳐지는 것 방지.
@@ -838,9 +839,6 @@ try:
                                           or (len(min(_nv, _norm(x["title"]), key=len)) >= _mlen
                                               and (_nv in _norm(x["title"]) or _norm(x["title"]) in _nv)))), None)
                         if _dup:
-                            if _dup["type"] != "전사":
-                                _dup["type"] = _dup["channel"] = "전사"
-                            _dup["sales_lane"] = _lane
                             _n_sdup += 1
                             continue
                         if _add("전사", "전사", _iso, _v, _lane, source="MKT",
@@ -850,7 +848,7 @@ try:
                 _HEALTH.append("MKT '주요 세일즈 캠페인' 섹션 못 찾음 — A열 라벨 확인")
 
         print(f"IMC MKT calendar 로드: 캠페인 신규 {_n_camp}·보강 {_n_enrich}건 + 에너지/바이럴 {_n_energy}건 "
-              f"+ 세일즈 캠페인(전사) 신규 {_n_sales}·승격 {_n_sdup}건 (기획중 {_n_plan}건 제외)")
+              f"+ 세일즈 캠페인 신규 {_n_sales}·중복스킵 {_n_sdup}건 (기획중 {_n_plan}건 제외)")
         if _n_camp == 0 and _n_enrich == 0 and _n_energy == 0:
             _HEALTH.append("MKT calendar 0건 — 구조변경/권한 확인")
         if _n_sales + _n_sdup == 0:
@@ -935,6 +933,19 @@ try:
 
     for x in _items:
         x["hero_related"] = _hero_related(x)
+
+    # 3b) MKT 주요 세일즈 캠페인 중 히어로가 제목에 명시된 건('빅토리아울ⅹ스토커즈' 등)은 '전사'가 아니라
+    #     그 히어로 딱지로 — 프론트 별칭 매칭(HERO_IMC_ALIASES)이 제목을 보고 히어로에 붙인다.
+    #     '전사'는 히어로 필터를 우회(=모든 히어로에 노출)하므로 히어로 캠페인에 달면 오히려 틀림.
+    #     ★전사 꼭지 = 프로모션 스케줄 '26년 캠페인 스케줄' R17~R21 전용(사용자 지시 2026-07-28).
+    #     히어로가 안 걸리는 세일즈 캠페인(FW캠페인·시티레저·슈퍼세일 등)만 '전사'로 남겨 항상 노출.
+    _n_shero = 0
+    for x in _items:
+        if x.get("sales_lane") and x["type"] == "전사" and x["hero_related"]:
+            x["type"] = x["channel"] = "캠페인"
+            _n_shero += 1
+    if _items:
+        print(f"세일즈 캠페인 히어로 딱지 전환: {_n_shero}건 (나머지는 '전사' 유지)")
 
     # 4) 윈도우 필터 + status 부여
     #    ⚠ 예전엔 비히어로 일정(source="일정")을 영구 드롭 → 봄 히어로 시즌 종료 후 5/6월 비히어로
