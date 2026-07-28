@@ -1468,6 +1468,29 @@ try:
 except Exception as e:
     print(f"[주의] 27SS 진척 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
+# ── 27SS 보드 단계 스케줄 주입 (★ MS_27SS_작업의뢰 기획시트 → STY_SCHED_27SS) ──
+# STY별 stages/dates(14칸)에 '기준 YYYY-MM-DD'를 심어 26FW와 같은 원리로 D+ 지연을 띄운다.
+# 스펙·안전규칙 = hero-master-app/docs/27ss-schedule-targets.md
+try:
+    from soo.hero_ops.sched_27ss import load_27ss_sched
+    # 대상 = 앱 PLM_DATA(27SS 후보) 키와 교집합. PLM_DATA 자체는 아직 앱 상수라 여기서 읽어 씀.
+    _m27 = re.search(r"const PLM_DATA = (\{.*?\n\});", html2, re.DOTALL)
+    _cand = set(json.loads(_m27.group(1)).keys()) if _m27 else None
+    sched27, warns27 = load_27ss_sched(sheets, _src("plm_27ss_req"), today=TODAY, only=_cand)
+    if not sched27:
+        raise ValueError("스케줄 0건 — 조용한 0 덮어쓰기 방지로 기존값 유지")
+    blk = "const STY_SCHED_27SS = " + json.dumps(sched27, ensure_ascii=False, indent=2) + ";"
+    html2, ns27 = re.subn(r"const STY_SCHED_27SS = \{.*?\n\};", blk, html2, count=1, flags=re.DOTALL)
+    assert ns27 == 1, f"STY_SCHED_27SS 교체 실패 (matched {ns27})"
+    _dl = sum(1 for v in sched27.values() if "delayed" in v["stages"])
+    print(f"27SS 스케줄: {len(sched27)} STY 주입 (지연 {_dl}) / 후보 {len(_cand or [])}")
+    for w in warns27[:12]:
+        print(f"   [원천주의] {w}")
+    if len(warns27) > 12:
+        print(f"   [원천주의] 외 {len(warns27) - 12}건")
+except Exception as e:
+    print(f"[주의] 27SS 스케줄 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
+
 # ── 26FW 발매센터 데이터 주입 (const LAUNCH_26FW) ──
 # 준비(상품기획 14단계 완료율=heroes) + 발매(★MSTRD_26FW 상품MAP 발매스케줄 품번→시리즈→발매일)
 #   + 판매(IMC_PERF 현재 누판 YTD, 이름정규화 조인). 상태=발매일 vs TODAY 자동전환.

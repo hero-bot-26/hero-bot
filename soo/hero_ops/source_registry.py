@@ -34,8 +34,12 @@ DEFAULTS = {
         "id": "", "tab": "", "range": "", "expected": []},
     "mstrd": {         # 상품MAP 발매 (★MSTRD_26FW 상품MAP: HERO STY·SKU·발매스케줄)
         "id": "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g", "tab": "HERO STY", "range": "", "expected": []},
-    "plm_27ss": {      # 27SS 작업의뢰/기획 관리판 (#.상세일정)
+    "plm_27ss": {      # 27SS 기획 관리판 (#.상세일정) — 홈 카드 SEASON_27SS_PROGRESS
         "id": "10guWc_5t06nu9QryPymTIl2oogQfV4qOEO81iXSgenI", "tab": "#.상세일정", "range": "", "expected": []},
+    "plm_27ss_req": {  # ★ MS_27SS_작업의뢰 '기획시트' — 27SS 보드 단계 진척·타겟일(STY_SCHED_27SS)
+        "id": "1NshiEIK3o8Kczi5Zg746cz2I3-Q-lq0eGNOe0YTuibI", "tab": "기획시트", "range": "",
+        "expected": ["신품번", "판매 시즌", "컬러 확정", "원단 확정", "PO 발행 (작지투입)",
+                     "테크팩 확정 (APP)", "입고 완료", "MD입고 목표일", "APP 목표"]},
 }
 
 
