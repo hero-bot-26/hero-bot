@@ -888,11 +888,18 @@ try:
     #    까다로운 품목만 수동 override, 나머지는 히어로명에서 자동 생성 → 품목 바뀌면 자동 반영.
     _ALIAS_OVERRIDE = {
         "커브드팬츠": ["커브드팬츠", "커브드 팬츠", "커브드 데님"],
-        "그리드/메시 플리스": ["그리드", "메시 플리스", "플리스"],
-        "에센셜 플리스": ["에센셜 플리스", "플리스"],
+        # ★맨 '플리스'는 두 플리스 히어로에 다 걸려 IMC 값이 똑같이 나왔다(27건 전부 중복).
+        #   사용자 정의(2026-07-28): 플러피/폴라 플리스 = 에센셜 플리스, 그리드·메시 = 그리드/메시 플리스.
+        "그리드/메시 플리스": ["그리드", "메시 플리스"],
+        "에센셜 플리스": ["에센셜 플리스", "플러피", "폴라 플리스"],
         "심리스 브라": ["심리스 브라", "심리스브라"],
         "라이트다운": ["라이트다운", "라이트 다운"],
         "헤비다운": ["헤비다운", "헤비 다운"],
+    }
+    # 제외 키워드 — 별칭이 걸려도 이 말이 있으면 그 히어로가 아니다.
+    #   '그리드 폴라 플리스'가 에센셜의 '폴라 플리스'에 걸리는 것을 막는다(그리드/메시가 정답).
+    _ALIAS_EXCLUDE = {
+        "에센셜 플리스": ["그리드", "메시"],
     }
     _hero_alias = {}
     for _h in heroes:
@@ -1009,6 +1016,11 @@ try:
     _nh = sum(1 for x in _items if x["hero_related"])
     print(f"IMC 주입: {len(_items)}건 (과거 {_np}/미래 {len(_items) - _np} · 히어로관련 {_nh}/{len(_items)} · 운영히어로 {len(_cur_heroes)}종: {_cur_heroes})")
 
+    _excl = {k: v for k, v in _ALIAS_EXCLUDE.items() if k in _hero_alias}
+    _excl_block = "const HERO_IMC_EXCLUDE = " + json.dumps(_excl, ensure_ascii=False) + ";"
+    html2, _nex = re.subn(r"const HERO_IMC_EXCLUDE = \{.*?\};", lambda _m: _excl_block, html2, count=1, flags=re.DOTALL)
+    if _nex != 1:
+        print(f"[주의] HERO_IMC_EXCLUDE 교체 실패(matched {_nex}) — 앱 기본값 유지")
     _alias_block = "const HERO_IMC_ALIASES = " + json.dumps(_hero_alias, ensure_ascii=False) + ";"
     html2, _na = re.subn(r"const HERO_IMC_ALIASES = \{.*?\};", _alias_block, html2, count=1, flags=re.DOTALL)
     if _na != 1:
