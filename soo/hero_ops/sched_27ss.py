@@ -37,12 +37,35 @@ STAGE_COLS: dict[int, tuple[str, str | None]] = {
     6:  ("컬러 확정",         None),
     7:  ("원단 확정",         "원단발주 목표"),
     8:  ("PO 발행 (작지투입)", None),
+    # 9(PO 작성=PLM Initial PO)도 작업의뢰의 같은 PO 컬럼으로 닫힌다 — 원천에 PO 컬럼이 하나뿐이라
+    # 8/9를 가르는 실적 컬럼이 없다. 타겟만 MDP에서 각각(작지 R137 / Initial PO R138) 다르게 잡는다.
+    # 이렇게 두면 PO가 실제로 나갔는데 9가 '지연'으로 뜨는 오탐이 안 생긴다.
+    9:  ("PO 발행 (작지투입)", None),
     10: ("테크팩 확정 (APP)",  "APP 목표"),
     13: ("입고 완료",         "MD입고 목표일"),
 }
 
 # 상한 검증용(타겟이 이보다 늦으면 연도 오타 의심) — 단계: 상한 컬럼
 TARGET_CEILING = {10: "MD입고 목표일", 13: "MD 발매 목표일"}
+
+# ── 트랙별 베이스라인(MDP 기획 관리판 '#.상세일정') ────────────────────────────
+# 작업의뢰엔 STY별 목표일이 10(APP)·13(입고)뿐이라, 앞단(수량·컬러·원단·PO)은 MDP 트랙 일정이 기준.
+# ★열: G=봄, J=여름 (R122~R138 구간에 한함). R139 이후는 축이 '입고 월코드'로 바뀌므로 절대 쓰지 말 것
+#   (그 구간의 J는 여름이 아니라 4월이다).
+MDP_SHEET_ID = "10guWc_5t06nu9QryPymTIl2oogQfV4qOEO81iXSgenI"
+MDP_TAB = "#.상세일정"
+MDP_YEAR = 2026
+MDP_COLS = {"봄": "G", "여름": "J"}
+# 앱 14단계 → (MDP 행, 그 행의 뜻)
+MDP_STAGE_ROWS = {
+    5:  (133, "수량 결정 & 예판가 & 발매일 확정"),
+    6:  (131, "컬러 확정 및 BT 투입"),
+    7:  (130, "원단 확정"),
+    8:  (137, "풀패키지 PLM upload(작업지시)"),
+    9:  (138, "PLM 통한 Initial PO 발행"),
+}
+# 판매시즌 → MDP 트랙. '상시'는 MDP에 전용 열이 없어 봄(간절기) 일정을 준용한다(비수기·캐리오버 성격).
+TRACK_TO_MDP = {"간절기": "봄", "여름": "여름", "상시": "봄"}
 
 KEY_COL, TRACK_COL, STRAT_COL = "신품번", "판매 시즌", "히어로 핵심 상품"
 TRACKS = {"간절기", "여름", "상시"}
@@ -92,8 +115,46 @@ def _resolve_target(raw: str, ceiling: dt.date | None,
     return None
 
 
+def load_mdp_baseline(sheets, sheet_id: str | None = None,
+                      warns: list[str] | None = None) -> dict[str, dict[int, dt.date]]:
+    """MDP '#.상세일정' → {트랙('봄'/'여름'): {stage: date}}. 실패하면 {} (호출부가 타겟 없이 진행)."""
+    warns = warns if warns is not None else []
+    rng = [f"'{MDP_TAB}'!{col}{row}"
+           for row, _ in MDP_STAGE_ROWS.values() for col in MDP_COLS.values()]
+    try:
+        resp = sheets.spreadsheets().values().batchGet(
+            spreadsheetId=(sheet_id or MDP_SHEET_ID), ranges=rng).execute()
+    except Exception as e:
+        warns.append(f"MDP 트랙 베이스라인 로드 실패({type(e).__name__}) — 앞단 단계 타겟 없이 진행")
+        return {}
+    cell = {}
+    for vr in resp.get("valueRanges", []):
+        a1 = vr["range"].split("!")[-1].replace("$", "")
+        vals = vr.get("values", [])
+        cell[a1] = (vals[0][0] if vals and vals[0] else "").strip()
+
+    def _mdp_date(raw: str) -> dt.date | None:
+        m = re.match(r"^(\d{1,2})/(\d{1,2})$", (raw or "").strip())
+        if not m:
+            return None
+        try:
+            return dt.date(MDP_YEAR, int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            return None
+
+    out: dict[str, dict[int, dt.date]] = {t: {} for t in MDP_COLS}
+    for stage, (row, label) in MDP_STAGE_ROWS.items():
+        for track, col in MDP_COLS.items():
+            d = _mdp_date(cell.get(f"{col}{row}", ""))
+            if d:
+                out[track][stage] = d
+            else:
+                warns.append(f"MDP {track} {label}({col}{row}) 일자 못 읽음 — 단계 {stage} 타겟 없음")
+    return {t: v for t, v in out.items() if v}
+
+
 def build_sty_dates(row: dict, today: dt.date, sty: str,
-                    warns: list[str]) -> tuple[list[str], list[str]]:
+                    warns: list[str], baseline: dict[int, dt.date] | None = None) -> tuple[list[str], list[str]]:
     """작업의뢰 1행(STY) → (stages[14], dates[14]).
 
     0~4(MDP~GO-DROP)와 5(1차수량)는 원천에 없어 앱 기본값을 유지하도록 ''를 돌려준다.
@@ -107,8 +168,10 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
     in_goal = _resolve_target(row.get("MD입고 목표일", ""), rel_goal, "MD입고 목표일", sty, warns)
     ceilings = {10: in_goal, 13: rel_goal}
 
-    for n, (done_col, target_col) in STAGE_COLS.items():
-        actual = _norm_date(row.get(done_col, ""))
+    baseline = baseline or {}
+    for n in sorted(set(STAGE_COLS) | set(baseline)):
+        done_col, target_col = STAGE_COLS.get(n, (None, None))
+        actual = _norm_date(row.get(done_col, "")) if done_col else None
         if target_col == "MD입고 목표일":
             target = in_goal
         elif target_col:
@@ -120,6 +183,9 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
                 target = _resolve_target(raw_t, ceilings.get(n), target_col, sty, warns)
         else:
             target = None
+        # 작업의뢰에 목표 컬럼이 없는 앞단(수량·컬러·원단·PO)은 MDP 트랙 베이스라인이 기준.
+        if target is None and n in baseline:
+            target = baseline[n]
 
         if actual and _in_window(actual):
             if target:
@@ -162,6 +228,7 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
         raise ValueError(f"작업의뢰 헤더 불일치 — 없는 컬럼: {missing}")
 
     warns: list[str] = []
+    base_by_track = load_mdp_baseline(sheets, warns=warns)
     out: dict[str, dict] = {}
     for r in vals[1:]:
         get = lambda c: (r[H[c]].strip() if c in H and len(r) > H[c] else "")   # noqa: E731
@@ -173,7 +240,8 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
             warns.append(f"{sty}: 판매시즌 '{track}' 미인식 — 스킵")
             continue
         row = {c: get(c) for c in H}
-        stages, dates = build_sty_dates(row, today, sty, warns)
+        _bl = base_by_track.get(TRACK_TO_MDP.get(track, ""), {})
+        stages, dates = build_sty_dates(row, today, sty, warns, baseline=_bl)
         if not any(stages):
             continue                                     # 쓸 값이 하나도 없으면 주입 안 함
         out[sty] = {"stages": stages, "dates": dates, "track": track,

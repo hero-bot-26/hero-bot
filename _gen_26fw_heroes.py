@@ -331,6 +331,31 @@ try:
     dash = build_dashboard(sheets, drive, _SALES_ID, TODAY.isoformat(),
                            style2hero=_dash_s2h, goods2hero=_map26["goods_to_hero"])
     _DASH_HEROES = dash.get("heroes", [])
+    # ── 26FW 히어로도 같은 대시보드에 싣는다 (홈 26FW → '상세'가 빈 화면이던 문제) ──
+    #   ★누계(YTD 슬롯)는 FWTD(7/1~) 탭 = 시즌 누계. 달력 YTD면 캐리오버 STY의 봄 판매가 섞인다.
+    #   퍼널은 FWTD 기준 산출이 없어 끈다(누계와 기간이 어긋난 유입·전환을 보여주지 않기 위함).
+    try:
+        from soo.hero_ops.sales_rollup import PERIOD_TABS as _PT
+        _fw_map = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
+        _fw_tabs = dict(_PT)
+        _fw_tabs["YTD"] = ("FWTD", "전년FWTD")
+        try:
+            read_tab(sheets, _SALES_ID, "FWTD", max_row=2)
+        except Exception:
+            _fw_tabs["YTD"] = _PT["YTD"]     # 탭 없으면 폴백(노트북 잡 완료 전)
+            _HEALTH.append("FWTD 탭 없음 — 대시보드 26FW 누계를 달력 YTD로 폴백")
+        _dash_fw = build_dashboard(sheets, drive, _SALES_ID, TODAY.isoformat(),
+                                   style2hero=_fw_map["style_to_hero"],
+                                   goods2hero=_fw_map["goods_to_hero"],
+                                   period_tabs=_fw_tabs, force_season="26FW",
+                                   with_funnel=False)
+        _fw_heroes = _dash_fw.get("heroes", [])
+        for _fh in _fw_heroes:
+            _fh["ytd_from"] = "2026-07-01" if _fw_tabs["YTD"][0] == "FWTD" else None   # 앱 라벨용
+        dash["heroes"] = dash["heroes"] + _fw_heroes
+        print(f"DASHBOARD 26FW: 히어로 {len(_fw_heroes)}개 추가 (누계 탭 {_fw_tabs['YTD'][0]})")
+    except Exception as _efw:
+        print(f"[주의] DASHBOARD 26FW 블록 스킵 — 26SS만 유지: {type(_efw).__name__}: {_efw}")
     dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
     html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
     assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
@@ -769,9 +794,67 @@ try:
                     if len(_v) > 2:
                         if _add("에너지", "에너지", _iso, _v, _lane, source="MKT"):
                             _n_energy += 1
-        print(f"IMC MKT calendar 로드: 캠페인 신규 {_n_camp}·보강 {_n_enrich}건 + 에너지/바이럴 {_n_energy}건 (기획중 {_n_plan}건 제외)")
+
+        # ③ '주요 세일즈 캠페인' 섹션(쇼케이스·캠페인·맨·우먼·키즈·홈·라이브커머스) 전량 → 타입 '전사'.
+        #   사용자 지시(2026-07-28): 세일즈 캠페인은 히어로 무관하게 캘린더에 항상 보이게 = '전사' 꼭지.
+        #   ★그동안 이 파일에서 읽던 건 ①캠페인 통합관리(레벨/상태) ②에너지 레인뿐이라, 그리드의
+        #     세일즈 캠페인 행(빅토리아울x스토커즈 8/12 등)이 통째로 누락돼 있었음.
+        #   섹션 경계는 A열 라벨로 탐지(행 이동에 강함). 병합셀은 시작일 컬럼에만 값이 들어옴.
+        def _sales_end(txt, start):     # "(6/14~6/24)" · "(5/11~17)" 같은 기간 표기 → 종료일
+            m = _re2.search(r"(\d{1,2})\s*/\s*(\d{1,2})\s*[~\-–]\s*(?:(\d{1,2})\s*/\s*)?(\d{1,2})", txt)
+            if not m:
+                return ""
+            _em = int(m.group(3) or m.group(1))
+            try:
+                e = _dt.date(start.year + (1 if _em < start.month else 0), _em, int(m.group(4)))
+            except ValueError:
+                return ""
+            return e.isoformat() if start <= e <= start + _dt.timedelta(days=120) else ""
+
+        _n_sales = _n_sdup = 0
+        if _grid and _c2d:
+            _si = next((i for i, r in enumerate(_grid) if r and _norm(r[0]) == "주요세일즈캠페인"), -1)
+            if _si >= 0:
+                _send = next((i for i in range(_si + 1, len(_grid))
+                              if _grid[i] and str(_grid[i][0]).strip()), len(_grid))
+                for i in range(_si, _send):
+                    r = _grid[i]
+                    _lane = str(r[1]).strip() if len(r) > 1 and r[1] else "세일즈 캠페인"
+                    for j, _iso in sorted(_c2d.items()):
+                        _v = _clean(str(r[j]).strip() if j < len(r) and r[j] is not None else "")
+                        if len(_v) <= 2:
+                            continue
+                        _nv, _dd = _norm(_v), _dt.date.fromisoformat(_iso)
+                        # 이미 다른 소스(온라인 프로모션 스케줄 등)에 있는 같은 캠페인이면 중복추가 대신
+                        # 그 항목을 '전사'로 승격(무진장·빅세일·멤버스데이 등 이중 노출 방지).
+                        # ★부분일치 기준을 레인별로 다르게: 전사급 레인(쇼케이스/캠페인)은 4자,
+                        #   품목 레인(맨/우먼/키즈/홈/라이브커머스)은 6자 — '쿨탠다드'·'밀리터리' 같은
+                        #   짧은 공통어로 성격이 다른 액션끼리 잘못 합쳐지는 것 방지.
+                        _mlen = 4 if _norm(_lane) in ("쇼케이스", "캠페인") else 6
+                        _dup = next((x for x in _items
+                                     if x["type"] in ("전사", "캠페인", "온라인", "기획전")
+                                     and abs((_dt.date.fromisoformat(x["date"]) - _dd).days) <= 7
+                                     and (_norm(x["title"]) == _nv
+                                          or (len(min(_nv, _norm(x["title"]), key=len)) >= _mlen
+                                              and (_nv in _norm(x["title"]) or _norm(x["title"]) in _nv)))), None)
+                        if _dup:
+                            if _dup["type"] != "전사":
+                                _dup["type"] = _dup["channel"] = "전사"
+                            _dup["sales_lane"] = _lane
+                            _n_sdup += 1
+                            continue
+                        if _add("전사", "전사", _iso, _v, _lane, source="MKT",
+                                sales_lane=_lane, end=_sales_end(_v, _dd)):
+                            _n_sales += 1
+            else:
+                _HEALTH.append("MKT '주요 세일즈 캠페인' 섹션 못 찾음 — A열 라벨 확인")
+
+        print(f"IMC MKT calendar 로드: 캠페인 신규 {_n_camp}·보강 {_n_enrich}건 + 에너지/바이럴 {_n_energy}건 "
+              f"+ 세일즈 캠페인(전사) 신규 {_n_sales}·승격 {_n_sdup}건 (기획중 {_n_plan}건 제외)")
         if _n_camp == 0 and _n_enrich == 0 and _n_energy == 0:
             _HEALTH.append("MKT calendar 0건 — 구조변경/권한 확인")
+        if _n_sales + _n_sdup == 0:
+            _HEALTH.append("MKT 세일즈 캠페인 0건 — 섹션 구조 확인")
     except Exception as _emkt:
         _HEALTH.append(f"MKT calendar 로드 예외: {type(_emkt).__name__}")
         print(f"[주의] MKT calendar 로드 실패(기존 소스만 유지): {type(_emkt).__name__}: {_emkt}")
@@ -1028,6 +1111,19 @@ try:
     hero_perf = {}
     _PERIODS = ["YTD", "MTD", "WEEK"]   # PMKT기간 탭의 period 값. 프론트 토글과 1:1.
 
+    # ★26FW 누계는 달력 YTD(1/1~)가 아니라 시즌 누계 FWTD(7/1~)를 쓴다(사용자 확정 2026-07-28).
+    #   달력 YTD로 보면 캐리오버 STY의 봄 판매가 26FW 실적으로 잡혀(커브드 36.7억 중 대부분이 1~6월분)
+    #   실제 FW 판매를 못 본다. 26SS(hero_perf)는 그대로 YTD.
+    #   탭이 아직 없으면(노트북 반영 전) YTD로 폴백 — 조용히 0으로 떨어지지 않게.
+    _FW_YTD_TAB, _FW_YTD_LY_TAB = "FWTD", "전년FWTD"
+    try:
+        read_tab(sheets, _SALES_ID, _FW_YTD_TAB, max_row=2)
+    except Exception:
+        _HEALTH.append("FWTD 탭 없음 — 26FW 누계를 달력 YTD로 폴백(노트북 잡 완료 후 자동 정상화)")
+        _FW_YTD_TAB, _FW_YTD_LY_TAB = "YTD", "전년YTD"
+    _fw_tab = lambda per: (_FW_YTD_TAB if per == "YTD" else per)                 # noqa: E731
+    _fw_tab_ly = lambda per: (_FW_YTD_LY_TAB if per == "YTD" else "전년" + per)   # noqa: E731
+
     def _num(v):   # read_tab은 UNFORMATTED_VALUE라 숫자를 실제 number로 줌 → float 직접(★_n은 float ".0"를 ×10로 깨뜨림)
         try:
             return float(v)
@@ -1136,25 +1232,54 @@ try:
                     _sb26 = str(r.get("style_no") or "").split("-")[0].strip()
                     if _sb26:
                         _hsty(hero, _sb26, _per)["sales_gmv"] += _g26
-                hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))   # 26FW 기준 별도 롤업
-                if hero_fw:
-                    _dfw = _perd_fw(hero_fw, _per)
-                    _g0, _q0 = round(_num(r.get("gmv"))), round(_num(r.get("qty")))
-                    _dfw["gmv"] += _g0
-                    _dfw["qty"] += _q0
-                    _b = _base_of(r.get("style_no"), r.get("goods_no"))
-                    if _b:
-                        _sd0 = _styd_fw(hero_fw, _b, _per)
-                        _sd0["gmv"] += _g0
-                        _sd0["qty"] += _q0
-        # 26FW 전년 동기간(YoY 분모) — 전년YTD/전년MTD/전년WEEK 탭을 26FW 매핑으로 롤업.
-        #   ★프론트가 26SS DASHBOARD를 이름으로 조인해 쓰지 않도록 26FW 자체 기간·전년을 갖춘다.
+        # 거래액 전주비(WoW)를 '화면에 찍히는 값과 같은 기준'인 실적 누판으로 산출하기 위한 주간 2개.
+        #   기존엔 PMKT 직접경로 주간(wow.gmv)으로 냈는데 표시값은 누판이라 기준이 어긋났다.
+        #   WEEK=최근 7일 / 직전WEEK=그 직전 7일(노트북 params). 같은 7일 폭이라 정규화 불필요.
+        _sales_wk = {"cur": {}, "prev": {}}          # {when: {hero: gmv}}
+        _sales_wk_sty = {"cur": {}, "prev": {}}      # {when: {(hero, base): gmv}}
+        for _when, _tab in (("cur", "WEEK"), ("prev", "직전WEEK")):
+            try:
+                for r in read_tab(sheets, _SALES_ID, _tab):
+                    hero = _hero_of(r.get("style_no"), r.get("goods_no"))
+                    if not hero:
+                        continue
+                    _gw = round(_num(r.get("gmv")))
+                    _sales_wk[_when][hero] = _sales_wk[_when].get(hero, 0) + _gw
+                    _sbw = str(r.get("style_no") or "").split("-")[0].strip()
+                    if _sbw:
+                        _k = (hero, _sbw)
+                        _sales_wk_sty[_when][_k] = _sales_wk_sty[_when].get(_k, 0) + _gw
+            except Exception as _esw:
+                _HEALTH.append(f"{_tab} 로드 실패({type(_esw).__name__}) — 거래액 전주비 '–' 표시")
+
+        # 26FW 롤업 — 누계만 FWTD(7/1~) 탭에서 읽는다(위 26SS 루프와 분리한 이유).
+        for _per in _PERIODS:
+            for r in read_tab(sheets, _SALES_ID, _fw_tab(_per)):
+                hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))
+                if not hero_fw:
+                    continue
+                _dfw = _perd_fw(hero_fw, _per)
+                _g0, _q0 = round(_num(r.get("gmv"))), round(_num(r.get("qty")))
+                _dfw["gmv"] += _g0
+                _dfw["qty"] += _q0
+                _b = _base_of(r.get("style_no"), r.get("goods_no"))
+                if _b:
+                    _sd0 = _styd_fw(hero_fw, _b, _per)
+                    _sd0["gmv"] += _g0
+                    _sd0["qty"] += _q0
+        # 26FW 전년 동기간(YoY 분모) — 누계는 전년FWTD(전년 7/1~), 나머지는 전년MTD/전년WEEK.
         for _per in _PERIODS:
             try:
-                for r in read_tab(sheets, _SALES_ID, "전년" + _per):
+                for r in read_tab(sheets, _SALES_ID, _fw_tab_ly(_per)):
                     hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))
                     if hero_fw:
                         _perd_fw(hero_fw, _per)["gmv_ly"] += round(_num(r.get("gmv")))
+            except Exception as _elyf:
+                _HEALTH.append(f"{_fw_tab_ly(_per)} 로드 실패({type(_elyf).__name__}) — 26FW 거래액 YoY 미표시")
+        # 26SS 전년 동기간(YoY 분모) — 전년YTD/전년MTD/전년WEEK.
+        for _per in _PERIODS:
+            try:
+                for r in read_tab(sheets, _SALES_ID, "전년" + _per):
                     hero = _hero_of(r.get("style_no"), r.get("goods_no"))   # 26SS 성과탭 거래액 YoY
                     if hero:
                         _gly26 = round(_num(r.get("gmv")))
@@ -1262,6 +1387,25 @@ try:
         except Exception as _epath:
             _HEALTH.append(f"PMKT경로기간 로드 실패({type(_epath).__name__}) — 유입경로 뷰 미표시")
 
+        # (3b) 유입경로 x 주차 — 경로별 전주비(WoW) 원천(PMKT경로주차 탭, 노트북 (4)셀).
+        #   히어로 행 WoW와 '같은 주차 키·같은 일평균 정규화'를 써야 화면에서 기준이 어긋나지 않는다.
+        _path_wk = {}          # {hero: {path: {(yyyy,week): {pdp,buy}}}}
+        try:
+            for r in read_tab(sheets, _SALES_ID, "PMKT경로주차"):
+                _ph = _hero_of(None, r.get("goods_no"))
+                _pp = str(r.get("path") or "").strip()
+                if not _ph or not _pp:
+                    continue
+                try:
+                    _pk = (int(_num(r.get("yyyy"))), int(_num(r.get("week_no"))))
+                except (TypeError, ValueError):
+                    continue
+                _pw = _path_wk.setdefault(_ph, {}).setdefault(_pp, {}).setdefault(_pk, {"pdp": 0, "buy": 0})
+                _pw["pdp"] += round(_num(r.get("pdp_uv")))
+                _pw["buy"] += round(_num(r.get("buy_uv")))
+        except Exception as _epw:
+            _HEALTH.append(f"PMKT경로주차 로드 실패({type(_epw).__name__}) — 유입경로 전주비 '–' 표시")
+
         # 진행중 주(span<2=사실상 1일) 제외 → 남은 최근 2주. 볼륨은 일평균(÷span)으로 비교.
         _usable = [k for k in sorted(_wk_keys) if _wk_span.get(k, 7) >= 2]
         _cur_k = _usable[-1] if _usable else None
@@ -1283,7 +1427,20 @@ try:
                 # 마케팅기여 WoW = (mkt_gmv/gmv) · 유입기여 WoW = (mkt_pdp/pdp) — 프론트서 비율 계산(정규화 무관)
                 "mkt_gmv": round(_c.get("mkt_gmv", 0) / _cd), "mkt_gmv_p": round(_p.get("mkt_gmv", 0) / _pd),
                 "mkt_pdp": round(_c.get("mkt_pdp", 0) / _cd), "mkt_pdp_p": round(_p.get("mkt_pdp", 0) / _pd),
+                # 거래액 전주비 전용 — 실적 누판 기준(WEEK vs 직전WEEK). 화면 거래액과 같은 기준.
+                "sales_gmv": _sales_wk["cur"].get(hero, 0), "sales_gmv_p": _sales_wk["prev"].get(hero, 0),
             }
+            # 유입 경로 레인 전주비 — 경로별 최근주/직전주(일평균). 기간과 무관하므로 모든 기간 블록에 동일 주입.
+            #   pdp_w/pdp_p 를 짝으로 넣는다(pdp는 기간 누계라 전주비 분자로 쓰면 안 됨).
+            _hpw = _path_wk.get(hero, {})
+            for _per_b in (P.get("paths") or {}).values():
+                for _pname, _pcell in _per_b.items():
+                    _wc = (_hpw.get(_pname, {}).get(_cur_k, {}) if _cur_k else {})
+                    _wp = (_hpw.get(_pname, {}).get(_prev_k, {}) if _prev_k else {})
+                    _pcell["pdp_w"] = round(_wc.get("pdp", 0) / _cd)
+                    _pcell["pdp_p"] = round(_wp.get("pdp", 0) / _pd)
+                    _pcell["buy_w"] = round(_wc.get("buy", 0) / _cd)
+                    _pcell["buy_p"] = round(_wp.get("buy", 0) / _pd)
         # STY 드릴다운 배열을 각 히어로 P에 주입(유입순 상위, 잡음 제거 위해 pdp>0만)
         for hero, P in hero_perf.items():
             _stys = []
@@ -1302,7 +1459,9 @@ try:
                             "buy": round(_swc.get("buy", 0) / _cd), "buy_p": round(_swp.get("buy", 0) / _pd),
                             "gmv": round(_swc.get("gmv", 0) / _cd), "gmv_p": round(_swp.get("gmv", 0) / _pd),
                             "mkt_gmv": round(_swc.get("mkt_gmv", 0) / _cd), "mkt_gmv_p": round(_swp.get("mkt_gmv", 0) / _pd),
-                            "mkt_pdp": round(_swc.get("mkt_pdp", 0) / _cd), "mkt_pdp_p": round(_swp.get("mkt_pdp", 0) / _pd)},
+                            "mkt_pdp": round(_swc.get("mkt_pdp", 0) / _cd), "mkt_pdp_p": round(_swp.get("mkt_pdp", 0) / _pd),
+                            "sales_gmv": _sales_wk_sty["cur"].get((hero, _b), 0),
+                            "sales_gmv_p": _sales_wk_sty["prev"].get((hero, _b), 0)},
                     "periods": {
                     _pp: {"pdp": (_pers.get(_pp) or {}).get("pdp", 0), "buy": (_pers.get(_pp) or {}).get("buy", 0),
                           "gmv": (_pers.get(_pp) or {}).get("gmv", 0),
@@ -1484,6 +1643,26 @@ try:
     assert ns27 == 1, f"STY_SCHED_27SS 교체 실패 (matched {ns27})"
     _dl = sum(1 for v in sched27.values() if "delayed" in v["stages"])
     print(f"27SS 스케줄: {len(sched27)} STY 주입 (지연 {_dl}) / 후보 {len(_cand or [])}")
+    # 단계 지연 슬랙 알람 — 화면 D+ 배지와 같은 소스로 요약 발송(토큰 없으면 조용히 스킵).
+    try:
+        from soo.hero_ops import stage_alerts
+        # 1차수량(5)의 완료 소스는 작업의뢰가 아니라 앱 입력이라, 시트만 보면 항상 '지연'으로 잡힌다.
+        #   → 앱에 수량이 입력된 히어로의 STY는 5단계 알람에서 제외(오탐 방지). 화면 표기는 그대로.
+        _plm27 = json.loads(_m27.group(1)) if _m27 else {}
+        _q_ok = {c for c, d in _plm27.items() if qinputs.get(d.get("heroName"))}
+        _s27 = {}
+        for _c, _v in sched27.items():
+            if _c in _q_ok and len(_v["stages"]) > 5 and _v["stages"][5] == "delayed":
+                _v = {**_v, "stages": list(_v["stages"])}
+                _v["stages"][5] = "pending"
+            _s27[_c] = _v
+        _alerts = stage_alerts.collect(_s27, TODAY, "27SS")
+        _fw_board = {s["style"]: {"stages": s["stages"], "dates": s["dates"], "track": s.get("track", "")}
+                     for h in heroes for s in h.get("stys", [])}
+        _alerts += stage_alerts.collect(_fw_board, TODAY, "26FW")
+        stage_alerts.send_if_any(_alerts, TODAY)
+    except Exception as _ea:
+        print(f"[주의] 단계 지연 알람 스킵: {type(_ea).__name__}: {_ea}")
     for w in warns27[:12]:
         print(f"   [원천주의] {w}")
     if len(warns27) > 12:

@@ -132,7 +132,9 @@ def _add(dst, ch, row):
 
 
 # ── 매출 집계: 히어로/스타일/컬러 × 기간 × 채널 ──────────────────────────────
-def aggregate(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None, style_to_hero=None):
+def aggregate(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None, style_to_hero=None,
+              period_tabs=None):
+    # period_tabs: {기간: (당기탭, 전년탭)}. 26FW는 누계를 FWTD(7/1~)로 읽으려고 오버라이드한다.
     # hero -> {periods:{P:{cur:channels, prev:channels}}, stys:{base:{name, periods, colors:{opt:periods}}}}
     # style_to_hero 주면 매출 히어로 귀속을 행별 신품번(base)→hero 로 해석(성과 탭과 100% 동일 총액).
     heroes = defaultdict(lambda: {
@@ -145,7 +147,7 @@ def aggregate(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None, sty
     })
     stats = {"rows": 0, "mapped": 0, "unmapped_goods": set()}
 
-    for period, (cur_tab, prev_tab) in PERIOD_TABS.items():
+    for period, (cur_tab, prev_tab) in (period_tabs or PERIOD_TABS).items():
         for when, tab in (("cur", cur_tab), ("prev", prev_tab)):
             for row in read_tab(sheets, sheet_id, tab):
                 stats["rows"] += 1
@@ -327,7 +329,11 @@ def _goods_map_from_style(sheets, sheet_id, style2hero, season="26SS", goods_ove
     return g2h
 
 
-def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=None):
+def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=None,
+                    period_tabs=None, force_season=None, with_funnel=True):
+    # period_tabs  = 기간→탭 오버라이드(26FW 누계=FWTD)
+    # force_season = 히어로 시즌 배지를 이 값으로 고정(26FW 블록)
+    # with_funnel  = PDP퍼널 탭 조인 여부. FWTD 퍼널이 없어 26FW 블록은 끈다(누계와 기간이 어긋나는 값 방지).
     """앱이 읽을 DASHBOARD dict (raw 합계; 비율은 JS에서 계산).
     style2hero 주면 그 매핑(base 신품번→hero)으로 통일(성과 탭과 동일 총액).
     goods2hero(uid→hero) 주면 신품번 빈칸/누락 goods를 uid로 보강(시트39 26SS 정합)."""
@@ -349,10 +355,14 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
         print(f"[order_ingest] 스킵: {e}")
         code2kor, kor2code, color_prep, style_prep = {}, {}, {}, {}
     heroes, stats = aggregate(sheets, sheet_id, g2h, code2kor, kor2code,
-                              style_to_hero=(s2h if style2hero else None))
+                              style_to_hero=(s2h if style2hero else None),
+                              period_tabs=period_tabs)
     hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h, code2kor, kor2code)
     hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h, code2kor, kor2code)
-    hero_funnel, sty_funnel = aggregate_funnel(sheets, sheet_id, g2h)   # PDP 유입→구매전환
+    if with_funnel:
+        hero_funnel, sty_funnel = aggregate_funnel(sheets, sheet_id, g2h)   # PDP 유입→구매전환
+    else:
+        hero_funnel, sty_funnel = {}, {}   # 26FW: FWTD 퍼널 미산출 → 빈값(앱은 '-')
     targets = parse_targets(sheets, as_of)   # 기간별(YTD/MTD/WEEK/DAY) 누적 목표
 
     # 히어로명 → 시즌 (g2h 값에서)
@@ -485,7 +495,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
             })
         out_heroes.append({
             "name": hero,
-            "season": cur_season if hero in order_heroes else hero_season.get(hero, cur_season),
+            "season": force_season or (cur_season if hero in order_heroes else hero_season.get(hero, cur_season)),
             "periods": _per_full(H["periods"]),
             "target": _tgt(hero_target[hero]) if hero in hero_target else None,
             "stock": _stock(hero_stock[hero]) if hero in hero_stock else None,
