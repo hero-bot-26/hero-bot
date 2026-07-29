@@ -1,20 +1,22 @@
 name: Hero master app daily update
 
 # 매일 PLM·실적 구글시트(데이터브릭스 자동출력)를 읽어 app.html 재생성 → hero-master-app에 push → Vercel 재배포.
-# 랩탑 무관(클라우드 실행). 데이터브릭스 잡이 새벽에 시트를 채운 뒤 돌도록 트리거.
-#   PLM 잡 06:00 KST · 실적 잡 07:00 KST 시작(전용 클러스터 ~2h, ~09:00 완료) →
-#   랭킹봇 daily(09:00 정시) 완료 직후 체이닝 실행(+지연 fallback schedule).
+# 랩탑 무관(클라우드 실행).
+#   ★2026-07-29 재설계: 실적 DBX 잡을 07:00 → **09:30**으로 옮겼다(원천 사전집계가 09:07쯤 적재돼
+#   07:00 실행은 당일분을 덜 읽었다). 잡이 ~3h 걸리므로 09시대에 시트를 읽으면 탭마다 기준일이 섞인다
+#   (실제 사고: MTD는 7/28인데 FWTD는 7/27 → 26FW 누계가 하루 통째로 밀림).
+#   → CI는 종전대로 랭킹봇 완료 직후 시작하되, `wait_sheet_fresh.py`로 **시트가 전일 기준으로
+#     다 채워질 때까지 대기**(최대 4h)한 뒤 생성한다. 대기 타임아웃이어도 생성기 신선도 게이트가
+#     실적·PMKT 주입만 건너뛰므로 섞인 값은 앱에 실리지 않는다.
 on:
-  # ★정시성: GitHub 네이티브 schedule 은 백로그로 3~6h 밀려(실제 ≈13시) 신뢰 불가.
+  # ★정시성: GitHub 네이티브 schedule 은 백로그로 3~6h 밀려 신뢰 불가.
   #   랭킹봇 daily("Daily ranking report")는 cron-job.org 가 09:00 KST 정시 dispatch 하므로,
-  #   그 완료 직후 앱 갱신을 체이닝(workflow_run) → 외부 설정 없이 09시대 정시 실행.
-  #   (실적 DBX 잡 ~09:00 완료 후. daily 실패해도 앱 갱신은 독립 실행되며, 데이터 미준비면
-  #    생성기가 어제와 동일 산출 → git diff 없음 → 커밋 스킵으로 안전.)
+  #   그 완료 직후 체이닝(workflow_run)으로 시작 → 시트 대기 → 생성(보통 12:30 전후 완료).
   workflow_run:
     workflows: ["Daily ranking report"]
     types: [completed]
   schedule:
-    - cron: "0 1 * * *"    # fallback (10:00 KST 의도, 지연 가능) — 체이닝 놓친 날 보정
+    - cron: "0 5 * * *"    # fallback (14:00 KST 의도, 지연 가능) — 체이닝 놓친 날 보정
   workflow_dispatch: {}     # 수동 실행 버튼
 
 concurrency:
@@ -24,7 +26,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 330      # 시트 대기(최대 4h) 포함. public 레포라 Actions 분 무과금.
     steps:
       - name: Checkout hero_bot (생성기)
         uses: actions/checkout@v4
@@ -45,6 +47,15 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install pandas openpyxl        # plm_ingest import용 (requirements 미포함)
+
+      # ★실적 시트(DBX 잡 09:30~약 3h)가 전일 기준으로 다 채워질 때까지 대기 — 반쯤 쓰인 시트를 읽지 않기 위함.
+      - name: Wait for sales sheet (전일 기준 완성 대기)
+        continue-on-error: true          # 대기 실패해도 생성은 진행(게이트가 실적·PMKT를 보류)
+        env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: python wait_sheet_fresh.py --timeout-min 240 --interval-min 5
 
       - name: Generate app.html (구글시트 → app.html)
         env:

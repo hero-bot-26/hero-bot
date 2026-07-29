@@ -106,6 +106,44 @@ def build_style_to_hero(sheets, hero_book=HERO_SHEET, hero_range="'HERO STY'!A7:
 
 
 # ── 시트 탭 읽기 (헤더=2행, 데이터=3행~) → list[dict] ──────────────────────
+# ── 시트 신선도(as-of) 검사 ────────────────────────────────────────────────
+# 각 raw 탭 1행 라벨 끝에 집계 종료일이 박혀 있다(예: '매출 MTD 20260701~20260728').
+# DBX 잡(3h)이 시트를 쓰는 도중 앱 CI가 읽으면 탭마다 기준일이 섞여 26FW 누계가 하루 밀리는 등
+# '조용히 틀린 값'이 앱에 실린다(2026-07-29 사고). 그래서 주입 전에 종료일을 확인한다.
+#   값 = as_of(전일) 기준 오프셋 일수. 0 = 전일까지, -7 = 전일-7일(직전WEEK).
+FRESH_TABS = {
+    "YTD": 0, "MTD": 0, "WEEK": 0, "DAY": 0, "FWTD": 0, "직전WEEK": -7,
+    "PDP퍼널": 0, "PMKT기간": 0, "PMKT주차": 0, "PMKT경로기간": 0, "PMKT경로주차": 0, "PDP일별": 0,
+}
+_ASOF_RE = re.compile(r"(\d{8})(?!.*\d{8})", re.S)   # 라벨의 마지막 8자리 날짜
+
+
+def check_freshness(sheets, sheet_id, as_of, tabs=None):
+    """as_of(YYYYMMDD, 보통 전일) 기준으로 각 탭 라벨의 종료일을 검사.
+    returns (fresh: bool, detail: list[str]) — detail은 어긋난 탭만 '탭 20260727(기대 20260728)' 형식.
+    라벨을 못 읽거나 날짜가 없으면 판단 보류(신선한 것으로 간주) — 새 탭·포맷 변경에 과민반응 방지."""
+    import datetime as _dt
+    want = {t: o for t, o in (tabs or FRESH_TABS).items()}
+    try:
+        res = sheets.spreadsheets().values().batchGet(
+            spreadsheetId=sheet_id, ranges=[f"'{t}'!A1" for t in want]).execute()
+    except Exception as e:                       # 라벨 조회 실패 = 판단 불가 → 통과(기존 가드들이 받는다)
+        print(f"[freshness] 라벨 조회 실패 — 검사 스킵: {type(e).__name__}")
+        return True, []
+    base = _dt.datetime.strptime(as_of, "%Y%m%d")
+    bad = []
+    for tab, r in zip(want, res.get("valueRanges", [])):
+        vals = r.get("values") or []
+        label = str(vals[0][0]) if (vals and vals[0]) else ""
+        m = _ASOF_RE.search(label)
+        if not m:
+            continue                             # 날짜 없는 탭(잔여재고 등)·읽기 실패 → 보류
+        want_end = (base + _dt.timedelta(days=want[tab])).strftime("%Y%m%d")
+        if m.group(1) != want_end:
+            bad.append(f"{tab} {m.group(1)}(기대 {want_end})")
+    return (not bad), bad
+
+
 def read_tab(sheets, sheet_id, tab, max_row=200000):
     res = sheets.spreadsheets().values().get(
         spreadsheetId=sheet_id, range=f"'{tab}'!A2:AB{max_row}",

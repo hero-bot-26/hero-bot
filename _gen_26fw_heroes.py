@@ -322,9 +322,21 @@ assert nmg == 1, f"MSTRD_GRADES 교체 실패 (matched {nmg})"
 # goods→hero 매핑은 build_maps 가 내부 DEV_SHEET_ID(26SS 탭)에서 별도로 읽음(sheet_id 무관).
 nd = 0
 _DASH_HEROES = []   # IMC 히어로 시즌 판정용(대시보드 STY→시즌 큐레이션값)
+_STALE_MSGS = []    # _HEALTH 정의(아래) 전에 생기는 경고 임시 보관 — ★블록 순서=스코프 함정 회피
+_SALES_FRESH = True
 try:
     from soo.hero_ops.sales_rollup import build_dashboard, SALES_SHEET_ID, build_style_to_hero, read_tab
+    from soo.hero_ops.sales_rollup import check_freshness as _check_fresh
     _SALES_ID = _src("dashboard") or SALES_SHEET_ID   # dashboard 소스키 오버라이드(실적 전용 시트)
+    # ★신선도 게이트(2026-07-29) — DBX 잡(09:30~약 3h)이 시트를 쓰는 도중 CI가 읽으면 탭마다 기준일이 섞인다.
+    #   실제로 07-29엔 MTD는 7/28인데 FWTD는 전날 실행분(7/27)이라 26FW 누계가 하루 통째로 밀렸다.
+    #   → 하나라도 어긋나면 실적·PMKT 블록을 '주입만' 건너뛰어 앱 직전값(하루 stale, 대신 정합)을 유지한다.
+    _SALES_ASOF = (TODAY - datetime.timedelta(days=1)).strftime("%Y%m%d")
+    _SALES_FRESH, _SALES_BAD = _check_fresh(sheets, _SALES_ID, _SALES_ASOF)
+    if not _SALES_FRESH:
+        print(f"[신선도] 실적시트 기준일 불일치 {len(_SALES_BAD)}건 — 실적·PMKT 주입 스킵(직전값 유지): "
+              + " · ".join(_SALES_BAD[:6]))
+        _STALE_MSGS.append("실적시트 기준일 불일치 → 실적·PMKT 갱신 보류(직전값 유지): " + " · ".join(_SALES_BAD[:4]))
     # 홈 실적 = 시트39 확정 26SS 매핑(uid+신품번, 사용자 검증 524.5억=525.4). 성과 탭과 동일 히어로 정의.
     _map26 = json.load(open(ROOT / "hero_goods_26ss.json", encoding="utf-8"))
     _dash_s2h = _map26["style_to_hero"]
@@ -357,10 +369,14 @@ try:
         print(f"DASHBOARD 26FW: 히어로 {len(_fw_heroes)}개 추가 (누계 탭 {_fw_tabs['YTD'][0]})")
     except Exception as _efw:
         print(f"[주의] DASHBOARD 26FW 블록 스킵 — 26SS만 유지: {type(_efw).__name__}: {_efw}")
-    dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
-    html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
-    assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
-    print(f"DASHBOARD: 히어로 {len(dash['heroes'])}개 주입 (매핑 {dash['_stats']['mapped']}/{dash['_stats']['rows']})")
+    if _SALES_FRESH:
+        dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
+        html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
+        assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
+        print(f"DASHBOARD: 히어로 {len(dash['heroes'])}개 주입 (매핑 {dash['_stats']['mapped']}/{dash['_stats']['rows']})")
+    else:
+        nd = 1   # 주입 스킵(직전값 유지) — 아래 STY_NAMES·시즌판정은 계산본 그대로 사용
+        print(f"DASHBOARD: 주입 스킵(직전값 유지) — 계산본 히어로 {len(dash['heroes'])}개는 시즌 판정에만 사용")
     # 스타일명(발매센터·홈 26FW STY 드릴다운 표시용) — 26SS 시트39 품명 + 26FW MSTRD 품명(M열) 병합.
     #   26FW STY(양말 7팩·10팩 등)가 STY_NAMES에 없어 '기타'로 폴백되던 것 보강.
     _sty_names = dict(_map26.get("style_names", {}))
@@ -379,6 +395,7 @@ except Exception as e:
 
 # ── 데이터 갱신 헬스체크 수집 (비어있음/구조변경 등 '조용한 실패' 가시화) ──
 _HEALTH = []
+_HEALTH.extend(_STALE_MSGS)   # ★_HEALTH 정의 전(대시보드 블록)에 쌓인 경고를 여기서 합류시킨다
 SNS_SHEET_ID = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"  # [무탠다드] SNS/CRM 콘텐츠 통합 관리
 TRACKER_SHEET_ID = "1oz6zM-x2nqaDSAufWJ2a-QZh-1F6LQipttNkVKoFAn8"  # 캠페인 운영관리 트래커([히어로 PDP]에 운영 히어로 품목)
 GOAL_SHEET_ID = "1_tZDl-heZyWT4VQYIAT3ZHFeMoQlK2FSOpEMyZjqvm0"  # PLM 시트(사용자 소유), '히어로 마케팅 목표' 탭=마케팅 입력란
@@ -1590,6 +1607,13 @@ try:
     #   (거래액 포함 1일 stale, 다음 정상 실행 때 자동 복구). 정상 읽힌 날은 신호>0이라 가드 미발동=신선값 주입.
     def _hsig(lst):
         return sum((h.get("periods", {}).get("YTD", {}) or {}).get("pdp_real", 0) for h in (lst or []))
+    # ★신선도 게이트 — 실적시트 기준일이 섞인 날은 PMKT도 같은 시트라 믿을 수 없다. 직전값 유지.
+    if hero_list and not _SALES_FRESH:
+        _prev_heroes = _prev.get("hero") or []
+        if _prev_heroes:
+            hero_list = _prev_heroes
+            _HEALTH.append(f"실적시트 기준일 불일치 → 히어로 PMKT 직전값 유지({len(_prev_heroes)}종)")
+            print(f"[보존] 신선도 불일치 — 히어로 PMKT 기존값 유지({len(_prev_heroes)}종)")
     if hero_list and _hsig(hero_list) == 0:
         _prev_heroes = _prev.get("hero") or []
         if _hsig(_prev_heroes) > 0:
