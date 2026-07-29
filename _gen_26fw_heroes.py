@@ -333,7 +333,8 @@ try:
     _DASH_HEROES = dash.get("heroes", [])
     # ── 26FW 히어로도 같은 대시보드에 싣는다 (홈 26FW → '상세'가 빈 화면이던 문제) ──
     #   ★누계(YTD 슬롯)는 FWTD(7/1~) 탭 = 시즌 누계. 달력 YTD면 캐리오버 STY의 봄 판매가 섞인다.
-    #   퍼널은 FWTD 기준 산출이 없어 끈다(누계와 기간이 어긋난 유입·전환을 보여주지 않기 위함).
+    #   퍼널도 같은 기간으로 — PDP퍼널 탭에 FWTD 행이 있으면 그걸 누계 슬롯으로 읽는다(노트북 _fp에 FWTD 추가, 2026-07-29).
+    #   FWTD 행이 아직 없으면 aggregate_funnel이 퍼널을 통째로 꺼서 '-'로 남긴다(어긋난 값 방지).
     try:
         from soo.hero_ops.sales_rollup import PERIOD_TABS as _PT
         _fw_map = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
@@ -348,7 +349,7 @@ try:
                                    style2hero=_fw_map["style_to_hero"],
                                    goods2hero=_fw_map["goods_to_hero"],
                                    period_tabs=_fw_tabs, force_season="26FW",
-                                   with_funnel=False)
+                                   funnel_periods=({"YTD": "FWTD"} if _fw_tabs["YTD"][0] == "FWTD" else None))
         _fw_heroes = _dash_fw.get("heroes", [])
         for _fh in _fw_heroes:
             _fh["ytd_from"] = "2026-07-01" if _fw_tabs["YTD"][0] == "FWTD" else None   # 앱 라벨용

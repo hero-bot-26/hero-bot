@@ -233,20 +233,25 @@ def aggregate_inbound(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=N
 
 
 # ── PDP 유입→구매전환 퍼널 집계 (히어로·스타일별 × 기간) ──────────────────────
-def aggregate_funnel(sheets, sheet_id, goods_to_hero):
+def aggregate_funnel(sheets, sheet_id, goods_to_hero, period_src=None):
     """'PDP퍼널' 탭(goods_no별 유입pdp_uv·구매purchase_uv) → 히어로/스타일 롤업.
-    탭 없으면 빈 dict(퍼널 데이터 미반영, 앱은 '데이터 없음'). 전환율은 앱에서 buy/pdp."""
+    탭 없으면 빈 dict(퍼널 데이터 미반영, 앱은 '데이터 없음'). 전환율은 앱에서 buy/pdp.
+    period_src = 슬롯→원천 period 오버라이드. 26FW는 누계가 시즌 누계라 {'YTD':'FWTD'}로 읽는다
+    (매출 period_tabs와 같은 기간을 봐야 유입·전환이 누계와 어긋나지 않는다)."""
     hero_fn = defaultdict(lambda: {p: {"pdp": 0.0, "buy": 0.0} for p in PERIODS})
     sty_fn = defaultdict(lambda: {p: {"pdp": 0.0, "buy": 0.0} for p in PERIODS})
+    src2slot = {(period_src or {}).get(p, p): p for p in PERIODS}   # 원천 period → 슬롯
     try:
         rows = read_tab(sheets, sheet_id, "PDP퍼널")
     except Exception as e:
         print(f"[funnel] 'PDP퍼널' 탭 읽기 스킵: {e}")
         return {}, {}
+    seen_src = set()
     for row in rows:
-        p = str(row.get("period") or "").strip()
-        if p not in PERIODS:
+        p = src2slot.get(str(row.get("period") or "").strip())
+        if p is None:
             continue
+        seen_src.add(p)
         try:
             gid = int(row.get("goods_no"))
         except (TypeError, ValueError):
@@ -258,6 +263,11 @@ def aggregate_funnel(sheets, sheet_id, goods_to_hero):
         pdp, buy = _f(row.get("pdp_uv")), _f(row.get("purchase_uv"))
         hero_fn[hero][p]["pdp"] += pdp; hero_fn[hero][p]["buy"] += buy
         sty_fn[(hero, base)][p]["pdp"] += pdp; sty_fn[(hero, base)][p]["buy"] += buy
+    # ★오버라이드한 원천 period가 탭에 아직 없으면(잡 미완) 조용히 0을 보여주지 말고 통째로 끈다.
+    for slot, src in (period_src or {}).items():
+        if slot not in seen_src:
+            print(f"[funnel] 원천 period '{src}'(슬롯 {slot}) 행 없음 — 퍼널 미반영(앱 '-')")
+            return {}, {}
     return hero_fn, sty_fn
 
 
@@ -330,10 +340,11 @@ def _goods_map_from_style(sheets, sheet_id, style2hero, season="26SS", goods_ove
 
 
 def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=None,
-                    period_tabs=None, force_season=None, with_funnel=True):
-    # period_tabs  = 기간→탭 오버라이드(26FW 누계=FWTD)
-    # force_season = 히어로 시즌 배지를 이 값으로 고정(26FW 블록)
-    # with_funnel  = PDP퍼널 탭 조인 여부. FWTD 퍼널이 없어 26FW 블록은 끈다(누계와 기간이 어긋나는 값 방지).
+                    period_tabs=None, force_season=None, with_funnel=True, funnel_periods=None):
+    # period_tabs    = 기간→탭 오버라이드(26FW 누계=FWTD)
+    # force_season   = 히어로 시즌 배지를 이 값으로 고정(26FW 블록)
+    # with_funnel    = PDP퍼널 탭 조인 여부
+    # funnel_periods = 퍼널 슬롯→원천 period 오버라이드(26FW: {'YTD':'FWTD'}). 매출 기간과 맞춘다.
     """앱이 읽을 DASHBOARD dict (raw 합계; 비율은 JS에서 계산).
     style2hero 주면 그 매핑(base 신품번→hero)으로 통일(성과 탭과 동일 총액).
     goods2hero(uid→hero) 주면 신품번 빈칸/누락 goods를 uid로 보강(시트39 26SS 정합)."""
@@ -360,9 +371,9 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
     hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h, code2kor, kor2code)
     hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h, code2kor, kor2code)
     if with_funnel:
-        hero_funnel, sty_funnel = aggregate_funnel(sheets, sheet_id, g2h)   # PDP 유입→구매전환
+        hero_funnel, sty_funnel = aggregate_funnel(sheets, sheet_id, g2h, period_src=funnel_periods)
     else:
-        hero_funnel, sty_funnel = {}, {}   # 26FW: FWTD 퍼널 미산출 → 빈값(앱은 '-')
+        hero_funnel, sty_funnel = {}, {}   # 퍼널 끔 → 빈값(앱은 '-')
     targets = parse_targets(sheets, as_of)   # 기간별(YTD/MTD/WEEK/DAY) 누적 목표
 
     # 히어로명 → 시즌 (g2h 값에서)
