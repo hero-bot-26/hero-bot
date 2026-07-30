@@ -31,7 +31,7 @@ PERIODS = ["YTD", "MTD", "WEEK", "DAY"]
 STYLE_RE = re.compile(r"^M[A-Z0-9]{8}$")
 
 # 1-indexed 행 번호 (openpyxl)
-_R_SELL, _R_SERIES, _R_CHANNEL, _R_STYLE, _R_PREP = 4, 5, 7, 8, 10
+_R_OPEN, _R_SELL, _R_SERIES, _R_CHANNEL, _R_STYLE, _R_PREP = 3, 4, 5, 7, 8, 10
 _R_DAILY_FROM = 18
 _C_LABEL = 7        # G열 = 라벨/날짜
 _C_DATA_FROM = 8    # H열~ = 품번×채널
@@ -103,6 +103,7 @@ def parse_26fw_targets(drive, as_of, fid=None, tab=TARGET_TAB) -> dict:
 
     # 열 메타: 데이터 열 → (base, 채널키)
     colmeta: dict[int, tuple[str, str]] = {}
+    col_open: dict[int, object] = {}          # 열 → 판매개시일 원본 셀값
     for c in range(_C_DATA_FROM, ws.max_column + 1):
         sty = str(ws.cell(_R_STYLE, c).value or "").strip()
         if not STYLE_RE.match(sty):
@@ -115,6 +116,7 @@ def parse_26fw_targets(drive, as_of, fid=None, tab=TARGET_TAB) -> dict:
         else:
             continue
         colmeta[c] = (_base(sty), kch)
+        col_open[c] = ws.cell(_R_OPEN, c).value      # 판매개시일 — 그 전 목표는 노이즈라 버린다
     if not colmeta:
         raise ValueError("품번×채널 열을 못 찾음 — 시트 구조 변경 의심")
 
@@ -153,11 +155,17 @@ def parse_26fw_targets(drive, as_of, fid=None, tab=TARGET_TAB) -> dict:
 
     season_start = min(d for _, d in rows)
     windows = _windows(as_of, season_start)
+    # ★판매개시일 이전 목표는 버린다 — 원천에 개시일 전에도 반올림 잔여(하루 1개씩)가 들어 있어
+    #   발매 전 히어로가 '목표 18개 / 실적 269개 = 1494% 달성'처럼 보였다(라이트다운, 2026-07-30).
+    opens = {c: _cell_date(col_open.get(c), year_from) for c in colmeta}
     for r, d in rows:
         inper = [p for p, (s, e) in windows.items() if s <= d <= e]
         if not inper:
             continue
         for c, (base, kch) in colmeta.items():
+            od = opens.get(c)
+            if od and d < od:
+                continue
             v = _num(ws.cell(r, c).value)
             if not v:
                 continue
