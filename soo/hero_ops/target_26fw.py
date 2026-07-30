@@ -116,7 +116,7 @@ def parse_26fw_targets(drive, as_of, fid=None, tab=TARGET_TAB) -> dict:
         else:
             continue
         colmeta[c] = (_base(sty), kch)
-        col_open[c] = ws.cell(_R_OPEN, c).value      # 판매개시일 — 그 전 목표는 노이즈라 버린다
+        col_open[c] = ws.cell(_R_OPEN, c).value      # 판매개시일(참고용, 누적 게이트로는 쓰지 않음)
     if not colmeta:
         raise ValueError("품번×채널 열을 못 찾음 — 시트 구조 변경 의심")
 
@@ -155,17 +155,14 @@ def parse_26fw_targets(drive, as_of, fid=None, tab=TARGET_TAB) -> dict:
 
     season_start = min(d for _, d in rows)
     windows = _windows(as_of, season_start)
-    # ★판매개시일 이전 목표는 버린다 — 원천에 개시일 전에도 반올림 잔여(하루 1개씩)가 들어 있어
-    #   발매 전 히어로가 '목표 18개 / 실적 269개 = 1494% 달성'처럼 보였다(라이트다운, 2026-07-30).
-    opens = {c: _cell_date(col_open.get(c), year_from) for c in colmeta}
+    # ★판매개시일(R3)은 게이트로 쓰지 않는다 — 사용자 확정(2026-07-30): 시트 값 그대로 합산.
+    #   개시일 전에도 반올림 잔여(하루 1개씩)가 있어 발매 전 히어로 달성율이 과대(라이트다운 1494%)로
+    #   보일 수 있으나, 화면은 원천과 100% 일치시키고 원천 수정으로 정상화한다.
     for r, d in rows:
         inper = [p for p, (s, e) in windows.items() if s <= d <= e]
         if not inper:
             continue
         for c, (base, kch) in colmeta.items():
-            od = opens.get(c)
-            if od and d < od:
-                continue
             v = _num(ws.cell(r, c).value)
             if not v:
                 continue
