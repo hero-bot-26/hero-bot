@@ -1,19 +1,25 @@
-name: IMC 주차별 목표 판매량 주입
+name: IMC 주차별 목표·입고 주입
 
-# 박은진님의 `26FW HERO 일자별 목표 셋팅`(.xlsx)을 읽어 IMC 운영계획 시트2의
-# 히어로 블록 '목표 판매량' 행(주차 열 I~AH)에 주입한다.
-#   ★ xlsx는 IMPORTRANGE 대상이 안 되므로(구글시트 네이티브만 지원) 봇이 매번 내려받아 읽는다.
-#     즉 은진님이 **그 파일을 수정하면 다음 실행에 반영**된다. 새 파일로 재업로드하면
-#     파일 ID가 바뀌므로 그때는 imc_weekly_target.py 의 SRC_FILE_ID 를 갈아끼워야 한다.
+# IMC 운영계획 시트2의 주차 그리드(I~AH)를 두 원천에서 채운다.
+#   ① 목표 판매량 ← 박은진님 `26FW HERO 일자별 목표 셋팅`(.xlsx)
+#      ★ xlsx는 IMPORTRANGE 대상이 안 되므로(구글시트 네이티브만 지원) 봇이 매번 내려받아 읽는다.
+#        즉 은진님이 **그 파일을 수정하면 다음 실행에 반영**된다. 새 파일로 재업로드하면
+#        파일 ID가 바뀌므로 그때는 imc_weekly_target.py 의 SRC_FILE_ID 를 갈아끼워야 한다.
+#   ② 신규 입고   ← `무탠본부_오더시트` MD투입 탭 (타겟시즌 2026FW · 현/실 입고일 · 예상 입고량)
+#      대상 STY는 26FW 히어로 실적 대시보드의 히어로별 탭에서 동적으로 읽는다.
 #   ★ 금액 칸(목표 매출액 행, 오프라인·온라인 주차별 목표 블록)은 건드리지 않는다.
 on:
   schedule:
     - cron: "0 1 * * *"     # 10:00 KST 의도. GitHub 스케줄러는 수 시간 밀릴 수 있으나
-                            # 목표값은 자주 바뀌지 않아 지연이 문제되지 않는다.
+                            # 목표·입고 계획은 자주 바뀌지 않아 지연이 문제되지 않는다.
   workflow_dispatch:        # "지금 반영" 수동 버튼
     inputs:
+      only:
+        description: "all(둘 다) / target(목표만) / inbound(입고만)"
+        required: false
+        default: "all"
       source:
-        description: "weekly(주차별 목표=정본) / daily(일자별 합산)"
+        description: "목표 소스: weekly(주차별=정본) / daily(일자별 합산)"
         required: false
         default: "weekly"
       dry_run:
@@ -42,13 +48,14 @@ jobs:
           pip install -r requirements.txt
           pip install openpyxl          # 원천이 .xlsx (requirements 미포함)
 
-      - name: Inject weekly targets
+      - name: Inject weekly targets & inbound
         env:
           GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
         run: |
-          ARGS="--source ${{ github.event.inputs.source || 'weekly' }}"
+          ARGS="--only ${{ github.event.inputs.only || 'all' }}"
+          ARGS="$ARGS --source ${{ github.event.inputs.source || 'weekly' }}"
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           python -m soo.hero_ops.imc_weekly_target $ARGS
 
@@ -60,5 +67,6 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         run: >-
           python -m soo.hero_ops.notify
-          "⚠️ IMC 주차별 목표 주입 실패 ($(date -u +%Y-%m-%d)) — Actions 로그 확인.
-          단골 원인: 원천 xlsx 재업로드로 파일 ID 변경, 시트2 행 라벨 변경, GOOGLE_OAUTH_TOKEN 만료."
+          "⚠️ IMC 주차별 목표·입고 주입 실패 ($(date -u +%Y-%m-%d)) — Actions 로그 확인.
+          단골 원인: 원천 xlsx 재업로드로 파일 ID 변경, 시트2 행 라벨 변경,
+          오더시트 MD투입 헤더 변경, 대시보드 히어로 탭 이름 변경, GOOGLE_OAUTH_TOKEN 만료."
