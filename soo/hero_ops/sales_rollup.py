@@ -385,11 +385,17 @@ def _goods_map_from_style(sheets, sheet_id, style2hero, season="26SS", goods_ove
 
 def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=None,
                     period_tabs=None, force_season=None, with_funnel=True, funnel_periods=None,
-                    style_meta=None, include_all_styles=False, goods_to_style=None):
+                    style_meta=None, include_all_styles=False, goods_to_style=None,
+                    with_targets=True, targets_map=None, prep_map=None):
     # period_tabs    = 기간→탭 오버라이드(26FW 누계=FWTD)
     # force_season   = 히어로 시즌 배지를 이 값으로 고정(26FW 블록)
     # with_funnel    = PDP퍼널 탭 조인 여부
     # funnel_periods = 퍼널 슬롯→원천 period 오버라이드(26FW: {'YTD':'FWTD'}). 매출 기간과 맞춘다.
+    # with_targets   = 목표(달성율)·준비물량(소진율) 부착 여부.
+    #   ★26FW는 False — 목표 소스('히어로목표(거래량)' 탭)가 26SS 시즌 목표(1/1~ 일별)이고 준비물량도
+    #   '현재 타겟시즌'(7월=26SS) 발주라, 26FW 누계(7/1~)와 비교하면 무조건 미달로 보인다(사용자 지적 2026-07-30).
+    # targets_map    = 목표를 외부에서 주입({base: {tq, prep}}). 26FW는 `target_26fw` 파서 결과를 넣는다.
+    # prep_map       = 준비물량을 외부에서 주입({base: {t,o,f}}). 26FW는 목표 시트 '준비수량'.
     # style_meta     = {품번: {grade, hero, name}} (MSTRD HERO STY). STY 행에 HERO/HERO SUB 등급을 붙인다.
     # include_all_styles = 매출 0인 STY도 노출(★HERO SUB는 대부분 발매 전이라 매출이 없어 리스트에서 통째로
     #   빠져 'MAIN만 잡힌다'로 보였다. 발매 전 STY를 pending 행으로 함께 실어 커버리지를 보이게 한다).
@@ -410,6 +416,10 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
     try:
         code2kor, kor2code = load_color_maps(sheets)
         color_prep, style_prep = parse_orders(sheets, code2kor, kor2code, season=cur_season)
+        if not with_targets:      # 26FW: 오더시트 준비물량은 현재 타겟시즌(7월=26SS) 기준이라 어긋난다
+            color_prep, style_prep = {}, {}
+        if prep_map is not None:  # 26FW: 목표 시트의 '준비수량'을 소진율 분모로 쓴다
+            style_prep = dict(prep_map)
     except Exception as e:                      # 오더시트 접근 실패해도 대시보드는 생성
         print(f"[order_ingest] 스킵: {e}")
         code2kor, kor2code, color_prep, style_prep = {}, {}, {}, {}
@@ -422,7 +432,8 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
         hero_funnel, sty_funnel = aggregate_funnel(sheets, sheet_id, g2h, period_src=funnel_periods)
     else:
         hero_funnel, sty_funnel = {}, {}   # 퍼널 끔 → 빈값(앱은 '-')
-    targets = parse_targets(sheets, as_of)   # 기간별(YTD/MTD/WEEK/DAY) 누적 목표
+    # 목표 = 주입값 우선(26FW) → 없으면 26SS 소스('히어로목표(거래량)') → with_targets=False면 미설정
+    targets = targets_map if targets_map is not None else (parse_targets(sheets, as_of) if with_targets else {})
 
     # 히어로명 → 시즌 (g2h 값에서)
     hero_season = {}

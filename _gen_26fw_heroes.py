@@ -357,6 +357,21 @@ try:
         except Exception:
             _fw_tabs["YTD"] = _PT["YTD"]     # 탭 없으면 폴백(노트북 잡 완료 전)
             print("[주의] FWTD 탭 없음 — 대시보드 26FW 누계를 달력 YTD로 폴백")   # ★_HEALTH는 아직 미정의(380행)
+        # ── 26FW 목표·준비수량 (담당자 시트 `26FW HERO 일자별 목표 셋팅`) ──
+        #   ★기존엔 26SS 소스('히어로목표(거량)' 탭, 1/1~ 달력 기준)를 26FW 행에도 붙여 달성율이
+        #     무조건 미달로 보였다(사용자 지적 2026-07-30). 26FW 전용 일자별 목표로 교체.
+        FW_TARGETS, _fw_prep = None, None
+        try:
+            from soo.hero_ops.target_26fw import parse_26fw_targets, style_prep_map
+            FW_TARGETS = parse_26fw_targets(drive, TODAY.isoformat(), fid=(_src("target_26fw") or None))
+            _fw_tmeta = FW_TARGETS.pop("_meta", {})
+            _fw_prep = style_prep_map(FW_TARGETS)
+            print(f"26FW 목표: 스타일 {len(FW_TARGETS)}개 · 시즌시작 {_fw_tmeta.get('season_start')} "
+                  f"· 누계창 {(_fw_tmeta.get('windows') or {}).get('YTD')}")
+        except Exception as _etg:
+            FW_TARGETS, _fw_prep = None, None
+            print(f"[주의] 26FW 목표 로드 실패 — 목표 미설정 유지: {type(_etg).__name__}: {_etg}")
+            _STALE_MSGS.append(f"26FW 목표 시트 로드 실패({type(_etg).__name__}) — 달성율·소진율 미표시")
         _dash_fw = build_dashboard(sheets, drive, _SALES_ID, TODAY.isoformat(),
                                    style2hero=_fw_map["style_to_hero"],
                                    goods2hero=_fw_map["goods_to_hero"],
@@ -364,7 +379,10 @@ try:
                                    funnel_periods=({"YTD": "FWTD"} if _fw_tabs["YTD"][0] == "FWTD" else None),
                                    # ★HERO SUB까지 전건 노출(발매 전 STY는 pending 행) — 'MAIN만 잡힌다' 대응
                                    style_meta=_fw_map.get("styles") or {}, include_all_styles=True,
-                                   goods_to_style=_fw_map.get("goods_to_style") or None)
+                                   goods_to_style=_fw_map.get("goods_to_style") or None,
+                                   # ★목표·준비물량 미부착 — 소스가 26SS 시즌 기준이라 26FW 누계와 비교 불가
+                                   #   대신 26FW 전용 목표 시트를 주입(없으면 목표 미설정으로 남는다).
+                                   with_targets=False, targets_map=FW_TARGETS, prep_map=_fw_prep)
         _fw_heroes = _dash_fw.get("heroes", [])
         for _fh in _fw_heroes:
             _fh["ytd_from"] = "2026-07-01" if _fw_tabs["YTD"][0] == "FWTD" else None   # 앱 라벨용
@@ -1790,6 +1808,13 @@ try:
     _sales = {_fw_norm(k): v for k, v in _perf_fw.items()}
 
     _fw_styles = (_FW_HERO_MAP or {}).get("styles") or {}   # MSTRD HERO STY {품번:{grade,hero,...}}
+    # 히어로별 26FW 누계 목표수량(=목표 시트 일별 목표를 시즌 누계 창으로 합산) — 홈 26FW 달성율용
+    _fw_goal_qty = {}
+    for _b, _tv in (globals().get("FW_TARGETS") or {}).items():
+        _h = (_fw_styles.get(_b) or {}).get("hero")
+        if not _h:
+            continue
+        _fw_goal_qty[_h] = _fw_goal_qty.get(_h, 0) + ((_tv.get("tq") or {}).get("YTD") or {}).get("t", 0)
     _fw_list = []
     for name, grade in _FW_GRADE.items():
         a = _fw_agg[name]
@@ -1849,7 +1874,12 @@ try:
                 # 실적순, 발매 전(pending)은 뒤로 — 같은 pending끼리는 HERO → HERO SUB 순
                 _st.sort(key=lambda x: (x.get("pending", 0), -x["periods"]["ytd"]["gmv"],
                                         0 if x.get("grade") == "HERO" else 1, x["style"]))
+                # 달성율 = 시즌 누계 실적수량 ÷ 누계 목표수량(둘 다 7/1~ 기준). 목표 없으면 None → 화면 미표시.
+                _gq = _fw_goal_qty.get(name) or 0
+                _aq = (_pp.get("ytd") or {}).get("qty") or 0
                 sales = {"gmv": _g, "periods": _pp, "stys": _st,
+                         "goal_qty": _gq or None,
+                         "goal_pct": (_aq / _gq) if _gq else None,
                          # 전환율 = 구매UV/PDP조회UV (실적·퍼널 정의 통일)
                          "conv": round(_buy / _pdp * 100, 1) if _pdp else None,
                          # 마케팅기여 = 마케팅 유입(캠페인/기획전+외부) 거래액 / PMKT 직접경로 거래액
