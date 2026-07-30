@@ -252,6 +252,58 @@ def aggregate_stock(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=Non
     return hero_stock, sty_stock, color_stock
 
 
+# 시즌 기준 입고 — 사용자 확정(2026-07-30): **FW입고 = 그 해 6/1~ · SS입고 = 전년 12/1~**.
+#   기존 '입고현황' 탭은 2025-11-01 고정 시작 누적이라 시즌 구분이 없었다(캐리오버 스타일은
+#   전 시즌 입고분까지 합산). 일자별 탭('입고일자별', dt×품번-컬러)을 시즌 창으로 잘라 쓴다.
+#   ★일자별 탭엔 goods_no·금액이 없다 → 귀속은 품번(base)→hero, 값은 수량만.
+def season_inbound_since(season: str) -> str | None:
+    """'26FW' → '20260601' · '26SS' → '20251201' (YYYYMMDD). 해석 불가면 None."""
+    m = re.match(r"(\d{2})\s*(SS|FW)", str(season or "").strip(), re.I)
+    if not m:
+        return None
+    yy, kind = 2000 + int(m.group(1)), m.group(2).upper()
+    return f"{yy}0601" if kind == "FW" else f"{yy - 1}1201"
+
+
+def aggregate_inbound_season(sheets, sheet_id, style_to_hero, since,
+                             code2kor=None, kor2code=None, style_alias=None):
+    """'입고일자별'(dt, sku_code=품번-컬러, inbound_qty) → dt >= since 인 실입고를 히어로/STY/컬러로 롤업.
+    returns (hero_in, sty_in, color_in) — 각각 {"qty": n} (금액은 원천에 없음)."""
+    hero_in = defaultdict(lambda: {"qty": 0.0})
+    sty_in = defaultdict(lambda: {"qty": 0.0})
+    color_in = defaultdict(lambda: {"qty": 0.0})
+    s2h = {_base(k): v for k, v in (style_to_hero or {}).items()}
+    alias = {_base(k): _base(v) for k, v in (style_alias or {}).items()}
+    try:
+        rows = read_tab(sheets, sheet_id, "입고일자별")
+    except Exception as e:
+        print(f"[inbound] '입고일자별' 탭 읽기 실패 — 시즌 입고 미반영: {e}")
+        return None, None, None
+    n = 0
+    for row in rows:
+        if str(row.get("dt") or "") < str(since):
+            continue
+        sku = str(row.get("sku_code") or "").strip()
+        if not sku:
+            continue
+        base = alias.get(_base(sku), _base(sku))
+        hero = s2h.get(base)
+        if not hero:
+            continue
+        q = _f(row.get("inbound_qty"))
+        if not q:
+            continue
+        n += 1
+        hero_in[hero]["qty"] += q
+        sty_in[(hero, base)]["qty"] += q
+        col = sku.split("-", 1)[1] if "-" in sku else ""
+        if col:
+            kor = (code2kor or {}).get(col)
+            color_in[(hero, base, f"{kor}({col})" if kor else col)]["qty"] += q
+    print(f"[inbound] 시즌 입고({since}~): 히어로 {len(hero_in)} · 행 {n}")
+    return hero_in, sty_in, color_in
+
+
 def aggregate_inbound(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None):
     hero_in = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})
     sty_in = defaultdict(lambda: {"qty": 0.0, "amt_normal": 0.0, "amt_wonga": 0.0})
@@ -386,7 +438,7 @@ def _goods_map_from_style(sheets, sheet_id, style2hero, season="26SS", goods_ove
 def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=None,
                     period_tabs=None, force_season=None, with_funnel=True, funnel_periods=None,
                     style_meta=None, include_all_styles=False, goods_to_style=None,
-                    with_targets=True, targets_map=None, prep_map=None):
+                    with_targets=True, targets_map=None, prep_map=None, inbound_season=None):
     # period_tabs    = 기간→탭 오버라이드(26FW 누계=FWTD)
     # force_season   = 히어로 시즌 배지를 이 값으로 고정(26FW 블록)
     # with_funnel    = PDP퍼널 탭 조인 여부
@@ -396,6 +448,8 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
     #   '현재 타겟시즌'(7월=26SS) 발주라, 26FW 누계(7/1~)와 비교하면 무조건 미달로 보인다(사용자 지적 2026-07-30).
     # targets_map    = 목표를 외부에서 주입({base: {tq, prep}}). 26FW는 `target_26fw` 파서 결과를 넣는다.
     # prep_map       = 준비물량을 외부에서 주입({base: {t,o,f}}). 26FW는 목표 시트 '준비수량'.
+    # inbound_season = 시즌 라벨('26FW'/'26SS'). 주면 입고를 그 시즌 창으로 집계(FW 6/1~ · SS 전년 12/1~).
+    #   미지정이면 종전대로 '입고현황'(2025-11-01~ 누적).
     # style_meta     = {품번: {grade, hero, name}} (MSTRD HERO STY). STY 행에 HERO/HERO SUB 등급을 붙인다.
     # include_all_styles = 매출 0인 STY도 노출(★HERO SUB는 대부분 발매 전이라 매출이 없어 리스트에서 통째로
     #   빠져 'MAIN만 잡힌다'로 보였다. 발매 전 STY를 pending 행으로 함께 실어 커버리지를 보이게 한다).
@@ -428,6 +482,17 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
                               period_tabs=period_tabs, goods_to_style=goods_to_style)
     hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h, code2kor, kor2code)
     hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h, code2kor, kor2code)
+    inb_from = None
+    if inbound_season:
+        # 시즌 창 입고(FW 6/1~ / SS 전년 12/1~) — 실패하면 누적 입고 유지(조용한 0 방지)
+        _since = season_inbound_since(inbound_season)
+        _hi, _si, _ci = aggregate_inbound_season(sheets, sheet_id, style2hero, _since,
+                                                 code2kor, kor2code) if _since else (None, None, None)
+        if _hi is not None:
+            hero_in, sty_in, color_inbound = _hi, _si, _ci
+            inb_from = f"{_since[:4]}-{_since[4:6]}-{_since[6:]}"
+        else:
+            print(f"[inbound] 시즌 창 집계 실패 — '입고현황' 누적값 유지({inbound_season})")
     if with_funnel:
         hero_funnel, sty_funnel = aggregate_funnel(sheets, sheet_id, g2h, period_src=funnel_periods)
     else:
@@ -502,8 +567,14 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
         return out
 
     def _inb(d):
-        return {"qty": round(d["qty"]), "amt_normal": round(d["amt_normal"]),
-                "amt_wonga": round(d["amt_wonga"])} if d["qty"] else None
+        # ★시즌 입고('입고일자별')는 원천에 금액이 없어 수량만 온다 → 금액 키는 있을 때만 싣는다.
+        if not (d or {}).get("qty"):
+            return None
+        o = {"qty": round(d["qty"])}
+        for _k in ("amt_normal", "amt_wonga"):
+            if d.get(_k):
+                o[_k] = round(d[_k])
+        return o
 
     def _funnel(fn):
         # {기간:[유입pdp_uv, 구매purchase_uv]} (둘 다 0인 기간 생략). 전환율은 앱에서 buy/pdp.
@@ -590,6 +661,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
             "target": _tgt(hero_target[hero]) if hero in hero_target else None,
             "stock": _stock(hero_stock[hero]) if hero in hero_stock else None,
             "inbound": _inb(hero_in[hero]) if hero in hero_in else None,
+            **({"inbound_from": inb_from} if inb_from else {}),
             "funnel": _funnel(hero_funnel.get(hero)),
             "stys": stys,
         })

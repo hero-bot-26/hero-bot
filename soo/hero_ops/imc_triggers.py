@@ -179,6 +179,37 @@ MSTRD_SKU_TAB = "SKU"        # R4헤더/R5~: B=품번 I=uid
 MSTRD_STY_EXCEPTIONS = {"MMFFJBA01": "에센셜 플리스"}   # B열='핵심상품'이나 HERO SUB로 인정
 
 
+# 26FW 준비물량 — ★MSTRD 상품MAP 'SKU' 탭 **AA/AB/AC = TOTAL/ON/OFF**(R3 그룹라벨 '26FW 준비물량',
+#   R4 소제목 TOTAL/ON/OFF). SKU(uid) 단위라 품번으로 합산하면 STY 준비수량이 된다.
+#   ★사용자 확정(2026-07-30): 앱의 준비수량은 이 열이 유일한 기준 —
+#   수량 탭('PO 발주'→'준비수량')·실적 대시보드 소진율 분모 모두 여기서 온다.
+_PREP_COLS = (26, 27, 28)     # 0-indexed A5 기준: AA/AB/AC
+
+
+def load_26fw_prep(sheets, sid=None):
+    """→ {품번: {'t': TOTAL, 'o': ON, 'f': OFF}} (준비물량 있는 스타일만)."""
+    def _n(v):
+        try:
+            return float(str(v).replace(",", "").strip() or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    vals = sheets.spreadsheets().values().get(
+        spreadsheetId=(sid or MSTRD_SHEET), range=f"'{MSTRD_SKU_TAB}'!A5:AC16000",
+        valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+    out: dict[str, dict] = {}
+    for r in vals:
+        sty = str(r[1]).strip() if len(r) > 1 and r[1] is not None else ""
+        if not sty or sty == "-":
+            continue
+        t, o, f = (_n(r[c]) if len(r) > c else 0.0 for c in _PREP_COLS)
+        if not (t or o or f):
+            continue
+        d = out.setdefault(sty, {"t": 0, "o": 0, "f": 0})
+        d["t"] += round(t); d["o"] += round(o); d["f"] += round(f)
+    return out
+
+
 def load_26fw_hero_goods(sheets, sid=None) -> dict:
     """MSTRD HERO STY(B열 HERO/HERO SUB) → 26FW 히어로 스타일·uid 매핑.
 

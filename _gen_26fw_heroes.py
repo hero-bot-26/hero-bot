@@ -141,6 +141,36 @@ except Exception as e:
     print(f"[주의] PO수량 로드 실패: {type(e).__name__}: {e}")
     _EARLY_MSGS.append(f"PO수량(MD투입) 로드 실패({type(e).__name__}) — 발주량 직전값 유지")
 
+# 준비수량(26FW) — MSTRD 상품MAP 'SKU' 탭 AA/AB/AC. 수량 탭·실적 소진율의 공통 기준(사용자 확정 2026-07-30).
+try:
+    from soo.hero_ops.imc_triggers import load_26fw_prep
+    prep26 = load_26fw_prep(sheets, sid=_src("mstrd"))
+    print(f"준비수량(26FW): 스타일 {len(prep26)}개 · 합계 {sum(v['t'] for v in prep26.values()):,}")
+except Exception as e:
+    prep26 = {}
+    print(f"[주의] 준비수량 로드 실패: {type(e).__name__}: {e}")
+    _EARLY_MSGS.append(f"준비수량(MSTRD SKU AA/AB/AC) 로드 실패({type(e).__name__}) — 직전값 유지")
+
+# 히어로별 준비수량 — ★귀속은 MSTRD 'HERO STY' 매핑(스냅샷 hero_goods_26fw.json)으로.
+#   수량 탭이 PLM style 목록으로 합산하면 실적 대시보드(같은 MSTRD 매핑)와 값이 어긋난다
+#   (커브드 559,231 vs 508,831 처럼). 두 화면이 같은 수를 보이도록 기준을 하나로 묶는다.
+_PREP_HERO, _PREP_STY = {}, {}
+try:
+    _snap26 = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
+    _pnorm = lambda x: re.sub(r"\s+", "", str(x or ""))
+    for _sty, _hero in (_snap26.get("style_to_hero") or {}).items():
+        _pv = prep26.get(_sty)
+        if not _pv:
+            continue
+        _k = _pnorm(_hero)
+        _acc = _PREP_HERO.setdefault(_k, {"t": 0, "o": 0, "f": 0})
+        for _c in _acc:
+            _acc[_c] += _pv.get(_c, 0)
+        _PREP_STY.setdefault(_k, {})[_sty] = dict(_pv)
+    print(f"준비수량 히어로 귀속: {len(_PREP_HERO)}종 (MSTRD HERO STY 기준)")
+except Exception as _eph:
+    print(f"[주의] 준비수량 히어로 귀속 실패: {type(_eph).__name__}: {_eph}")
+
 _QROLES = ("planning_md", "online_sales", "offline_sales")
 
 def rollup(matched, stage_n):
@@ -274,6 +304,11 @@ for i, series in enumerate(series_order, 1):
         for k in po_tot:
             po_tot[k] += pv["po"].get(k, 0)
 
+    # 준비수량 — MSTRD HERO STY 기준(실적 대시보드 소진율 분모와 동일 집합)
+    _pk = re.sub(r"\s+", "", str(series or ""))
+    prep_q = dict(_PREP_STY.get(_pk) or {})
+    prep_tot = dict(_PREP_HERO.get(_pk) or {"t": 0, "o": 0, "f": 0})
+
     heroes.append({
         "id": f"26FW_{i:03d}", "season": "26FW", "track": track,
         "name": series, "category": category,
@@ -282,7 +317,8 @@ for i, series in enumerate(series_order, 1):
         "stages": stages, "dates": dates,
         "stage5": {"tentativeColors": [], "inputs": s5_inputs, "meta": s5_meta,
                    "confirmed": {"online_sales": None, "offline_sales": None}, "completedAt": None},
-        "stage8": {"sentAt": None, "poQuantities": po_q, "po": po_tot},
+        "stage8": {"sentAt": None, "poQuantities": po_q, "po": po_tot,
+                   "prepQuantities": prep_q, "prep": prep_tot},
         "stys": stys,
         "_plmMatched": len(matched), "_styleCount": len(styles),
     })
@@ -291,17 +327,24 @@ for i, series in enumerate(series_order, 1):
 html = HTML.read_text(encoding="utf-8")
 # ★조용한 0 방지(2026-07-30) — PO수량 로드가 실패한 날(시트 헤더 개명·권한 등) 0을 덮어쓰면
 #   단계8 발주량이 전 히어로 0이 된다(실제로 오늘 배포본이 15종 전부 0이었다). 직전값을 보존한다.
-if not po_qty:
+if not po_qty or not prep26:
     try:
         _pm = re.search(r"const HEROES = (\[.*?\n\]);", html, re.DOTALL)
         _prev_h8 = {h["name"]: (h.get("stage8") or {}) for h in json.loads(_pm.group(1))} if _pm else {}
         _rest = 0
+        _rest_p = 0
         for _h in heroes:
             _p8 = _prev_h8.get(_h["name"]) or {}
-            if (_p8.get("po") or {}).get("t"):
+            if not po_qty and (_p8.get("po") or {}).get("t"):
                 _h["stage8"]["po"] = _p8["po"]
                 _h["stage8"]["poQuantities"] = _p8.get("poQuantities") or {}
                 _rest += 1
+            if not prep26 and (_p8.get("prep") or {}).get("t"):
+                _h["stage8"]["prep"] = _p8["prep"]
+                _h["stage8"]["prepQuantities"] = _p8.get("prepQuantities") or {}
+                _rest_p += 1
+        if _rest_p:
+            print(f"[보존] 준비수량 실패 — 직전값 유지({_rest_p}종)")
         if _rest:
             print(f"[보존] PO수량 실패 — 직전 발주량 유지({_rest}종)")
     except Exception as _epo:
@@ -360,7 +403,8 @@ try:
     _map26 = json.load(open(ROOT / "hero_goods_26ss.json", encoding="utf-8"))
     _dash_s2h = _map26["style_to_hero"]
     dash = build_dashboard(sheets, drive, _SALES_ID, TODAY.isoformat(),
-                           style2hero=_dash_s2h, goods2hero=_map26["goods_to_hero"])
+                           style2hero=_dash_s2h, goods2hero=_map26["goods_to_hero"],
+                           inbound_season="26SS")   # SS입고 = 전년 12/1~
     _DASH_HEROES = dash.get("heroes", [])
     # ── 26FW 히어로도 같은 대시보드에 싣는다 (홈 26FW → '상세'가 빈 화면이던 문제) ──
     #   ★누계(YTD 슬롯)는 FWTD(7/1~) 탭 = 시즌 누계. 달력 YTD면 캐리오버 STY의 봄 판매가 섞인다.
@@ -401,7 +445,10 @@ try:
                                    goods_to_style=_fw_map.get("goods_to_style") or None,
                                    # ★목표·준비물량 미부착 — 소스가 26SS 시즌 기준이라 26FW 누계와 비교 불가
                                    #   대신 26FW 전용 목표 시트를 주입(없으면 목표 미설정으로 남는다).
-                                   with_targets=False, targets_map=FW_TARGETS, prep_map=_fw_prep)
+                                   # ★소진율 분모 = MSTRD SKU 준비물량(수량 탭과 동일 기준). 목표 시트 준비수량은 미사용.
+                                   with_targets=False, targets_map=FW_TARGETS,
+                                   prep_map=(prep26 or _fw_prep),
+                                   inbound_season="26FW")   # FW입고 = 6/1~
         _fw_heroes = _dash_fw.get("heroes", [])
         for _fh in _fw_heroes:
             _fh["ytd_from"] = "2026-07-01" if _fw_tabs["YTD"][0] == "FWTD" else None   # 앱 라벨용
