@@ -292,7 +292,7 @@ def load_prein(sheets) -> dict[str, float]:
         spreadsheetId=DASH_SHEET_ID, ranges=ranges,
         valueRenderOption="UNFORMATTED_VALUE").execute()["valueRanges"]
 
-    out, missing = {}, []
+    out, missing, broken = {}, [], []
     for i, hero in enumerate(HERO_LABELS):
         hdr = (res[2 * i].get("values") or [[]])[0]
         tot = (res[2 * i + 1].get("values") or [[]])[0]
@@ -303,11 +303,20 @@ def load_prein(sheets) -> dict[str, float]:
                 missing.append(f"{hero}:{want}")
                 continue
             j = labels.index(want)
-            val += _num(tot[j]) if j < len(tot) else 0.0
+            raw = tot[j] if j < len(tot) else 0
+            # ★ 수식 오류(#REF! 등)를 0으로 삼키면 안 된다 — 대시보드 라이트다운 탭에서
+            #   실제로 HX가 #REF!였고, 그때 _num()이 조용히 0을 돌려줬다.
+            if isinstance(raw, str) and raw.strip().startswith("#"):
+                broken.append(f"{hero}:{want}={raw.strip()[:24]}")
+                continue
+            val += _num(raw)
         out[hero] = val
     if missing:
         raise RuntimeError("대시보드 히어로 탭에서 기입고물량 컬럼을 못 찾았습니다 — 주입 중단:\n  "
                            + ", ".join(missing))
+    if broken:
+        raise RuntimeError("대시보드 기입고물량 셀이 수식 오류입니다 — 0으로 덮지 않도록 중단:\n  "
+                           + ", ".join(broken))
     out["TOTAL"] = sum(out.values())
     return out
 
