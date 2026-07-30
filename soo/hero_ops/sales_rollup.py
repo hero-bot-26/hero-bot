@@ -171,7 +171,7 @@ def _add(dst, ch, row):
 
 # ── 매출 집계: 히어로/스타일/컬러 × 기간 × 채널 ──────────────────────────────
 def aggregate(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None, style_to_hero=None,
-              period_tabs=None):
+              period_tabs=None, goods_to_style=None):
     # period_tabs: {기간: (당기탭, 전년탭)}. 26FW는 누계를 FWTD(7/1~)로 읽으려고 오버라이드한다.
     # hero -> {periods:{P:{cur:channels, prev:channels}}, stys:{base:{name, periods, colors:{opt:periods}}}}
     # style_to_hero 주면 매출 히어로 귀속을 행별 신품번(base)→hero 로 해석(성과 탭과 100% 동일 총액).
@@ -194,6 +194,12 @@ def aggregate(sheets, sheet_id, goods_to_hero, code2kor=None, kor2code=None, sty
                 except (TypeError, ValueError):
                     continue
                 base = _base(row.get("style_no") or "")
+                if goods_to_style:
+                    # ★STY 키를 MSTRD 품번으로 통일 — 매출시트가 리뉴얼 이전품번을 쓰는 경우
+                    #   (FMASC101 = MEASC0Z70 라이트웨이트 크루 삭스 1팩) 같은 상품이 두 줄로 쪼개진다.
+                    _canon = goods_to_style.get(str(gid)) or goods_to_style.get(gid)
+                    if _canon:
+                        base = _base(_canon)
                 if style_to_hero is not None:
                     hero = style_to_hero.get(base)     # 성과 탭과 동일: 행별 신품번→hero
                     if not hero:                        # 신품번 빈칸/누락 goods → uid 폴백
@@ -378,11 +384,15 @@ def _goods_map_from_style(sheets, sheet_id, style2hero, season="26SS", goods_ove
 
 
 def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=None,
-                    period_tabs=None, force_season=None, with_funnel=True, funnel_periods=None):
+                    period_tabs=None, force_season=None, with_funnel=True, funnel_periods=None,
+                    style_meta=None, include_all_styles=False, goods_to_style=None):
     # period_tabs    = 기간→탭 오버라이드(26FW 누계=FWTD)
     # force_season   = 히어로 시즌 배지를 이 값으로 고정(26FW 블록)
     # with_funnel    = PDP퍼널 탭 조인 여부
     # funnel_periods = 퍼널 슬롯→원천 period 오버라이드(26FW: {'YTD':'FWTD'}). 매출 기간과 맞춘다.
+    # style_meta     = {품번: {grade, hero, name}} (MSTRD HERO STY). STY 행에 HERO/HERO SUB 등급을 붙인다.
+    # include_all_styles = 매출 0인 STY도 노출(★HERO SUB는 대부분 발매 전이라 매출이 없어 리스트에서 통째로
+    #   빠져 'MAIN만 잡힌다'로 보였다. 발매 전 STY를 pending 행으로 함께 실어 커버리지를 보이게 한다).
     """앱이 읽을 DASHBOARD dict (raw 합계; 비율은 JS에서 계산).
     style2hero 주면 그 매핑(base 신품번→hero)으로 통일(성과 탭과 동일 총액).
     goods2hero(uid→hero) 주면 신품번 빈칸/누락 goods를 uid로 보강(시트39 26SS 정합)."""
@@ -405,7 +415,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
         code2kor, kor2code, color_prep, style_prep = {}, {}, {}, {}
     heroes, stats = aggregate(sheets, sheet_id, g2h, code2kor, kor2code,
                               style_to_hero=(s2h if style2hero else None),
-                              period_tabs=period_tabs)
+                              period_tabs=period_tabs, goods_to_style=goods_to_style)
     hero_stock, sty_stock, color_stock = aggregate_stock(sheets, sheet_id, g2h, code2kor, kor2code)
     hero_in, sty_in, color_inbound = aggregate_inbound(sheets, sheet_id, g2h, code2kor, kor2code)
     if with_funnel:
@@ -522,6 +532,12 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
             o["inbound"] = ib
         return o
 
+    # 매핑된 STY를 히어로별로 — 매출 0인 STY(발매 전)도 리스트에 싣기 위한 소스
+    smeta = {_base(k): v for k, v in (style_meta or {}).items()}
+    sty_by_hero = defaultdict(list)
+    for _b, _m in smeta.items():
+        sty_by_hero[_m.get("hero")].append(_b)
+
     out_heroes = []
     order = sorted(heroes, key=lambda h: -_ytd_gmv(heroes[h]["periods"]))
     for hero in order:
@@ -535,6 +551,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
             cols.sort(key=lambda cc: -_ytd_gmv(cc[1]))
             stys.append({
                 "style": base, "team": S["team"], "category": S["category1"], "md": S["md_name"],
+                "grade": (smeta.get(base) or {}).get("grade"),
                 "periods": _per_full(S["periods"]),
                 "stock": _stock(sty_stock.get((hero, base))) if (hero, base) in sty_stock else None,
                 "inbound": _inb(sty_in.get((hero, base))) if (hero, base) in sty_in else None,
@@ -542,6 +559,19 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
                 "funnel": _funnel(sty_funnel.get((hero, base))),
                 "colors": [_color_obj(col, cp, hero, base) for col, cp in cols],
             })
+        if include_all_styles:
+            # 매출 0(발매 전) STY — HERO SUB 커버리지가 보이게 뒤에 붙인다. periods 비움 → 앱은 '발매 전'.
+            _have = {s["style"] for s in stys}
+            for base in sorted(sty_by_hero.get(hero, [])):
+                if base in _have:
+                    continue
+                stys.append({
+                    "style": base, "team": None, "category": None, "md": None,
+                    "grade": (smeta.get(base) or {}).get("grade"), "pending": 1,
+                    "periods": {}, "stock": _stock(sty_stock.get((hero, base))) if (hero, base) in sty_stock else None,
+                    "inbound": _inb(sty_in.get((hero, base))) if (hero, base) in sty_in else None,
+                    "target": _sty_tgt(base), "funnel": None, "colors": [],
+                })
         out_heroes.append({
             "name": hero,
             "season": force_season or (cur_season if hero in order_heroes else hero_season.get(hero, cur_season)),

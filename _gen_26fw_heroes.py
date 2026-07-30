@@ -361,7 +361,10 @@ try:
                                    style2hero=_fw_map["style_to_hero"],
                                    goods2hero=_fw_map["goods_to_hero"],
                                    period_tabs=_fw_tabs, force_season="26FW",
-                                   funnel_periods=({"YTD": "FWTD"} if _fw_tabs["YTD"][0] == "FWTD" else None))
+                                   funnel_periods=({"YTD": "FWTD"} if _fw_tabs["YTD"][0] == "FWTD" else None),
+                                   # ★HERO SUB까지 전건 노출(발매 전 STY는 pending 행) — 'MAIN만 잡힌다' 대응
+                                   style_meta=_fw_map.get("styles") or {}, include_all_styles=True,
+                                   goods_to_style=_fw_map.get("goods_to_style") or None)
         _fw_heroes = _dash_fw.get("heroes", [])
         for _fh in _fw_heroes:
             _fh["ytd_from"] = "2026-07-01" if _fw_tabs["YTD"][0] == "FWTD" else None   # 앱 라벨용
@@ -1786,6 +1789,7 @@ try:
     _perf_fw = globals().get("hero_perf_fw", {}) or {}
     _sales = {_fw_norm(k): v for k, v in _perf_fw.items()}
 
+    _fw_styles = (_FW_HERO_MAP or {}).get("styles") or {}   # MSTRD HERO STY {품번:{grade,hero,...}}
     _fw_list = []
     for name, grade in _FW_GRADE.items():
         a = _fw_agg[name]
@@ -1828,20 +1832,40 @@ try:
                     _pp[_p.lower()] = {"gmv": _d.get("gmv", 0), "qty": _d.get("qty", 0),
                                        "yoy": ((_d.get("gmv", 0) - _ly) / _ly) if _ly else None}
                 # STY 드릴다운(26FW 스타일만) — 프론트가 DASHBOARD(26SS) stys를 안 쓰게.
+                #   ★HERO SUB는 대부분 발매 전이라 매출행이 없다 → 매핑된 STY 전건을 싣고
+                #     실적 없는 건 pending으로 표시(그전엔 리스트에 아예 안 떠 'MAIN만 잡힌다'로 보였다).
                 _st = []
                 for _b, _pers in (globals().get("hero_sty_fw", {}) or {}).get(name, {}).items():
-                    _st.append({"style": _b,
+                    _st.append({"style": _b, "grade": (_fw_styles.get(_b) or {}).get("grade"),
                                 "periods": {p.lower(): {"gmv": (_pers.get(p) or {}).get("gmv", 0),
                                                         "qty": (_pers.get(p) or {}).get("qty", 0)}
                                             for p in _PERIODS}})
-                _st.sort(key=lambda x: -x["periods"]["ytd"]["gmv"])
+                _seen_st = {x["style"] for x in _st}
+                for _b, _m in sorted(_fw_styles.items()):
+                    if _m.get("hero") != name or _b in _seen_st:
+                        continue
+                    _st.append({"style": _b, "grade": _m.get("grade"), "pending": 1,
+                                "periods": {p.lower(): {"gmv": 0, "qty": 0} for p in _PERIODS}})
+                # 실적순, 발매 전(pending)은 뒤로 — 같은 pending끼리는 HERO → HERO SUB 순
+                _st.sort(key=lambda x: (x.get("pending", 0), -x["periods"]["ytd"]["gmv"],
+                                        0 if x.get("grade") == "HERO" else 1, x["style"]))
                 sales = {"gmv": _g, "periods": _pp, "stys": _st,
                          # 전환율 = 구매UV/PDP조회UV (실적·퍼널 정의 통일)
                          "conv": round(_buy / _pdp * 100, 1) if _pdp else None,
                          # 마케팅기여 = 마케팅 유입(캠페인/기획전+외부) 거래액 / PMKT 직접경로 거래액
                          "mkt": round(_y.get("ad_gmv", 0) / _pmkt * 100) if _pmkt else None}
+        # ★실적이 아직 없는 히어로(힛탠다드·헤비다운·리커버리 등 발매 전)도 STY 커버리지를 보이게 —
+        #   MAIN·SUB 전건을 pending 목록으로. 프론트는 sales.stys 없으면 이걸 쓴다.
+        _stys_all = None
+        if not sales:
+            _stys_all = sorted(
+                ({"style": _b, "grade": _m.get("grade"), "pending": 1,
+                  "periods": {_p.lower(): {"gmv": 0, "qty": 0} for _p in _PERIODS}}
+                 for _b, _m in _fw_styles.items() if _m.get("hero") == name),
+                key=lambda x: (0 if x["grade"] == "HERO" else 1, x["style"]))
         _fw_list.append({
             "name": name, "grade": grade, "status": status,
+            **({"stys_all": _stys_all} if _stys_all else {}),
             "launch": first.isoformat() if first else None,
             "launch_last": fw[-1].isoformat() if fw else None,
             "dday": (first - TODAY).days if first else None,
