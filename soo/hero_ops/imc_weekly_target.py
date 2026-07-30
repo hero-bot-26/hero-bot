@@ -82,7 +82,8 @@ ORDER_HEADER_ROW = 7            # 데이터는 R8부터
 ORDER_SEASON = "2026FW"         # AI(타겟시즌) 필터 — 같은 STY가 타 시즌으로도 발주돼 있다
 # 헤더 텍스트(공백·개행 제거 후 비교) → 쓰임. 열 위치는 매번 헤더에서 찾는다.
 ORDER_COLS = {"sty": "최종품번", "season": "타겟시즌",
-              "date": "현/실입고일", "qty": "예상입고량"}
+              "date": "현/실입고일", "qty": "예상입고량",
+              "real_date": "실입고일", "real_qty": "실입고량"}
 
 # 히어로별 대상 STY = 26FW 히어로 실적 대시보드의 히어로 탭 B열(R13~)
 DASH_SHEET_ID = "1-A04_TwKZJNPkFg27USkKAScZRu6CAhbgVeXk9c09nA"
@@ -306,8 +307,16 @@ def load_prein(sheets) -> dict[str, float]:
     return out
 
 
-def load_inbound(sheets, sty2hero, weeks):
-    """MD투입에서 타겟시즌 2026FW 행을 읽어 {히어로: 주차별 입고수량}. TOTAL 포함."""
+def load_inbound(sheets, sty2hero, weeks, basis="hybrid", as_of=None, shift_overdue=False):
+    """MD투입 타겟시즌 2026FW 행 → {히어로: 주차별 입고수량}. TOTAL 포함.
+
+    basis='hybrid'(기본): **지난 주차는 실입고(AV/AW), 앞은 예상(AT/AU)**.
+      AT/AU만 쓰면 이행되지 않은 과거 예정일이 입고된 것처럼 잡힌다
+      (실례: 웜 팬츠 MKCNPAZ01·MKDNPAZ01 예정일 7/24이 지났으나 AW=0, 물류입고도 0).
+      예정일이 지났는데 실입고가 없는 물량은 '지연'으로 집계해 로그로 알린다
+      (shift_overdue=True면 현재 주차로 옮긴다 — 기본은 원래 예정 주차 유지).
+    basis='plan': 종전처럼 전 구간 AT/AU(예상)만 사용.
+    """
     hdr = sheets.spreadsheets().values().get(
         spreadsheetId=ORDER_SHEET_ID,
         range=f"'{ORDER_TAB}'!A{ORDER_HEADER_ROW}:CZ{ORDER_HEADER_ROW}").execute().get("values", [[]])
@@ -319,7 +328,7 @@ def load_inbound(sheets, sty2hero, weeks):
                                f"— 오더시트 구조 변경. 주입 중단.")
         idx[key] = labels.index(name)
 
-    order = ["sty", "season", "date", "qty"]
+    order = list(ORDER_COLS)
     res = sheets.spreadsheets().values().batchGet(
         spreadsheetId=ORDER_SHEET_ID,
         ranges=[f"'{ORDER_TAB}'!{_col_letter(idx[k] + 1)}{ORDER_HEADER_ROW + 1}:"
@@ -334,8 +343,12 @@ def load_inbound(sheets, sty2hero, weeks):
 
     n = max(len(v) for v in col.values())
     per = {h: [0.0] * len(weeks) for h in HERO_LABELS}
-    stat = {"rows": 0, "before": {}, "after": {}, "nodate": {}, "total": {}}
+    stat = {"rows": 0, "before": {}, "after": {}, "nodate": {}, "total": {},
+            "actual": {}, "plan": {}, "overdue": {}}
     w_start, w_end = weeks[0][0], weeks[-1][1]
+    as_of = as_of or dt.date.today()
+    now_wi = next((wi for wi, (_, b) in enumerate(weeks) if b >= as_of), None)
+
     for i in range(n):
         if str(val("season", i)).strip() != ORDER_SEASON:
             continue
@@ -343,15 +356,35 @@ def load_inbound(sheets, sty2hero, weeks):
         if hero is None:
             continue
         stat["rows"] += 1
-        qty = _num(val("qty", i))
-        if not qty:
-            continue
+
+        rq, rd = _num(val("real_qty", i)), _num(val("real_date", i))
+        if basis == "hybrid" and rq > 0 and rd > 0:
+            qty, d, kind = rq, _EPOCH + dt.timedelta(days=int(rd)), "actual"
+        else:
+            qty = _num(val("qty", i))
+            if not qty:
+                continue
+            serial = _num(val("date", i))
+            if serial <= 0:
+                stat["nodate"][hero] = stat["nodate"].get(hero, 0.0) + qty
+                continue
+            d = _EPOCH + dt.timedelta(days=int(serial))
+            # 예정일이 지났는데 실입고가 없다 = 지연. 물량을 버리지 않고 현재 주차로 모은다.
+            kind = "overdue" if (basis == "hybrid" and d <= as_of) else "plan"
+
         stat["total"][hero] = stat["total"].get(hero, 0.0) + qty
-        serial = _num(val("date", i))
-        if serial <= 0:
-            stat["nodate"][hero] = stat["nodate"].get(hero, 0.0) + qty
+        stat[kind][hero] = stat[kind].get(hero, 0.0) + qty
+
+        # 지연(예정일 경과·실입고 미기입)을 현재 주차로 옮길지는 선택.
+        #   ★ 오더시트 AV/AW는 히어로마다 관리 편차가 크다 — 빅토리아 울은 물류입고(HX) 112,677인데
+        #     실입고 열이 통째로 비어 있다. 그래서 '옮기기'를 기본으로 두면 그 물량이 현재 주차에
+        #     몰려 가짜 스파이크가 생긴다. 기본은 원래 예정 주차에 그대로 두고 로그로만 알린다.
+        if kind == "overdue" and shift_overdue:
+            if now_wi is None:              # 기준일이 그리드 끝을 지났다
+                stat["after"][hero] = stat["after"].get(hero, 0.0) + qty
+            else:
+                per[hero][now_wi] += qty
             continue
-        d = _EPOCH + dt.timedelta(days=int(serial))
         if d < w_start:                     # 첫 주 시작 전 입고 — 기입고물량은 대시보드에서 따로 읽는다
             stat["before"][hero] = stat["before"].get(hero, 0.0) + qty
             continue
@@ -542,6 +575,12 @@ def main() -> int:
                     help="all=둘 다(기본) / target=목표 판매량만 / inbound=신규 입고만")
     ap.add_argument("--source", choices=["weekly", "daily"], default="weekly",
                     help="목표 소스: weekly=주차별 목표(정본, 기본) / daily=일자별 목표를 주간 합산")
+    ap.add_argument("--basis", choices=["hybrid", "plan"], default="hybrid",
+                    help="신규 입고 기준: hybrid=지난 주차는 실입고(AV/AW)+앞은 예상(AT/AU) (기본) / "
+                         "plan=전 구간 예상(AT/AU)")
+    ap.add_argument("--shift-overdue", action="store_true",
+                    help="예정일이 지났는데 실입고 미기입인 물량을 현재 주차로 옮긴다 "
+                         "(기본은 원래 예정 주차 유지 — 오더시트 실입고 열 관리 편차 때문)")
     ap.add_argument("--cum", choices=["forward", "plan"], default="forward",
                     help="누적 입고 재고 계산: forward=기입고물량+오늘 이후 주차만(기본, 이중계상 없음) / "
                          "plan=기입고물량+전 주차 누계")
@@ -582,13 +621,20 @@ def main() -> int:
     # ── ② 신규 입고 ──
     if args.only in ("all", "inbound"):
         sty2hero = load_hero_styles(sheets)
-        inbound, stat = load_inbound(sheets, sty2hero, weeks)
+        as_of = dt.date.fromisoformat(args.as_of) if args.as_of else dt.date.today()
+        inbound, stat = load_inbound(sheets, sty2hero, weeks, args.basis, as_of, args.shift_overdue)
         if not inbound:
             raise RuntimeError(f"{ORDER_TAB}에서 {ORDER_SEASON} 입고를 하나도 못 읽었습니다 — 주입 중단.")
         opening = load_prein(sheets)
-        as_of = dt.date.fromisoformat(args.as_of) if args.as_of else dt.date.today()
         cum = cumulative(inbound, opening, weeks, args.cum, as_of)
-        print(f"\n[신규 입고] {ORDER_SEASON} · 대상 STY {len(sty2hero)}개 · 매칭 행 {stat['rows']}건")
+        print(f"\n[신규 입고] {ORDER_SEASON} · 기준={args.basis} · 대상 STY {len(sty2hero)}개 "
+              f"· 매칭 행 {stat['rows']}건")
+        ov = "지연→현재주차" if args.shift_overdue else "지연(예정주차 유지)"
+        for lbl, key in (("실입고", "actual"), ("예상", "plan"), (ov, "overdue")):
+            d = stat.get(key) or {}
+            if d:
+                print(f"  · {lbl} {sum(d.values()):,.0f} — "
+                      + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(d.items())))
         pre = {h: v for h, v in opening.items() if v and h != "TOTAL"}
         print(f"  · 기입고물량(대시보드 HU+HX, {_col_letter(grid['prein']) if grid['prein'] else '열없음'}): "
               + (", ".join(f"{h} {v:,.0f}" for h, v in sorted(pre.items())) or "전부 0"))
