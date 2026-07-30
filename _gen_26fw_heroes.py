@@ -131,13 +131,15 @@ for _s, _rec in mstrd_reg.items():
 print(f"MSTRD 등급 파싱: {sum(len(v) for v in mstrd_grades.values())}건 ({list(mstrd_grades)})")
 
 # PO수량(발주량) — MD투입 시트에서 스타일별 {po:{4채널,t}, colors:{...}} (타겟시즌=2026FW 필터)
+_EARLY_MSGS = []    # _HEALTH 정의(아래) 전에 생기는 경고 임시 보관 — ★블록 순서=스코프 함정 회피
 try:
     from soo.hero_ops.po_ingest import parse_po_qty, CHANNELS as PO_CH
     po_qty = parse_po_qty(sheets, "2026FW")
     print(f"PO수량: {sum(1 for v in po_qty.values() if v['po']['t'])} 스타일 (2026FW)")
 except Exception as e:
     po_qty, PO_CH = {}, ("dom_on", "dom_off", "chn_on", "chn_off")
-    print(f"[주의] PO수량 주입 실패 — 빈 값 유지: {type(e).__name__}: {e}")
+    print(f"[주의] PO수량 로드 실패: {type(e).__name__}: {e}")
+    _EARLY_MSGS.append(f"PO수량(MD투입) 로드 실패({type(e).__name__}) — 발주량 직전값 유지")
 
 _QROLES = ("planning_md", "online_sales", "offline_sales")
 
@@ -287,6 +289,23 @@ for i, series in enumerate(series_order, 1):
 
 # ── app.html HEROES 배열 + APP_TODAY 교체 ──
 html = HTML.read_text(encoding="utf-8")
+# ★조용한 0 방지(2026-07-30) — PO수량 로드가 실패한 날(시트 헤더 개명·권한 등) 0을 덮어쓰면
+#   단계8 발주량이 전 히어로 0이 된다(실제로 오늘 배포본이 15종 전부 0이었다). 직전값을 보존한다.
+if not po_qty:
+    try:
+        _pm = re.search(r"const HEROES = (\[.*?\n\]);", html, re.DOTALL)
+        _prev_h8 = {h["name"]: (h.get("stage8") or {}) for h in json.loads(_pm.group(1))} if _pm else {}
+        _rest = 0
+        for _h in heroes:
+            _p8 = _prev_h8.get(_h["name"]) or {}
+            if (_p8.get("po") or {}).get("t"):
+                _h["stage8"]["po"] = _p8["po"]
+                _h["stage8"]["poQuantities"] = _p8.get("poQuantities") or {}
+                _rest += 1
+        if _rest:
+            print(f"[보존] PO수량 실패 — 직전 발주량 유지({_rest}종)")
+    except Exception as _epo:
+        print(f"[주의] PO수량 직전값 보존 실패: {type(_epo).__name__}: {_epo}")
 clean = [{k: v for k, v in h.items() if not k.startswith("_")} for h in heroes]
 new_block = "const HEROES = " + json.dumps(clean, ensure_ascii=False, indent=2) + ";"
 html2, n = re.subn(r"const HEROES = \[.*?\n\];", new_block, html, count=1, flags=re.DOTALL)
@@ -416,6 +435,7 @@ except Exception as e:
 
 # ── 데이터 갱신 헬스체크 수집 (비어있음/구조변경 등 '조용한 실패' 가시화) ──
 _HEALTH = []
+_HEALTH.extend(_EARLY_MSGS)   # ★_HEALTH 정의 전(PO수량 블록)에 쌓인 경고
 _HEALTH.extend(_STALE_MSGS)   # ★_HEALTH 정의 전(대시보드 블록)에 쌓인 경고를 여기서 합류시킨다
 SNS_SHEET_ID = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"  # [무탠다드] SNS/CRM 콘텐츠 통합 관리
 TRACKER_SHEET_ID = "1oz6zM-x2nqaDSAufWJ2a-QZh-1F6LQipttNkVKoFAn8"  # 캠페인 운영관리 트래커([히어로 PDP]에 운영 히어로 품목)

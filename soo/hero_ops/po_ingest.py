@@ -27,15 +27,17 @@ PO_TAB = "MD투입"
 _HEADER_ROW = 7          # R7 = 헤더, R8~ = 데이터
 _DATA_START = _HEADER_ROW + 1
 
-# R7 헤더명 → 내부 키 (정확 일치)
-_HEAD_MAP = {
-    "품번": "style",
-    "스타일컬러코드": "color",
-    "타겟시즌": "season",
-    "내수 온라인": "dom_on",
-    "내수 오프라인": "dom_off",
-    "차이나 온라인": "chn_on",
-    "차이나 오프라인": "chn_off",
+# 내부 키 → R7 헤더명 후보(우선순위 순). ★실무 시트라 컬럼명도 바뀐다
+#   (2026-07-30: '품번'→'대표품번', '스타일컬러코드'→'품번-컬러'로 개명돼 파싱이 죽었다).
+#   위치는 물론이고 이름도 고정 금지 → 별칭 목록으로 resolve하고, 개명은 로그로 남긴다.
+_HEAD_ALIASES = {
+    "style": ("품번", "대표품번", "최종품번"),
+    "color": ("스타일컬러코드", "품번-컬러", "품번컬러", "스타일 컬러코드"),
+    "season": ("타겟시즌",),
+    "dom_on": ("내수 온라인",),
+    "dom_off": ("내수 오프라인",),
+    "chn_on": ("차이나 온라인",),
+    "chn_off": ("차이나 오프라인",),
 }
 CHANNELS = ("dom_on", "dom_off", "chn_on", "chn_off")
 STYLE_RE = re.compile(r"^M[A-Z0-9]{8}$")
@@ -71,15 +73,26 @@ def parse_po_qty(sheets, season, sheet_id=PO_SHEET_ID) -> dict:
         spreadsheetId=sheet_id, range=f"'{PO_TAB}'!{_HEADER_ROW}:{_HEADER_ROW}",
         valueRenderOption="FORMATTED_VALUE").execute().get("values", [[]])
     header = hdr_row[0] if hdr_row else []
+    names = [str(h).replace(chr(10), ' ').strip() for h in header]
+    pos: dict[str, list[int]] = {}
+    for i, nm in enumerate(names):
+        if nm:
+            pos.setdefault(nm, []).append(i)
     idx: dict[str, int] = {}
-    for i, h in enumerate(header):
-        name = str(h).replace("\n", " ").strip()
-        key = _HEAD_MAP.get(name)
-        if key and key not in idx:          # 중복 헤더는 첫 등장 우선
-            idx[key] = i
-    missing = [k for k in _HEAD_MAP.values() if k not in idx]
+    used: dict[str, str] = {}
+    for key, aliases in _HEAD_ALIASES.items():
+        for a in aliases:                    # 별칭 우선순위대로, 같은 이름 중복이면 첫 등장
+            if a in pos:
+                idx[key], used[key] = pos[a][0], a
+                break
+    missing = [k for k in _HEAD_ALIASES if k not in idx]
     if missing:
-        raise RuntimeError(f"MD투입 헤더 못 찾음: {missing} (헤더 위치 변경?)")
+        raise RuntimeError(
+            f"MD투입 헤더 못 찾음: {missing} — 후보 {[_HEAD_ALIASES[k] for k in missing]} / "
+            f"R{_HEADER_ROW} 실제 헤더 {[n for n in names if n][:40]}")
+    _renamed = {k: v for k, v in used.items() if v != _HEAD_ALIASES[k][0]}
+    if _renamed:
+        print(f"[po_ingest] 헤더 개명 감지 — {_renamed} (별칭으로 처리)")
 
     # 2) 필요한 컬럼만 narrow batchGet (와이드 읽기는 수식열 때문에 정렬 깨짐)
     keys = list(idx.keys())
