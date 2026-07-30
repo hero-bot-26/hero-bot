@@ -87,6 +87,13 @@ ORDER_COLS = {"sty": "최종품번", "season": "타겟시즌",
 # 히어로별 대상 STY = 26FW 히어로 실적 대시보드의 히어로 탭 B열(R13~)
 DASH_SHEET_ID = "1-A04_TwKZJNPkFg27USkKAScZRu6CAhbgVeXk9c09nA"
 DASH_STY_RANGE = "B13:B"
+# 기입고물량 = 히어로 탭 합계행(R12)의 HU(1/1 예측 재고) + HX(입고량, 물류입고기준).
+#   ★ 사용자 정의(2026-07-30). HX는 '오늘까지' 물류에 잡힌 누계라 매일 늘어난다 —
+#     그리드 시작(6/29) 시점 보유량이 아니라 **현재 보유량**이라는 점에 유의.
+DASH_TOTAL_ROW = 12
+DASH_PREIN_HEADER_ROW = 8
+DASH_PREIN_COLS = ("1/1예측재고", "입고량(물류입고기준)")   # 공백·개행 제거 후 비교
+DASH_PREIN_SCAN = "HP{r}:IF{r}"      # 헤더/합계행에서 위 두 컬럼을 찾을 범위
 
 SEASON_YEAR = 2026
 
@@ -266,6 +273,39 @@ def load_hero_styles(sheets) -> dict[str, str]:
     return sty2hero
 
 
+def load_prein(sheets) -> dict[str, float]:
+    """기입고물량 = 히어로 탭 합계행의 HU(1/1 예측재고) + HX(입고량, 물류입고기준).
+
+    열 위치는 헤더행(R8)의 라벨로 찾는다 — 대시보드 컬럼이 밀려도 따라가기 위함.
+    """
+    ranges = []
+    for h in HERO_LABELS:
+        ranges.append(f"'{h}'!" + DASH_PREIN_SCAN.format(r=DASH_PREIN_HEADER_ROW))
+        ranges.append(f"'{h}'!" + DASH_PREIN_SCAN.format(r=DASH_TOTAL_ROW))
+    res = sheets.spreadsheets().values().batchGet(
+        spreadsheetId=DASH_SHEET_ID, ranges=ranges,
+        valueRenderOption="UNFORMATTED_VALUE").execute()["valueRanges"]
+
+    out, missing = {}, []
+    for i, hero in enumerate(HERO_LABELS):
+        hdr = (res[2 * i].get("values") or [[]])[0]
+        tot = (res[2 * i + 1].get("values") or [[]])[0]
+        labels = [re.sub(r"\s+", "", str(c)) for c in hdr]
+        val = 0.0
+        for want in DASH_PREIN_COLS:
+            if want not in labels:
+                missing.append(f"{hero}:{want}")
+                continue
+            j = labels.index(want)
+            val += _num(tot[j]) if j < len(tot) else 0.0
+        out[hero] = val
+    if missing:
+        raise RuntimeError("대시보드 히어로 탭에서 기입고물량 컬럼을 못 찾았습니다 — 주입 중단:\n  "
+                           + ", ".join(missing))
+    out["TOTAL"] = sum(out.values())
+    return out
+
+
 def load_inbound(sheets, sty2hero, weeks):
     """MD투입에서 타겟시즌 2026FW 행을 읽어 {히어로: 주차별 입고수량}. TOTAL 포함."""
     hdr = sheets.spreadsheets().values().get(
@@ -294,8 +334,7 @@ def load_inbound(sheets, sty2hero, weeks):
 
     n = max(len(v) for v in col.values())
     per = {h: [0.0] * len(weeks) for h in HERO_LABELS}
-    opening = {h: 0.0 for h in HERO_LABELS}     # 주차 범위 시작 이전 입고 = 기입고물량
-    stat = {"rows": 0, "after": {}, "nodate": {}, "total": {}}
+    stat = {"rows": 0, "before": {}, "after": {}, "nodate": {}, "total": {}}
     w_start, w_end = weeks[0][0], weeks[-1][1]
     for i in range(n):
         if str(val("season", i)).strip() != ORDER_SEASON:
@@ -313,8 +352,8 @@ def load_inbound(sheets, sty2hero, weeks):
             stat["nodate"][hero] = stat["nodate"].get(hero, 0.0) + qty
             continue
         d = _EPOCH + dt.timedelta(days=int(serial))
-        if d < w_start:                     # 첫 주 시작 전에 이미 들어온 물량
-            opening[hero] += qty
+        if d < w_start:                     # 첫 주 시작 전 입고 — 기입고물량은 대시보드에서 따로 읽는다
+            stat["before"][hero] = stat["before"].get(hero, 0.0) + qty
             continue
         if d > w_end:                       # 그리드 이후(연말 밖) — 넣을 칸이 없다
             stat["after"][hero] = stat["after"].get(hero, 0.0) + qty
@@ -324,29 +363,38 @@ def load_inbound(sheets, sty2hero, weeks):
                 per[hero][wi] += qty
                 break
 
-    live = [h for h in HERO_LABELS if any(per[h]) or opening[h]]
-    out = {h: per[h] for h in live}
-    open_out = {h: opening[h] for h in live}
+    out = {h: per[h] for h in HERO_LABELS if any(per[h])}
     total = [0.0] * len(weeks)
-    for h in live:
-        for i, v in enumerate(per[h]):
+    for arr in out.values():
+        for i, v in enumerate(arr):
             total[i] += v
-    if live:
+    if out:
         out["TOTAL"] = total
-        open_out["TOTAL"] = sum(opening[h] for h in live)
-    return out, open_out, stat
+    return out, stat
 
 
-def cumulative(inbound: dict, opening: dict) -> dict:
-    """누적 입고 재고 = 기입고물량 + 주차별 신규 입고 누계."""
+def cumulative(inbound: dict, prein: dict, weeks, mode: str, as_of: dt.date) -> dict:
+    """누적 입고 재고.
+
+    mode='plan'    : 기입고물량 + 전 주차 누계 (문자 그대로).
+                     ★ 기입고물량(HX)이 '오늘까지 물류입고 누계'라 이미 지난 주차분을 포함하므로
+                       그 구간이 이중 계상된다. 지난 주차가 없을 때만 안전하다.
+    mode='forward' : 기입고물량 + **오늘 이후 주차만** 누계 (이중 계상 없음).
+                     지난 주차의 누적은 기입고물량으로 평평하게 유지된다.
+    """
     out = {}
     for hero, arr in inbound.items():
-        acc = opening.get(hero, 0.0)
+        acc = prein.get(hero, 0.0)
         run = []
-        for v in arr:
-            acc += v
+        for (_, end), v in zip(weeks, arr):
+            if mode == "plan" or end > as_of:
+                acc += v
             run.append(acc)
         out[hero] = run
+    # 입고 스케줄은 없지만 기입고물량만 있는 히어로도 누적은 그려준다.
+    for hero, v in prein.items():
+        if hero not in out and v:
+            out[hero] = [v] * len(weeks)
     return out
 
 
@@ -494,6 +542,10 @@ def main() -> int:
                     help="all=둘 다(기본) / target=목표 판매량만 / inbound=신규 입고만")
     ap.add_argument("--source", choices=["weekly", "daily"], default="weekly",
                     help="목표 소스: weekly=주차별 목표(정본, 기본) / daily=일자별 목표를 주간 합산")
+    ap.add_argument("--cum", choices=["forward", "plan"], default="forward",
+                    help="누적 입고 재고 계산: forward=기입고물량+오늘 이후 주차만(기본, 이중계상 없음) / "
+                         "plan=기입고물량+전 주차 누계")
+    ap.add_argument("--as-of", default="", help="누적 기준일 (YYYY-MM-DD, 기본 오늘)")
     ap.add_argument("--dry-run", action="store_true", help="시트에 쓰지 않고 결과만 출력")
     args = ap.parse_args()
 
@@ -530,23 +582,35 @@ def main() -> int:
     # ── ② 신규 입고 ──
     if args.only in ("all", "inbound"):
         sty2hero = load_hero_styles(sheets)
-        inbound, opening, stat = load_inbound(sheets, sty2hero, weeks)
+        inbound, stat = load_inbound(sheets, sty2hero, weeks)
         if not inbound:
             raise RuntimeError(f"{ORDER_TAB}에서 {ORDER_SEASON} 입고를 하나도 못 읽었습니다 — 주입 중단.")
-        cum = cumulative(inbound, opening)
+        opening = load_prein(sheets)
+        as_of = dt.date.fromisoformat(args.as_of) if args.as_of else dt.date.today()
+        cum = cumulative(inbound, opening, weeks, args.cum, as_of)
         print(f"\n[신규 입고] {ORDER_SEASON} · 대상 STY {len(sty2hero)}개 · 매칭 행 {stat['rows']}건")
         pre = {h: v for h, v in opening.items() if v and h != "TOTAL"}
-        if pre:
-            print(f"  · 기입고물량({weeks[0][0]} 이전, {_col_letter(grid['prein']) if grid['prein'] else '열없음'}): "
-                  + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(pre.items())))
+        print(f"  · 기입고물량(대시보드 HU+HX, {_col_letter(grid['prein']) if grid['prein'] else '열없음'}): "
+              + (", ".join(f"{h} {v:,.0f}" for h, v in sorted(pre.items())) or "전부 0"))
         if not grid["prein"] and pre:
-            print(f"  ⚠ '{PREIN_LABEL}' 열이 없어 기초물량을 못 씁니다 — 누적 행에만 반영됩니다.")
-        for label, d in (("그리드 이후라 제외", stat["after"]), ("입고일 없어 제외", stat["nodate"])):
+            print(f"  ⚠ '{PREIN_LABEL}' 열이 없어 기입고물량을 못 씁니다 — 누적 행에만 반영됩니다.")
+        print(f"  · 누적 방식 = {args.cum} (기준일 {as_of})")
+        if args.cum == "plan" and stat["total"]:
+            dup = {h: sum(v for (_, e), v in zip(weeks, inbound.get(h, []) or []) if e <= as_of)
+                   for h in HERO_LABELS}
+            dup = {h: v for h, v in dup.items() if v}
+            if dup:
+                print("  ⚠ 이중 계상 가능(기입고물량이 이미 포함한 지난 주차): "
+                      + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(dup.items()))
+                      + f" — 합 {sum(dup.values()):,.0f}")
+        for label, d in (("6/29 이전이라 주차에서 제외", stat["before"]),
+                         ("그리드 이후라 제외", stat["after"]),
+                         ("입고일 없어 제외", stat["nodate"])):
             if d:
-                print(f"  ⚠ {label}: " + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(d.items())))
+                print(f"  · {label}: " + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(d.items())))
         zero = [h for h in HERO_LABELS if not stat["total"].get(h)]
         if zero:
-            print(f"  ⚠ 입고수량 0(미입력)이라 건드리지 않음: {', '.join(zero)}")
+            print(f"  ⚠ 입고수량 0(미입력)이라 신규입고 행은 건드리지 않음: {', '.join(zero)}")
 
     data, skipped = build_updates(grid, qty, inbound, cum, opening)
     print(f"\n갱신 셀 {len(data)}건 (수량 행만 — 금액 칸 미변경)")
