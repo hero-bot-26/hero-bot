@@ -97,24 +97,28 @@ SRC_DAILY_ROW0 = 18     # 일자 그리드 시작
 SRC_C_WEEK, SRC_C_DATE = 6, 7          # F열 = 주차 라벨, G열 = 날짜("07월 01일" 텍스트)
 
 # ── 타깃 레이아웃 (시트2) ────────────────────────────────────────────────────
+# ★ 주차 열 위치는 하드코딩하지 않는다. 2026-07-30에 I열에 '기입고물량'이 삽입되면서
+#   주차 그리드가 I~AH → J~AI 로 통째로 밀린 적이 있다(기존 값도 같이 밀려 정합은 유지됐다).
+#   매 실행마다 마감일 행에서 날짜 시리얼이 연속된 구간을 찾아 주차 열로 쓴다.
 WEEK_ROW = 7                    # 마감일 행
-WEEK_C0, WEEK_C1 = 9, 34        # I~AH (1-indexed, 26주)
+PREIN_LABEL = "기입고물량"        # 주차 그리드 왼쪽의 기초(주차 범위 이전) 입고 열
+_SERIAL_MIN, _SERIAL_MAX = 45000, 48000     # 2023~2031 — 날짜 시리얼 판별용
 
-# 히어로 블록: (C열 히어로 라벨, 신규입고 행, 목표판매량 행).
+# 히어로 블록: (C열 히어로 라벨, 신규입고 행, 누적입고재고 행, 목표판매량 행).
 # 블록 구성 = 신규입고 / 누적입고재고 / 목표판매량 / 목표매출액 / 누적소진율 (5행).
-# 금액 행(목표 매출액)과 누적 행은 의도적으로 제외 — 수량 두 행만 쓴다.
+# 금액 행(목표 매출액)과 누적 소진율은 의도적으로 제외 — 수량 세 행만 쓴다.
 BLOCKS = [
-    ("TOTAL", 12, 14),
-    ("커브드팬츠", 17, 19),
-    ("라이트다운", 22, 24),
-    ("힛탠다드", 27, 29),
-    ("빅토리아 울", 32, 34),
-    ("그리드/메시 플리스", 37, 39),
-    ("에센셜 플리스", 42, 44),
-    ("웜 팬츠", 47, 49),
-    ("리커버리", 52, 54),
+    ("TOTAL", 12, 13, 14),
+    ("커브드팬츠", 17, 18, 19),
+    ("라이트다운", 22, 23, 24),
+    ("힛탠다드", 27, 28, 29),
+    ("빅토리아 울", 32, 33, 34),
+    ("그리드/메시 플리스", 37, 38, 39),
+    ("에센셜 플리스", 42, 43, 44),
+    ("웜 팬츠", 47, 48, 49),
+    ("리커버리", 52, 53, 54),
 ]
-HERO_LABELS = [h for h, _, _ in BLOCKS if h != "TOTAL"]   # 대시보드 탭 이름과 동일
+HERO_LABELS = [b[0] for b in BLOCKS if b[0] != "TOTAL"]   # 대시보드 탭 이름과 동일
 
 # 표기 흔들림 흡수: 공백 제거 후 비교 + 별칭
 ALIAS = {"샤기/플러피플리스": "에센셜플리스"}
@@ -290,7 +294,9 @@ def load_inbound(sheets, sty2hero, weeks):
 
     n = max(len(v) for v in col.values())
     per = {h: [0.0] * len(weeks) for h in HERO_LABELS}
-    stat = {"rows": 0, "outside": {}, "nodate": {}, "total": {}}
+    opening = {h: 0.0 for h in HERO_LABELS}     # 주차 범위 시작 이전 입고 = 기입고물량
+    stat = {"rows": 0, "after": {}, "nodate": {}, "total": {}}
+    w_start, w_end = weeks[0][0], weeks[-1][1]
     for i in range(n):
         if str(val("season", i)).strip() != ORDER_SEASON:
             continue
@@ -307,41 +313,79 @@ def load_inbound(sheets, sty2hero, weeks):
             stat["nodate"][hero] = stat["nodate"].get(hero, 0.0) + qty
             continue
         d = _EPOCH + dt.timedelta(days=int(serial))
+        if d < w_start:                     # 첫 주 시작 전에 이미 들어온 물량
+            opening[hero] += qty
+            continue
+        if d > w_end:                       # 그리드 이후(연말 밖) — 넣을 칸이 없다
+            stat["after"][hero] = stat["after"].get(hero, 0.0) + qty
+            continue
         for wi, (a, b) in enumerate(weeks):
             if a <= d <= b:
                 per[hero][wi] += qty
                 break
-        else:
-            stat["outside"][hero] = stat["outside"].get(hero, 0.0) + qty
 
-    out = {h: arr for h, arr in per.items() if any(arr)}
+    live = [h for h in HERO_LABELS if any(per[h]) or opening[h]]
+    out = {h: per[h] for h in live}
+    open_out = {h: opening[h] for h in live}
     total = [0.0] * len(weeks)
-    for arr in out.values():
-        for i, v in enumerate(arr):
+    for h in live:
+        for i, v in enumerate(per[h]):
             total[i] += v
-    if any(total):
+    if live:
         out["TOTAL"] = total
-    return out, stat
+        open_out["TOTAL"] = sum(opening[h] for h in live)
+    return out, open_out, stat
+
+
+def cumulative(inbound: dict, opening: dict) -> dict:
+    """누적 입고 재고 = 기입고물량 + 주차별 신규 입고 누계."""
+    out = {}
+    for hero, arr in inbound.items():
+        acc = opening.get(hero, 0.0)
+        run = []
+        for v in arr:
+            acc += v
+            run.append(acc)
+        out[hero] = run
+    return out
 
 
 # ── 2) 주차 경계 (시트2 마감일) ──────────────────────────────────────────────
-def load_weeks(sheets) -> list[tuple[dt.date, dt.date]]:
-    """시트2 R7의 마감일 → [(주 시작, 주 마감)] 26개. 한 주 = [마감일-6, 마감일]."""
-    rng = f"'{IMC_TAB}'!{_col_letter(WEEK_C0)}{WEEK_ROW}:{_col_letter(WEEK_C1)}{WEEK_ROW}"
+def load_grid(sheets) -> dict:
+    """시트2 마감일 행을 훑어 주차 열 구간과 '기입고물량' 열을 찾는다.
+
+    반환 {weeks: [(시작, 마감)], c0: 첫 주차 열(1-indexed), prein: 기입고물량 열 or None}.
+    열을 고정하지 않는 이유는 상단 주석 참고(중간에 열이 삽입된 이력이 있다).
+    """
     row = (sheets.spreadsheets().values().get(
-        spreadsheetId=IMC_SHEET_ID, range=rng,
+        spreadsheetId=IMC_SHEET_ID, range=f"'{IMC_TAB}'!A{WEEK_ROW}:BZ{WEEK_ROW}",
         valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [[]]) or [[]])[0]
 
-    weeks = []
-    for v in row:
+    prein = next((i + 1 for i, v in enumerate(row)
+                  if re.sub(r"\s+", "", str(v)) == PREIN_LABEL), None)
+
+    best: list[int] = []
+    cur: list[int] = []
+    for i, v in enumerate(row):
         n = _num(v)
-        if n <= 0:
-            raise RuntimeError(f"시트2 {WEEK_ROW}행 마감일에 날짜가 아닌 값이 있습니다: {v!r}")
-        end = _EPOCH + dt.timedelta(days=int(n))
+        if _SERIAL_MIN <= n <= _SERIAL_MAX:
+            cur.append(i + 1)
+        else:
+            if len(cur) > len(best):
+                best = cur
+            cur = []
+    if len(cur) > len(best):
+        best = cur
+    if len(best) < 10:
+        raise RuntimeError(f"시트2 {WEEK_ROW}행에서 마감일(날짜) 구간을 못 찾았습니다 — 주입 중단.")
+    if best != list(range(best[0], best[0] + len(best))):
+        raise RuntimeError(f"마감일 열이 연속이 아닙니다: {best} — 주입 중단.")
+
+    weeks = []
+    for c in best:
+        end = _EPOCH + dt.timedelta(days=int(_num(row[c - 1])))
         weeks.append((end - dt.timedelta(days=6), end))
-    if len(weeks) != WEEK_C1 - WEEK_C0 + 1:
-        raise RuntimeError(f"마감일 개수가 {len(weeks)}개 — {WEEK_C1 - WEEK_C0 + 1}주를 기대했습니다.")
-    return weeks
+    return {"weeks": weeks, "c0": best[0], "prein": prein}
 
 
 def map_weeks(weeks, wk_range) -> list[str | None]:
@@ -364,13 +408,12 @@ def verify_layout(sheets) -> None:
         return str(row[c - 1]).strip() if c - 1 < len(row) else ""
 
     bad = []
-    for hero, inb_r, qty_r in BLOCKS:
+    for hero, inb_r, cum_r, qty_r in BLOCKS:
         if norm(cell(inb_r, 3)) != norm(hero):          # 블록 첫 행(C열)에 히어로명
             bad.append(f"R{inb_r} C열 히어로명 '{cell(inb_r, 3)}' ≠ '{hero}'")
-        if cell(inb_r, 4) != "신규 입고":
-            bad.append(f"R{inb_r} D열 '{cell(inb_r, 4)}' ≠ '신규 입고'")
-        if cell(qty_r, 4) != "목표 판매량":
-            bad.append(f"R{qty_r} D열 '{cell(qty_r, 4)}' ≠ '목표 판매량'")
+        for row, want in ((inb_r, "신규 입고"), (cum_r, "누적 입고 재고"), (qty_r, "목표 판매량")):
+            if cell(row, 4) != want:
+                bad.append(f"R{row} D열 '{cell(row, 4)}' ≠ '{want}'")
     if bad:
         raise RuntimeError("시트2 레이아웃이 바뀌었습니다 — 주입 중단:\n  " + "\n  ".join(bad))
 
@@ -406,12 +449,20 @@ def aggregate(cols, weekly, wk_map, weeks, mode):
 
 
 # ── 5) 주입 ─────────────────────────────────────────────────────────────────
-def build_updates(qty: dict | None, inbound: dict | None) -> tuple[list[dict], dict]:
-    """수량 두 행만 배치 업데이트로 만든다. 값이 없는 히어로는 건드리지 않는다(빈칸 유지)."""
-    rng0, rng1 = _col_letter(WEEK_C0), _col_letter(WEEK_C1)
-    data, skipped = [], {"목표 판매량": [], "신규 입고": []}
-    for hero, inb_r, qty_r in BLOCKS:
-        for src, row, label in ((qty, qty_r, "목표 판매량"), (inbound, inb_r, "신규 입고")):
+def build_updates(grid, qty: dict | None, inbound: dict | None,
+                  cum: dict | None, opening: dict | None) -> tuple[list[dict], dict]:
+    """수량 세 행(+기입고물량 열)만 배치 업데이트로 만든다.
+
+    값이 없는 히어로는 건드리지 않는다(빈칸 유지 — 0을 써서 '입고 없음'처럼 보이게 하지 않는다).
+    """
+    c0, n = grid["c0"], len(grid["weeks"])
+    rng0, rng1 = _col_letter(c0), _col_letter(c0 + n - 1)
+    data = []
+    skipped = {"목표 판매량": [], "신규 입고": [], "누적 입고 재고": []}
+    for hero, inb_r, cum_r, qty_r in BLOCKS:
+        for src, row, label in ((qty, qty_r, "목표 판매량"),
+                                (inbound, inb_r, "신규 입고"),
+                                (cum, cum_r, "누적 입고 재고")):
             if src is None:
                 continue
             # 목표는 정규화 키(공백 제거), 입고는 히어로 라벨 그대로가 키다.
@@ -421,6 +472,11 @@ def build_updates(qty: dict | None, inbound: dict | None) -> tuple[list[dict], d
                 continue
             data.append({"range": f"'{IMC_TAB}'!{rng0}{row}:{rng1}{row}",
                          "values": [[round(v) for v in arr]]})
+        # 기입고물량 열 — 신규 입고 행에만 쓴다(누적 행의 시작값으로도 이미 반영돼 있다).
+        if opening is not None and grid["prein"] and hero in opening:
+            pc = _col_letter(grid["prein"])
+            data.append({"range": f"'{IMC_TAB}'!{pc}{inb_r}",
+                         "values": [[round(opening[hero])]]})
     return data, skipped
 
 
@@ -446,10 +502,13 @@ def main() -> int:
     sheets, drive = svc["sheets"], svc["drive"]
 
     verify_layout(sheets)
-    weeks = load_weeks(sheets)
-    print(f"주차 {len(weeks)}주 ({weeks[0][0]} ~ {weeks[-1][1]})")
+    grid = load_grid(sheets)
+    weeks = grid["weeks"]
+    print(f"주차 {len(weeks)}주 ({weeks[0][0]} ~ {weeks[-1][1]}) · "
+          f"열 {_col_letter(grid['c0'])}~{_col_letter(grid['c0'] + len(weeks) - 1)} · "
+          f"기입고물량 열 {_col_letter(grid['prein']) if grid['prein'] else '없음'}")
 
-    qty = inbound = None
+    qty = inbound = cum = opening = None
 
     # ── ① 목표 판매량 ──
     if args.only in ("all", "target"):
@@ -471,29 +530,39 @@ def main() -> int:
     # ── ② 신규 입고 ──
     if args.only in ("all", "inbound"):
         sty2hero = load_hero_styles(sheets)
-        inbound, stat = load_inbound(sheets, sty2hero, weeks)
+        inbound, opening, stat = load_inbound(sheets, sty2hero, weeks)
         if not inbound:
             raise RuntimeError(f"{ORDER_TAB}에서 {ORDER_SEASON} 입고를 하나도 못 읽었습니다 — 주입 중단.")
+        cum = cumulative(inbound, opening)
         print(f"\n[신규 입고] {ORDER_SEASON} · 대상 STY {len(sty2hero)}개 · 매칭 행 {stat['rows']}건")
-        for label, d in (("6/29 이전이라 제외", stat["outside"]), ("입고일 없어 제외", stat["nodate"])):
+        pre = {h: v for h, v in opening.items() if v and h != "TOTAL"}
+        if pre:
+            print(f"  · 기입고물량({weeks[0][0]} 이전, {_col_letter(grid['prein']) if grid['prein'] else '열없음'}): "
+                  + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(pre.items())))
+        if not grid["prein"] and pre:
+            print(f"  ⚠ '{PREIN_LABEL}' 열이 없어 기초물량을 못 씁니다 — 누적 행에만 반영됩니다.")
+        for label, d in (("그리드 이후라 제외", stat["after"]), ("입고일 없어 제외", stat["nodate"])):
             if d:
                 print(f"  ⚠ {label}: " + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(d.items())))
         zero = [h for h in HERO_LABELS if not stat["total"].get(h)]
         if zero:
             print(f"  ⚠ 입고수량 0(미입력)이라 건드리지 않음: {', '.join(zero)}")
 
-    data, skipped = build_updates(qty, inbound)
-    print(f"\n갱신 행 {len(data)}개 (수량 행만 — 금액 칸 미변경)")
+    data, skipped = build_updates(grid, qty, inbound, cum, opening)
+    print(f"\n갱신 셀 {len(data)}건 (수량 행만 — 금액 칸 미변경)")
     for label, heroes in skipped.items():
         if heroes:
             print(f"  · {label} 미기입: {', '.join(heroes)}")
-    for hero, inb_r, qty_r in BLOCKS:
+    for hero, inb_r, cum_r, qty_r in BLOCKS:
         t = (qty or {}).get(norm(hero))
-        b = (inbound or {}).get(hero) or ((inbound or {}).get("TOTAL") if hero == "TOTAL" else None)
+        b = (inbound or {}).get(hero)
+        c = (cum or {}).get(hero)
         if t is None and b is None:
             continue
-        print(f"  {hero:<16} 목표 {sum(t) if t else 0:>9,.0f} pcs (R{qty_r})"
-              f"   입고 {sum(b) if b else 0:>9,.0f} pcs (R{inb_r})")
+        print(f"  {hero:<16} 목표 {sum(t) if t else 0:>9,.0f} (R{qty_r})"
+              f" · 입고 {sum(b) if b else 0:>9,.0f} (R{inb_r})"
+              f" · 기입고 {(opening or {}).get(hero, 0):>8,.0f}"
+              f" · 누적끝 {c[-1] if c else 0:>9,.0f} (R{cum_r})")
 
     if args.dry_run:
         print("\n[dry-run] 시트에 쓰지 않았습니다.")
