@@ -90,6 +90,19 @@ jobs:
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
         run: python _dash_fix_colors.py --apply
 
+      # 26FW 대시보드 A열 uid 자동 채움 + 노트북 GOODS_FILTER 동기화.
+      #   ★uid 소스는 **ItemMaster '무탠'** — MSTRD SKU 의 uid 칸은 신규 SKU 에서 비어 있어(기획MD 후행 입력)
+      #     _dash_fix_colors 만으로는 발매돼도 A열이 계속 빈칸이었다(실적 조용히 누락, 2026-07-31 확인).
+      #   대시보드 uid 전량을 26FW 데이터시트 '_UID_FILTER' 탭에 기록 → 다음 09:30 DBX 잡이 합집합으로 읽는다.
+      - name: 대시보드 uid 채움 (ItemMaster 기준)
+        if: always()
+        continue-on-error: true
+        env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: python _dash_fill_uid.py --apply
+
       # 히어로 단계 카운트다운 슬랙 알람 (TEST_ONLY=True → 본인 DM 테스트만).
       # SLACK_BOT_TOKEN 시크릿 없으면 triggers 가 자동 스킵. 실패해도 위 app.html 작업엔 영향 X.
       - name: 히어로 단계 알람 (테스트)
