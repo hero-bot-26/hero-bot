@@ -12,7 +12,11 @@ from soo.hero_ops.plm_ingest import (
 TODAY = datetime.date.today()
 LOCAL_PLM = next((Path(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--local=")), None)
 DO_PUSH = "--push" in sys.argv
-USE_SHEET = "--sheet" in sys.argv   # 구글시트(데이터브릭스 자동출력)에서 읽기 — 자동화 경로
+# ★PLM 소스 기본값 = 구글시트(데이터브릭스 자동출력, 매일 갱신). CI는 원래 --sheet를 붙여 돌지만
+#   수동 실행에서 빼먹으면 드라이브의 오래된 마일스톤 엑셀로 폴백해 PLM 미등록이 부풀었다
+#   (2026-07-31 실측: 시트 9건 → 드라이브 15건, 리커버리 6종이 통째로 미등록으로 찍힘).
+#   → 기본을 시트로 두고, 옛 경로가 필요할 때만 --drive 로 명시한다.
+USE_SHEET = "--drive" not in sys.argv
 
 # MDP 26FW 추출 트랙별 베이스라인 (단계 n → 'YYYY-MM-DD'). ⚠ 사용자 확인 대상.
 BASELINE = {
