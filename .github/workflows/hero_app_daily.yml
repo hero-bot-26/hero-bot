@@ -48,6 +48,16 @@ jobs:
           pip install -r requirements.txt
           pip install pandas openpyxl        # plm_ingest import용 (requirements 미포함)
 
+      # ★히어로 uid 목록을 실적 시트 `_히어로UID` 탭에 먼저 밀어넣는다(09시대) —
+      #   DBX 잡(09:30)이 이 탭을 읽어 GOODS_FILTER를 만든다. 새 컬러/스타일 uid가 그날 바로 잡힌다.
+      - name: 히어로 uid 목록 갱신 (노트북 필터 소스)
+        continue-on-error: true
+        env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: python push_hero_uids.py
+
       # ★실적 시트(DBX 잡 09:30~약 3h)가 전일 기준으로 다 채워질 때까지 대기 — 반쯤 쓰인 시트를 읽지 않기 위함.
       - name: Wait for sales sheet (전일 기준 완성 대기)
         continue-on-error: true          # 대기 실패해도 생성은 진행(게이트가 실적·PMKT를 보류)
