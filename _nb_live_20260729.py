@@ -605,7 +605,10 @@ print("[OK] PMKT경로주차 기록 완료")
 # (4) 일별 유입 — goods x 날짜(최근 90일) PDP 유입 UV. 성과탭 상단 'PDP 일별 유입 트렌드'(app window.__PDP_DAILY) 소스.
 #     생성기(_gen_26fw_heroes.py)가 goods→26FW 히어로로 롤업해 히어로별 일별 곡선 + IMC 액션 핀을 그린다.
 #     기간·필터는 PMKT과 동일(direct·무탠 브랜드·com_id 제외). 유입 0인 goods-day는 제외(행수 절감).
-_pdpd_start = (datetime.strptime(date, "%Y%m%d") - timedelta(days=89)).strftime("%Y%m%d")
+# ★기간: 최근 90일 → **시즌 전체**(26SS 2/1~ · 26FW 8/1~익년 1/31)로 확장(2026-07-31 사용자 요청).
+#   앱 트렌드가 시즌 창을 가로로 길게 보여주려면 원천도 그만큼 있어야 한다. 시즌 시작 = 그 해 2/1(SS)·8/1(FW).
+#   지금 시점(26FW 진행)에선 26SS 회고까지 함께 보므로 **2/1부터** 통째로 뽑는다(행수 ~3.5배, 시트 여유 충분).
+_pdpd_start = f"{d.year}0201" if d.month >= 2 else f"{d.year - 1}0201"
 pdp_daily_query = f"""
 SELECT TO_DATE(p.dt,'yyyyMMdd') AS date, CAST(p.goods_no AS STRING) AS goods_no,
        ANY_VALUE(m.style_no) AS style_no, SUM(p.pdp_uv_cnt) AS pdp_uv
