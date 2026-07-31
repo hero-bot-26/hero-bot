@@ -53,17 +53,35 @@ def _g(row, j):
 
 
 def item_master(sh):
-    """ItemMaster '무탠' → {운영품번: uid}. 컬러 없는 대표행은 {대표품번: uid} 로 따로."""
+    """ItemMaster '무탠'(C=UID, D=운영품번, E=대표품번, F=컬러코드) → ({운영품번: uid}, {대표품번: 스타일uid}).
+
+    ★★컬러행/스타일행 판별은 **D열에 '-' 가 있는가**로 한다. **F열(컬러코드)로 판별하면 안 된다** —
+      컬러코드가 비어 있는 컬러행이 124건 있다(예: MMFWCAB12-BK, uid 6949329). F 기준으로 짰다가
+      그 행을 스타일행으로 오분류해 "uid 미발급" 으로 흘려보냈다(2026-07-31, 사용자 지적으로 발견).
+    ★D가 대표품번과 다른 계열인 행(예: D=MMFPK8A69-TA, E=MMFPK8B70)은 **이벤트/통합 매핑행**이라
+      대표품번의 스타일uid 후보로만 쓴다. 진짜 스타일행(D==E)이 있으면 그쪽이 우선.
+    """
     vals = sh.spreadsheets().values().get(
         spreadsheetId=ITEM, range="'무탠'!A12:N30000",
         valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
-    by_pum, by_style = {}, {}
+    by_pum, by_style, alt = {}, {}, {}
     for r in vals:
         uid = _g(r, 2)
         if not uid.isdigit():
             continue
-        pum, rep, color = _g(r, 3), _g(r, 4), _g(r, 5)
-        (by_pum if color else by_style).setdefault(pum if color else rep, int(uid))
+        pum, rep = _g(r, 3), _g(r, 4)
+        if not pum:
+            continue
+        if pum == rep and "-" not in pum:
+            by_style.setdefault(pum, int(uid))
+        elif rep and pum.startswith(rep + "-"):
+            by_pum.setdefault(pum, int(uid))
+        elif "-" not in pum:
+            by_style.setdefault(pum, int(uid))
+        elif rep:
+            alt.setdefault(rep, int(uid))
+    for k, u in alt.items():
+        by_style.setdefault(k, u)
     return by_pum, by_style
 
 
