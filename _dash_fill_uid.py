@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""26FW 대시보드 A열 uid 자동 채움 + 노트북 GOODS_FILTER 동기화 (매일).
+"""26FW 대시보드 A열 uid · F열 컬러명 자동 채움 + 노트북 GOODS_FILTER 동기화 (매일).
 
 왜 필요했나(2026-07-31):
   · 미발매 스타일은 대시보드 A열(uid)이 비어 있고, 발매 시점에 채워야 실적이 잡힌다.
@@ -20,7 +20,13 @@
   · `…,$U:$U,$D{r}`    → 통합(온라인)행. 통합uid + **옵션코드**가 세트라 옵션코드 없이는 못 채움 → 보고만.
   · `…!$B:$B,$A{r}`    → 개별(오프라인/심플)행 → **여기만 채운다.**
 
-★행 삽입·삭제·수식 변경은 하지 않는다. A열 값만 쓴다(멱등).
+③ F열 컬러명 채움 — 공백인 컬러행에 권위소스(HERO SKU / 컬러코드 / 상품관리 브래킷)로 채운다.
+   ★컬러코드는 **품번 접미**로 뽑는다. E열은 `=IFERROR(RIGHT(C32,2))` 수식인 탭이 있어
+     FORMULA 렌더로 읽으면 수식 문자열이 나온다(웜 팬츠 3건이 이래서 샜다).
+   ★표기는 **대시보드 기존 관행 우선** — 코드탭 '라이트 그레이' vs 시트 '라이트그레이'처럼
+     띄어쓰기만 다르면 시트 쪽을 따라야 표가 균일하다.
+
+★행 삽입·삭제·수식 변경은 하지 않는다. A/D/F 값만 쓴다(멱등).
 실행: python _dash_fill_uid.py [--apply]
 """
 from __future__ import annotations
@@ -29,6 +35,7 @@ import argparse
 import io
 import re
 import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
@@ -39,6 +46,7 @@ from soo.auth import build_services, get_credentials  # noqa: E402
 DASH = "1-A04_TwKZJNPkFg27USkKAScZRu6CAhbgVeXk9c09nA"   # 26FW 히어로 실적 대시보드
 DATA = "1O78bMnJZq-U6zO2mZLHV84573uKM9DU2wpgzeGDBIk0"   # 26FW 데이터시트(노트북이 쓰는 곳)
 ITEM = "1rVbq1UVwKAdNApYovVDPF9ALwoE-v1KhNZUyHtf_bn4"   # ItemMaster
+MSTRD = "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"  # 26FW HERO 시트(HERO SKU 컬러명)
 FILTER_TAB = "_UID_FILTER"
 
 TABS = ["커브드팬츠", "라이트다운", "힛탠다드", "빅토리아 울", "그리드/메시 플리스",
@@ -91,6 +99,37 @@ def scan(sh, tab):
         spreadsheetId=DASH, ranges=[f"'{tab}'!A1:F400", f"'{tab}'!G1:G400"],
         valueRenderOption="FORMULA").execute()["valueRanges"]
     return res[0].get("values", []), [(_g(x, 0) if x else "") for x in res[1].get("values", [])]
+
+
+def color_names(sh):
+    """컬러명 소스 → ({품번컬러: 이름}, {컬러코드: 이름}).
+
+    권위 순서(2026-07-16 세션에서 확정, 실적 정답셋 46/46 검증):
+      ① MSTRD 'HERO SKU'(K=품번컬러, L=컬러명)  ② ItemMaster '컬러코드'(D=코드 → G=한글표기)
+      ③ ItemMaster '상품관리' 상품명 끝의 `[컬러명]` 브래킷(코드탭에 없는 코드의 최후 보루)
+    ★2글자 약어를 추측해서 채우면 안 된다 — 과거 232건이 틀렸다(CY=클레이❌→클라우디 블루 등).
+    """
+    per_pum, by_code = {}, {}
+    hs = sh.spreadsheets().values().get(
+        spreadsheetId=MSTRD, range="'HERO SKU'!A9:N5000",
+        valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+    for r in hs:
+        if _g(r, 10) and _g(r, 11):
+            per_pum.setdefault(_g(r, 10), _g(r, 11))
+    cc = sh.spreadsheets().values().get(
+        spreadsheetId=ITEM, range="'컬러코드'!A3:H1000",
+        valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+    for r in cc:
+        if _g(r, 3) and _g(r, 6):
+            by_code.setdefault(_g(r, 3), _g(r, 6))
+    sp = sh.spreadsheets().values().get(
+        spreadsheetId=ITEM, range="'상품관리'!A6:R25000",
+        valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+    for r in sp:
+        m = re.search(r"\[([^\]]+)\]\s*$", _g(r, 17))
+        if _g(r, 0) and m:
+            per_pum.setdefault(_g(r, 0), m.group(1).strip())
+    return per_pum, by_code
 
 
 def _norm(name):
@@ -152,10 +191,32 @@ def main():
 
     optmap = sales_optmap(sh)
     print(f"실적 goods_opt 옵션코드 맵: 통합uid {len(optmap)}건")
+    per_pum, by_code = color_names(sh)
+    print(f"컬러명 소스: 품번별 {len(per_pum)} · 코드별 {len(by_code)}")
 
-    fills, dfills, pending, all_uid = [], [], [], set()
+    # 대시보드가 이미 쓰고 있는 표기를 우선한다 — 코드탭은 '라이트 그레이', 시트는 '라이트그레이'처럼
+    # 띄어쓰기만 다른 경우가 많아, 같은 이름이면 시트 관행을 따라야 표가 균일해 보인다.
+    sheet_spelling = defaultdict(Counter)
+    scans = {t: scan(sh, t) for t in TABS}
+    for rows, _f in scans.values():
+        for row in rows:
+            if COLOR_CODE.match(_g(row, 2)) and _g(row, 5):
+                sheet_spelling[_g(row, 2).rsplit("-", 1)[-1]][_g(row, 5)] += 1
+
+    def pick_name(pum, code):
+        cand = per_pum.get(pum) or by_code.get(code)
+        if not cand:
+            return None
+        dom = sheet_spelling.get(code)
+        if dom:
+            top = dom.most_common(1)[0][0]
+            if _norm(top) == _norm(cand):
+                return top
+        return cand
+
+    fills, dfills, ffills, pending, all_uid = [], [], [], [], set()
     for tab in TABS:
-        rows, forms = scan(sh, tab)
+        rows, forms = scans[tab]
         for i, row in enumerate(rows):
             r = i + 1
             a_val, pum = _g(row, 0), _g(row, 2)
@@ -163,6 +224,14 @@ def main():
                 all_uid.add(int(a_val))
             if not COLOR_CODE.match(pum):
                 continue
+            if not _g(row, 5):                       # F열 컬러명 공백 → 채운다
+                # ★컬러코드는 품번 접미로 뽑는다 — E열은 `=IFERROR(RIGHT(C32,2))` 수식인 탭이 있어
+                #   FORMULA 렌더로 읽으면 수식 문자열이 나온다(웜 팬츠 3건이 이래서 새어나갔다).
+                nm = pick_name(pum, pum.rsplit("-", 1)[-1])
+                if nm:
+                    ffills.append((tab, r, nm, pum))
+                else:
+                    pending.append((tab, r, pum, "컬러명 소스 없음"))
             k = kind(forms[i] if i < len(forms) else "", r)
             if k == "개별" and not a_val.isdigit():
                 uid = by_pum.get(pum)
@@ -190,6 +259,11 @@ def main():
     print(f"\n★A열 채울 행 {len(fills)}건")
     for t, r, uid, pum, old in fills:
         print(f"   [{t}] R{r} {pum} → {uid}" + (f"  (기존값 '{old}' 덮어씀)" if old else ""))
+    print(f"\n★F열 컬러명 채울 행 {len(ffills)}건")
+    for t, r, nm, pum in ffills[:60]:
+        print(f"   [{t}] R{r} {pum} → {nm}")
+    if len(ffills) > 60:
+        print(f"   … 외 {len(ffills) - 60}건")
     print(f"보류 {len(pending)}건 (uid 미발급 또는 옵션코드 대기)")
     for t, r, pum, why in pending[:8]:
         print(f"   [{t}] R{r} {pum} — {why}")
@@ -223,6 +297,13 @@ def main():
             "data": [{"range": f"'{t}'!D{r}", "values": [[code]]} for t, r, code in dfills],
         }).execute()
         print(f"D열 옵션코드 {len(dfills)}건 기록 완료 (TEXT)")
+
+    if ffills:
+        sh.spreadsheets().values().batchUpdate(spreadsheetId=DASH, body={
+            "valueInputOption": "RAW",
+            "data": [{"range": f"'{t}'!F{r}", "values": [[nm]]} for t, r, nm, _ in ffills],
+        }).execute()
+        print(f"F열 컬러명 {len(ffills)}건 기록 완료")
 
     # _UID_FILTER 탭 (없으면 생성) — 노트북이 GOODS_FILTER 에 합집합으로 더한다.
     meta = sh.spreadsheets().get(spreadsheetId=DATA, fields="sheets(properties(sheetId,title))").execute()
