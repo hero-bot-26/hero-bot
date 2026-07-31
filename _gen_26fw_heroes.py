@@ -1343,6 +1343,19 @@ try:
         def _styd_fw(hero, base, per):
             return hero_sty_fw.setdefault(hero, {}).setdefault(base, {}).setdefault(per, {"gmv": 0, "qty": 0})
 
+        # ★26FW 마케팅 성과(IMC 성과 탭) — 26SS와 같은 모양으로 한 벌 더 만든다.
+        #   MSTRD `HERO STY`가 진실소스라 히어로/스타일이 추가되면 다음 실행부터 자동으로 붙는다.
+        hero_sty_pm_fw = {}       # hero → {품번: {기간: {...}}}  (26SS hero_sty와 동일 스키마)
+        _hero_wk_fw, _sty_wk_fw, _path_wk_fw = {}, {}, {}
+        _sales_wk_fw = {"cur": {}, "prev": {}}
+        _sales_wk_sty_fw = {"cur": {}, "prev": {}}
+
+        def _hsty_fw(hero, base, per):
+            return hero_sty_pm_fw.setdefault(hero, {}).setdefault(base, {}).setdefault(
+                per, {"pdp": 0, "buy": 0, "gmv": 0, "pdp_ly": 0, "buy_ly": 0, "gmv_ly": 0,
+                      "mkt_gmv": 0, "mkt_pdp": 0, "mkt_gmv_ly": 0, "mkt_pdp_ly": 0,
+                      "sales_gmv": 0, "sales_gmv_ly": 0})
+
         def _base_of(style, goods):
             # ★MSTRD 등록 품번을 우선. 매출 시트의 style_no는 '리뉴얼 이전품번'인 경우가 있어
             #   그대로 쓰면 같은 상품이 옛 품번으로 갈라진다(양말 FMASC101 = MEASC0Z70의 구 품번,
@@ -1401,6 +1414,15 @@ try:
         for _when, _tab in (("cur", "WEEK"), ("prev", "직전WEEK")):
             try:
                 for r in read_tab(sheets, _SALES_ID, _tab):
+                    # 26FW도 같은 주간 탭에서 롤업(FW는 누계만 FWTD 별도 탭이고 주간 탭은 공용).
+                    _hfw_w = _hero_of_fw(r.get("style_no"), r.get("goods_no"))
+                    if _hfw_w:
+                        _gwf = round(_num(r.get("gmv")))
+                        _sales_wk_fw[_when][_hfw_w] = _sales_wk_fw[_when].get(_hfw_w, 0) + _gwf
+                        _bwf = _base_of(r.get("style_no"), r.get("goods_no"))
+                        if _bwf:
+                            _kf = (_hfw_w, _bwf)
+                            _sales_wk_sty_fw[_when][_kf] = _sales_wk_sty_fw[_when].get(_kf, 0) + _gwf
                     hero = _hero_of(r.get("style_no"), r.get("goods_no"))
                     if not hero:
                         continue
@@ -1428,13 +1450,18 @@ try:
                     _sd0 = _styd_fw(hero_fw, _b, _per)
                     _sd0["gmv"] += _g0
                     _sd0["qty"] += _q0
+                    _hsty_fw(hero_fw, _b, _per)["sales_gmv"] += _g0   # 성과탭 드릴다운 거래액(누판 기준 통일)
         # 26FW 전년 동기간(YoY 분모) — 누계는 전년FWTD(전년 7/1~), 나머지는 전년MTD/전년WEEK.
         for _per in _PERIODS:
             try:
                 for r in read_tab(sheets, _SALES_ID, _fw_tab_ly(_per)):
                     hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))
                     if hero_fw:
-                        _perd_fw(hero_fw, _per)["gmv_ly"] += round(_num(r.get("gmv")))
+                        _gflyv = round(_num(r.get("gmv")))
+                        _perd_fw(hero_fw, _per)["gmv_ly"] += _gflyv
+                        _bfly = _base_of(r.get("style_no"), r.get("goods_no"))
+                        if _bfly:
+                            _hsty_fw(hero_fw, _bfly, _per)["sales_gmv_ly"] += _gflyv
             except Exception as _elyf:
                 _HEALTH.append(f"{_fw_tab_ly(_per)} 로드 실패({type(_elyf).__name__}) — 26FW 거래액 YoY 미표시")
         # 26SS 전년 동기간(YoY 분모) — 전년YTD/전년MTD/전년WEEK.
@@ -1452,16 +1479,55 @@ try:
                 _HEALTH.append(f"전년{_per} 로드 실패({type(_ely).__name__}) — 거래액 YoY 미표시")
         # (1b) PMKT기간 — 퍼널 지표(전환=buy_uv/pdp_uv · 마케팅기여=mkt_gmv/mkt_pdp_uv, 캠페인기획전+외부유입)
         #      + 마케팅기여율 분모용 pmkt_gmv(직접경로 GMV). 헤드라인 GMV는 위 누판을 쓰므로 여기 gmv는 pmkt_gmv로만.
-        for r in read_tab(sheets, _SALES_ID, "PMKT기간"):
+        # ★26FW 누계 기간 정합 — 매출은 FWTD(7/1~)인데 PMKT는 달력 YTD(1/1~)라 그대로 섞으면 어긋난다.
+        #   탭에 FWTD 행이 있으면 그걸 누계 슬롯으로 쓰고, 없으면 26FW 누계 유입은 비운다(월누계·주간은 정상).
+        _pmkt_rows = read_tab(sheets, _SALES_ID, "PMKT기간")
+        _PMKT_FWTD = any(str(r.get("period") or "").strip() == "FWTD" for r in _pmkt_rows)
+        if not _PMKT_FWTD:
+            _HEALTH.append("PMKT기간에 FWTD 없음 — 26FW 누계 유입/전환은 '–'(월누계·주간은 정상)")
+
+        def _fw_slot(per):
+            """26FW 성과 슬롯 — FWTD→누계(YTD). FWTD가 없으면 달력 YTD는 버린다(기간 불일치)."""
+            if per == "FWTD":
+                return "YTD"
+            if per == "YTD" and not _PMKT_FWTD:
+                return None
+            return per if per in _PERIODS else None
+
+        for r in _pmkt_rows:
             per = str(r.get("period") or "").strip()
             hero_fw = _hero_of_fw(r.get("style_no"), r.get("goods_no"))   # 26FW 기준 퍼널 지표
-            if hero_fw and per in _PERIODS:
+            _slot_fw = _fw_slot(per)
+            if hero_fw and _slot_fw:
+                per = _slot_fw
+            if hero_fw and _slot_fw:
                 dfw = _perd_fw(hero_fw, per)
                 dfw["pmkt_gmv"] += round(_num(r.get("gmv")))
                 dfw["pdp_real"] += round(_num(r.get("pdp_uv")))
                 dfw["conv"] += round(_num(r.get("buy_uv")))
                 dfw["ad_gmv"] += round(_num(r.get("mkt_gmv")))
                 dfw["pdp_ad"] += round(_num(r.get("mkt_pdp_uv")))
+                # 전년(YoY 분모) — 26FW는 대부분 신규 품번이라 0(프론트서 '–'). 캐리오버는 실제 값이 붙는다.
+                dfw["pdp_real_ly"] = dfw.get("pdp_real_ly", 0) + round(_num(r.get("pdp_uv_ly")))
+                dfw["conv_ly"] = dfw.get("conv_ly", 0) + round(_num(r.get("buy_uv_ly")))
+                dfw["pmkt_gmv_ly"] = dfw.get("pmkt_gmv_ly", 0) + round(_num(r.get("gmv_ly")))
+                dfw["ad_gmv_ly"] = dfw.get("ad_gmv_ly", 0) + round(_num(r.get("mkt_gmv_ly")))
+                dfw["pdp_ad_ly"] = dfw.get("pdp_ad_ly", 0) + round(_num(r.get("mkt_pdp_uv_ly")))
+                # STY 드릴다운(26SS와 동일 스키마) — 품번은 MSTRD 등록 품번으로 통일(_base_of).
+                _sbf = _base_of(r.get("style_no"), r.get("goods_no"))
+                if _sbf:
+                    sf = _hsty_fw(hero_fw, _sbf, per)
+                    sf["pdp"] += round(_num(r.get("pdp_uv")))
+                    sf["buy"] += round(_num(r.get("buy_uv")))
+                    sf["gmv"] += round(_num(r.get("gmv")))
+                    sf["pdp_ly"] += round(_num(r.get("pdp_uv_ly")))
+                    sf["buy_ly"] += round(_num(r.get("buy_uv_ly")))
+                    sf["gmv_ly"] += round(_num(r.get("gmv_ly")))
+                    sf["mkt_gmv"] += round(_num(r.get("mkt_gmv")))
+                    sf["mkt_pdp"] += round(_num(r.get("mkt_pdp_uv")))
+                    sf["mkt_gmv_ly"] += round(_num(r.get("mkt_gmv_ly")))
+                    sf["mkt_pdp_ly"] += round(_num(r.get("mkt_pdp_uv_ly")))
+            per = str(r.get("period") or "").strip()      # ★26SS는 원본 period 그대로(위에서 FW 슬롯으로 덮었을 수 있음)
             hero = _hero_of(r.get("style_no"))
             if not hero or per not in _PERIODS:
                 continue
@@ -1497,6 +1563,28 @@ try:
         #   WoW = 최근 완료주 vs 직전주. pdp(유입)·buy(구매UV)·gmv(direct 거래액). 전환율 WoW는 프론트서 buy/pdp.
         _wk_keys, _hero_wk, _wk_label, _wk_span, _sty_wk = set(), {}, {}, {}, {}
         for r in read_tab(sheets, _SALES_ID, "PMKT주차"):
+            _hfw_k = _hero_of_fw(r.get("style_no"), r.get("goods_no"))
+            if _hfw_k:
+                try:
+                    _kf2 = (int(_num(r.get("yyyy"))), int(_num(r.get("week_no"))))
+                except (TypeError, ValueError):
+                    _kf2 = None
+                if _kf2:
+                    _wk_keys.add(_kf2)
+                    WF = _hero_wk_fw.setdefault(_hfw_k, {}).setdefault(_kf2, {"gmv": 0, "pdp": 0, "buy": 0, "mkt_gmv": 0, "mkt_pdp": 0})
+                    WF["gmv"] += round(_num(r.get("gmv")))
+                    WF["pdp"] += round(_num(r.get("pdp_uv")))
+                    WF["buy"] += round(_num(r.get("buy_uv")))
+                    WF["mkt_gmv"] += round(_num(r.get("mkt_gmv")))
+                    WF["mkt_pdp"] += round(_num(r.get("mkt_pdp_uv")))
+                    _swbf = _base_of(r.get("style_no"), r.get("goods_no"))
+                    if _swbf:
+                        SWF = _sty_wk_fw.setdefault(_hfw_k, {}).setdefault(_swbf, {}).setdefault(_kf2, {"pdp": 0, "buy": 0, "gmv": 0, "mkt_gmv": 0, "mkt_pdp": 0})
+                        SWF["pdp"] += round(_num(r.get("pdp_uv")))
+                        SWF["buy"] += round(_num(r.get("buy_uv")))
+                        SWF["gmv"] += round(_num(r.get("gmv")))
+                        SWF["mkt_gmv"] += round(_num(r.get("mkt_gmv")))
+                        SWF["mkt_pdp"] += round(_num(r.get("mkt_pdp_uv")))
             hero = _hero_of(r.get("style_no"), r.get("goods_no"))
             if not hero:
                 continue
@@ -1537,6 +1625,15 @@ try:
                 _phero = _hero_of(None, r.get("goods_no"))
                 _pper = str(r.get("period") or "").strip()
                 _ppath = str(r.get("path") or "").strip()
+                _pfw = _hero_of_fw(None, r.get("goods_no"))
+                _pslot = _fw_slot(_pper)                      # 26FW 경로도 누계=FWTD 기준으로
+                if _pfw and _pslot and _ppath:
+                    _pbf = hero_perf_fw.setdefault(_pfw, {"periods": {}, "season": "26FW"}).setdefault("paths", {}).setdefault(_pslot, {})
+                    _pcf = _pbf.setdefault(_ppath, {"pdp": 0, "buy": 0, "pdp_ly": 0, "buy_ly": 0})
+                    _pcf["pdp"] += round(_num(r.get("pdp_uv")))
+                    _pcf["buy"] += round(_num(r.get("buy_uv")))
+                    _pcf["pdp_ly"] += round(_num(r.get("pdp_uv_ly")))
+                    _pcf["buy_ly"] += round(_num(r.get("buy_uv_ly")))
                 if not _phero or _pper not in _PERIODS or not _ppath:
                     continue
                 _pbk = hero_perf.setdefault(_phero, {"periods": {}, "season": _HERO_SEASON}).setdefault("paths", {}).setdefault(_pper, {})
@@ -1553,8 +1650,18 @@ try:
         _path_wk = {}          # {hero: {path: {(yyyy,week): {pdp,buy}}}}
         try:
             for r in read_tab(sheets, _SALES_ID, "PMKT경로주차"):
-                _ph = _hero_of(None, r.get("goods_no"))
                 _pp = str(r.get("path") or "").strip()
+                _phf = _hero_of_fw(None, r.get("goods_no"))
+                if _phf and _pp:
+                    try:
+                        _pkf = (int(_num(r.get("yyyy"))), int(_num(r.get("week_no"))))
+                    except (TypeError, ValueError):
+                        _pkf = None
+                    if _pkf:
+                        _pwf = _path_wk_fw.setdefault(_phf, {}).setdefault(_pp, {}).setdefault(_pkf, {"pdp": 0, "buy": 0})
+                        _pwf["pdp"] += round(_num(r.get("pdp_uv")))
+                        _pwf["buy"] += round(_num(r.get("buy_uv")))
+                _ph = _hero_of(None, r.get("goods_no"))
                 if not _ph or not _pp:
                     continue
                 try:
@@ -1634,6 +1741,59 @@ try:
                     for _pp in _PERIODS}})
             _stys.sort(key=lambda x: -x["periods"]["YTD"]["pdp"])
             P["stys"] = _stys
+
+        # ★26FW 히어로 성과 조립 — 26SS와 같은 주차 키(_cur_k/_prev_k)·같은 일평균 정규화를 쓴다.
+        #   periods는 hero_perf_fw(FWTD 누판 + PMKT 퍼널), stys는 hero_sty_pm_fw.
+        for _hf, _PF in hero_perf_fw.items():
+            _hwf = _hero_wk_fw.get(_hf, {})
+            _cf = _hwf.get(_cur_k, {}) if _cur_k else {}
+            _pf = _hwf.get(_prev_k, {}) if _prev_k else {}
+            _PF["wow"] = {
+                "cur_w": f"W{_cur_k[1]}" if _cur_k else "", "prev_w": f"W{_prev_k[1]}" if _prev_k else "",
+                "cur_from": _wk_label.get(_cur_k, ""), "prev_from": _wk_label.get(_prev_k, ""),
+                "pdp": round(_cf.get("pdp", 0) / _cd), "pdp_p": round(_pf.get("pdp", 0) / _pd),
+                "buy": round(_cf.get("buy", 0) / _cd), "buy_p": round(_pf.get("buy", 0) / _pd),
+                "gmv": round(_cf.get("gmv", 0) / _cd), "gmv_p": round(_pf.get("gmv", 0) / _pd),
+                "mkt_gmv": round(_cf.get("mkt_gmv", 0) / _cd), "mkt_gmv_p": round(_pf.get("mkt_gmv", 0) / _pd),
+                "mkt_pdp": round(_cf.get("mkt_pdp", 0) / _cd), "mkt_pdp_p": round(_pf.get("mkt_pdp", 0) / _pd),
+                "sales_gmv": _sales_wk_fw["cur"].get(_hf, 0), "sales_gmv_p": _sales_wk_fw["prev"].get(_hf, 0),
+            }
+            _hpwf = _path_wk_fw.get(_hf, {})
+            for _perbf in (_PF.get("paths") or {}).values():
+                for _pnf, _pcell2 in _perbf.items():
+                    _wcf = (_hpwf.get(_pnf, {}).get(_cur_k, {}) if _cur_k else {})
+                    _wpf = (_hpwf.get(_pnf, {}).get(_prev_k, {}) if _prev_k else {})
+                    _pcell2["pdp_w"] = round(_wcf.get("pdp", 0) / _cd)
+                    _pcell2["pdp_p"] = round(_wpf.get("pdp", 0) / _pd)
+                    _pcell2["buy_w"] = round(_wcf.get("buy", 0) / _cd)
+                    _pcell2["buy_p"] = round(_wpf.get("buy", 0) / _pd)
+            _stysf = []
+            _swhf = _sty_wk_fw.get(_hf, {})
+            for _bf, _persf in hero_sty_pm_fw.get(_hf, {}).items():
+                _yf = _persf.get("YTD", {})
+                if (_yf.get("pdp", 0) or 0) <= 0 and (_yf.get("sales_gmv", 0) or 0) <= 0:
+                    continue
+                _swcf = (_swhf.get(_bf, {}).get(_cur_k, {}) if _cur_k else {})
+                _swpf = (_swhf.get(_bf, {}).get(_prev_k, {}) if _prev_k else {})
+                _stysf.append({"style": _bf,
+                    "wow": {"pdp": round(_swcf.get("pdp", 0) / _cd), "pdp_p": round(_swpf.get("pdp", 0) / _pd),
+                            "buy": round(_swcf.get("buy", 0) / _cd), "buy_p": round(_swpf.get("buy", 0) / _pd),
+                            "gmv": round(_swcf.get("gmv", 0) / _cd), "gmv_p": round(_swpf.get("gmv", 0) / _pd),
+                            "mkt_gmv": round(_swcf.get("mkt_gmv", 0) / _cd), "mkt_gmv_p": round(_swpf.get("mkt_gmv", 0) / _pd),
+                            "mkt_pdp": round(_swcf.get("mkt_pdp", 0) / _cd), "mkt_pdp_p": round(_swpf.get("mkt_pdp", 0) / _pd),
+                            "sales_gmv": _sales_wk_sty_fw["cur"].get((_hf, _bf), 0),
+                            "sales_gmv_p": _sales_wk_sty_fw["prev"].get((_hf, _bf), 0)},
+                    "periods": {
+                    _ppf: {"pdp": (_persf.get(_ppf) or {}).get("pdp", 0), "buy": (_persf.get(_ppf) or {}).get("buy", 0),
+                           "gmv": (_persf.get(_ppf) or {}).get("gmv", 0),
+                           "pdp_ly": (_persf.get(_ppf) or {}).get("pdp_ly", 0), "buy_ly": (_persf.get(_ppf) or {}).get("buy_ly", 0),
+                           "gmv_ly": (_persf.get(_ppf) or {}).get("gmv_ly", 0),
+                           "mkt_gmv": (_persf.get(_ppf) or {}).get("mkt_gmv", 0), "mkt_pdp": (_persf.get(_ppf) or {}).get("mkt_pdp", 0),
+                           "mkt_gmv_ly": (_persf.get(_ppf) or {}).get("mkt_gmv_ly", 0), "mkt_pdp_ly": (_persf.get(_ppf) or {}).get("mkt_pdp_ly", 0),
+                           "sales_gmv": (_persf.get(_ppf) or {}).get("sales_gmv", 0), "sales_gmv_ly": (_persf.get(_ppf) or {}).get("sales_gmv_ly", 0)}
+                    for _ppf in _PERIODS}})
+            _stysf.sort(key=lambda x: -x["periods"]["YTD"]["pdp"])
+            _PF["stys"] = _stysf
         _wk_labels = []
         _pdp_wk_labels = []
     except Exception as _eh:
@@ -1661,17 +1821,24 @@ try:
 
     # 히어로 시즌 — 26SS 스냅샷(hero_sty_26ss.json)의 season을 전 히어로에 부여(위 _perd에서 P["season"]=_HERO_SEASON).
     #   26FW 전환 시엔 스냅샷 파일만 교체(season·style_to_hero).
+    # ★26SS(hero_perf) + 26FW(hero_perf_fw) 두 시즌을 함께 싣는다 — 화면 시즌 토글이 이걸로 갈린다.
+    #   26FW는 MSTRD `HERO STY` 매핑 기반이라 스타일/히어로가 추가되면 자동으로 목록에 붙는다.
+    _perf_src = list(hero_perf.items()) + [(k, v) for k, v in (hero_perf_fw or {}).items()
+                                           if v.get("periods")]
     hero_list = sorted(
         [{"name": k, "periods": v.get("periods", {}),
           "wow": v.get("wow", {}), "stys": v.get("stys", []),
           "paths": v.get("paths", {}),
           "season": v.get("season", ""),
           "goal": _goals.get(k, {}).get("gmv", 0),
-          "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in hero_perf.items()],
+          "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in _perf_src],
         key=lambda x: -(x["periods"].get("YTD", {}).get("gmv", 0)))
     if not hero_list:
         _HEALTH.append("히어로 PMKT 성과 0건 — 트래커 구조 확인")
-    print("IMC 히어로 시즌: " + ", ".join(f"{h['name']}={h['season']}" for h in hero_list))
+    _scnt = {}
+    for _h in hero_list:
+        _scnt[_h["season"]] = _scnt.get(_h["season"], 0) + 1
+    print("IMC 히어로 시즌: " + " · ".join(f"{k} {v}종" for k, v in sorted(_scnt.items())))
 
     # ★조용한 0 덮어쓰기 방지(2026-07-15). 소스 탭 읽기가 실패하면(이름 변경·권한·일시 오류) 집계가
     #   0으로 나오는데 그대로 주입하면 라이브 실데이터가 지워진다 — 실제로 오피셜 IG 탭이
