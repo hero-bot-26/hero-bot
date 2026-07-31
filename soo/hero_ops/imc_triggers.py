@@ -202,6 +202,11 @@ def load_26fw_prep(sheets, sid=None):
         sty = str(r[1]).strip() if len(r) > 1 and r[1] is not None else ""
         if not sty or sty == "-":
             continue
+        code = str(r[16]).strip() if len(r) > 16 and r[16] is not None else ""
+        # ★컬러행만 집계(사용자 확정 2026-07-31) — 신품번+컬러에 컬러가 없는 '대표uid행'은 제외.
+        #   대시보드 시트도 같은 기준(컬러 없는 행 제거)이라 두 화면의 준비수량이 일치한다.
+        if not code or "-" not in code:
+            continue
         t, o, f = (_n(r[c]) if len(r) > c else 0.0 for c in _PREP_COLS)
         if not (t or o or f):
             continue

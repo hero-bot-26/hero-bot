@@ -78,6 +78,18 @@ jobs:
             git push
           fi
 
+      # 26FW 대시보드 시트 준비물량 자동 보정 — MSTRD SKU에 새 컬러가 생기면 히어로 탭에 행을 채운다.
+      #   ★행 삭제·수식 재배치는 하지 않는다(블록 범위 안쪽 삽입 → 소계·총계 수식이 자동 확장).
+      #   실패해도 앱 갱신엔 영향 없음(별개 시트).
+      - name: 대시보드 준비물량 보정 (MSTRD 기준)
+        if: always()
+        continue-on-error: true
+        env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: python _dash_fix_colors.py --apply
+
       # 히어로 단계 카운트다운 슬랙 알람 (TEST_ONLY=True → 본인 DM 테스트만).
       # SLACK_BOT_TOKEN 시크릿 없으면 triggers 가 자동 스킵. 실패해도 위 app.html 작업엔 영향 X.
       - name: 히어로 단계 알람 (테스트)
