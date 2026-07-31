@@ -395,6 +395,12 @@ try:
     #   → 하나라도 어긋나면 실적·PMKT 블록을 '주입만' 건너뛰어 앱 직전값(하루 stale, 대신 정합)을 유지한다.
     _SALES_ASOF = (TODAY - datetime.timedelta(days=1)).strftime("%Y%m%d")
     _SALES_FRESH, _SALES_BAD = _check_fresh(sheets, _SALES_ID, _SALES_ASOF)
+    # ★그룹별 판정(2026-07-31) — 매출 탭과 PMKT 계열은 노트북에서 따로 채워져 한쪽만 늦는 날이 있다.
+    #   한 덩어리로 막으면 멀쩡한 매출까지 옛값으로 묶여 '누계<당월' 같은 모순이 남는다.
+    _SALES_TAB_SET = {"YTD", "MTD", "WEEK", "DAY", "FWTD", "직전WEEK"}
+    _BAD_TABS = {b.split()[0] for b in _SALES_BAD}
+    _FRESH_SALES = not (_BAD_TABS & _SALES_TAB_SET)      # 매출(대시보드·홈 26FW)
+    _FRESH_PMKT = not (_BAD_TABS - _SALES_TAB_SET)       # PMKT·퍼널·경로·PDP일별
     if not _SALES_FRESH:
         print(f"[신선도] 실적시트 기준일 불일치 {len(_SALES_BAD)}건 — 실적·PMKT 주입 스킵(직전값 유지): "
               + " · ".join(_SALES_BAD[:6]))
@@ -456,7 +462,7 @@ try:
         print(f"DASHBOARD 26FW: 히어로 {len(_fw_heroes)}개 추가 (누계 탭 {_fw_tabs['YTD'][0]})")
     except Exception as _efw:
         print(f"[주의] DASHBOARD 26FW 블록 스킵 — 26SS만 유지: {type(_efw).__name__}: {_efw}")
-    if _SALES_FRESH:
+    if _FRESH_SALES:
         dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
         html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
         assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
@@ -1696,7 +1702,7 @@ try:
     def _hsig(lst):
         return sum((h.get("periods", {}).get("YTD", {}) or {}).get("pdp_real", 0) for h in (lst or []))
     # ★신선도 게이트 — 실적시트 기준일이 섞인 날은 PMKT도 같은 시트라 믿을 수 없다. 직전값 유지.
-    if hero_list and not _SALES_FRESH:
+    if hero_list and not (_FRESH_SALES and _FRESH_PMKT):
         _prev_heroes = _prev.get("hero") or []
         if _prev_heroes:
             hero_list = _prev_heroes
@@ -1975,6 +1981,25 @@ try:
     _grk = {"S": 0, "A": 1, "E": 2}
     _fw_list.sort(key=lambda x: (x["launch"] or "9999", 0 if x["status"] == "MD기획중" else 1, _grk.get(x["grade"], 9)))
     launch_obj = {"as_of": TODAY.isoformat(), "heroes": _fw_list}
+    # ★신선도 게이트 — 실적시트 기준일이 섞인 날엔 홈 26FW 컬럼의 매출만 직전값으로 되돌린다.
+    #   (2026-07-31 사고: 게이트가 DASHBOARD·PMKT만 막고 여기는 놔둬서, MTD 탭은 갱신됐는데 FWTD 탭은
+    #    전날치인 상태로 주입 → 같은 7/1~ 기간인데 '누계 < 당월'이 되는 모순이 화면에 떴다.)
+    #   발매일·상태·STY 스케줄은 MSTRD/무탠 기준이라 매출과 무관 → 그대로 최신값 유지.
+    if not _FRESH_SALES:
+        try:
+            _plm = re.search(r"const LAUNCH_26FW = (\{.*?\});", html2, re.DOTALL)
+            _prev_sales = {h["name"]: h.get("sales") for h in json.loads(_plm.group(1)).get("heroes", [])} if _plm else {}
+            _rs = 0
+            for _h in launch_obj.get("heroes", []):
+                _ps = _prev_sales.get(_h["name"])
+                if _ps:
+                    _h["sales"] = _ps
+                    _rs += 1
+            if _rs:
+                print(f"[보존] 신선도 불일치 — 홈 26FW 매출 직전값 유지({_rs}종)")
+                _HEALTH.append(f"실적시트 기준일 불일치 → 홈 26FW 매출 직전값 유지({_rs}종)")
+        except Exception as _els:
+            print(f"[주의] 홈 26FW 매출 직전값 보존 실패: {type(_els).__name__}: {_els}")
     launch_block = "const LAUNCH_26FW = " + json.dumps(launch_obj, ensure_ascii=False) + ";"
     html2, nlaunch = re.subn(r"const LAUNCH_26FW = \{.*?\};", lambda _m: launch_block, html2, count=1, flags=re.DOTALL)
     _nsold = sum(1 for x in _fw_list if x["sales"])
