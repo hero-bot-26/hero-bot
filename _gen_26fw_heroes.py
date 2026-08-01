@@ -1250,6 +1250,50 @@ try:
         d = _re3.sub(r"[^\d]", "", str(s or ""))
         return int(d) if d else 0
 
+    # ── ★손입력 원천 '마지막 입력일' 감시(2026-08-01) ─────────────────────────
+    #   SNS/CRM 성과 탭은 운영팀이 손으로 채우는 표라 **입력이 멈춰도 앱은 옛 누적치를 그대로 보여준다**
+    #   (실제로 우먼 IG는 2월, CRM은 작년 12월에서 멈춰 있었다). 시트 수정시각으론 못 잡으니
+    #   **표에 적힌 마지막 날짜**로 판정한다. 'M/D'는 연도가 없어 '오늘 이전 + 365일 이내'로 해석한다.
+    _LAST_INPUT = {}
+
+    def _last_md_tabs(dates_by_tab):
+        """열린 탭('(26.7~)'처럼 끝이 안 닫힌 것) 우선, 그 탭의 **마지막 행** 날짜."""
+        import re as _re_t
+        if not dates_by_tab:
+            return None
+        open_tabs = [t for t in dates_by_tab if _re_t.search(r"\(\d{2}\.\d{1,2}~\)\s*$", t)]
+        tab = (open_tabs or list(dates_by_tab))[-1]
+        hint = _re_t.search(r"\((\d{2})\.\d{1,2}~\)", tab)
+        year = 2000 + int(hint.group(1)) if hint else None
+        for v in reversed(dates_by_tab[tab]):          # 표는 시간순 → 뒤에서부터 첫 유효 날짜
+            d = _last_md([v], year=year)
+            if d:
+                return d
+        return None
+
+    def _last_md(vals, year=None):
+        best = None
+        for v in vals:
+            m = _re3.match(r"^\s*(\d{1,2})[/.-](\d{1,2})\s*$", str(v or "")) if False else None
+            import re as _re_l
+            m = _re_l.match(r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})", str(v or "")) or \
+                _re_l.match(r"^\s*(\d{1,2})[/.](\d{1,2})\s*$", str(v or ""))
+            if not m:
+                continue
+            try:
+                if len(m.groups()) == 3:
+                    d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                else:
+                    mo, da = int(m.group(1)), int(m.group(2))
+                    d = datetime.date(year or TODAY.year, mo, da)
+                    if d > TODAY:                       # 연도 힌트가 없을 때만 작년으로 되돌린다
+                        d = datetime.date((year or TODAY.year) - 1, mo, da)
+            except ValueError:
+                continue
+            if d <= TODAY and (best is None or d > best):
+                best = d
+        return best.isoformat() if best else None
+
     def _agg_ig(key, ch):  # 헤더명 기반(#4)
         # ★운영팀이 성과 탭을 기간별로 쪼갬(오피셜 IG = '(26.7~)' + '(~26.6)') → 제목에 key가 든 탭
         #   전부 합산. 앞으로 '(26.10~)'이 더 생겨도 자동 편입. 두 탭에 같은 게시물이 겹쳐 있어
@@ -1263,6 +1307,7 @@ try:
         # ★중복 제거는 '탭 간'만. 한 탭 안의 같은 (발행일+소재)는 서로 다른 게시물일 수 있어
         #   (우먼 탭은 유형 컬럼이 없어 피드/릴스 구분 불가) 건드리지 않는다.
         seen_prev, dupes = set(), 0
+        _dates_by_tab = {}
         for tab in tabs:
             cur = set()
             # 우먼(4-2)은 유형·인기게시물·히어로콘텐츠 컬럼이 없음 → optional 처리(오탐 방지)
@@ -1275,6 +1320,7 @@ try:
                 if not title or (v == 0 and _n(_gv(r, cm, "reach")) == 0):
                     continue
                 sig = (_gv(r, cm, "date"), title)
+                _dates_by_tab.setdefault(tab, []).append(_gv(r, cm, "date"))   # 마지막 입력일 판정용
                 if sig in seen_prev:  # 앞선 탭에 이미 있는 게시물(기간 분할 경계 중복)
                     dupes += 1
                     continue
@@ -1289,7 +1335,11 @@ try:
                     agg["hero"] += 1
                     tops.append({"ch": ch, "title": title[:40], "date": _gv(r, cm, "date"), "views": v, "type": _gv(r, cm, "form")})
             seen_prev |= cur
-        print(f"성과 '{ch} IG': 탭 {tabs} → {agg['posts']}건(탭간 중복 {dupes} 제외)")
+        # ★'지금 채우고 있는 탭'의 마지막 행 날짜로 본다. 과거 탭(이름이 '(~26.6)')엔 작년 날짜가
+        #   섞여 있어 오늘 기준 연도 추정을 하면 엉뚱하게 최신으로 잡힌다(8/1 → 올해로 오인).
+        _LAST_INPUT[f"{ch} IG"] = _last_md_tabs(_dates_by_tab)
+        print(f"성과 '{ch} IG': 탭 {tabs} → {agg['posts']}건(탭간 중복 {dupes} 제외)"
+              + (f" · 마지막 입력 {_LAST_INPUT[f'{ch} IG']}" if _LAST_INPUT.get(f"{ch} IG") else ""))
         if agg["posts"] == 0:
             _HEALTH.append(f"성과 '{key}' 0건")
         return agg, tops
@@ -1300,7 +1350,8 @@ try:
     # CRM(시트16): 채널/발송수/GMV/ROAS (헤더명 기반)
     crm = {"count": 0, "sends": 0, "gmv": 0, "roas": 0}
     _ro_sum = _ro_n = 0
-    rows, cm = _sns_table("시트16", {"ch": ["채널"], "sends": ["발송수"], "gmv": ["GMV"], "roas": ["ROAS"]},
+    rows, cm = _sns_table("시트16", {"ch": ["채널"], "sends": ["발송수"], "gmv": ["GMV"], "roas": ["ROAS"],
+                                    "date": ["발송일"]},
                           sid=_src("crm_perf") or SNS_SHEET_ID)
     for r in rows:
         g = _n(_gv(r, cm, "gmv"))
@@ -1316,6 +1367,17 @@ try:
     crm["roas"] = round(_ro_sum / _ro_n) if _ro_n else 0
     if crm["count"] == 0:
         _HEALTH.append("CRM(시트16) 성과 0건")
+    _LAST_INPUT["CRM"] = _last_md([_gv(r, cm, "date") for r in rows])
+    # 임계: IG는 자주 올리니 10일, CRM 발송은 뜸해서 45일
+    for _src_nm, _lim in (("오피셜 IG", 10), ("우먼 IG", 10), ("CRM", 45)):
+        _ld = _LAST_INPUT.get(_src_nm)
+        if not _ld:
+            continue
+        _gap = (TODAY - datetime.date.fromisoformat(_ld)).days
+        print(f"[신선도] {_src_nm} 성과 — 마지막 입력 {_ld} ({_gap}일 전)" + (" ★정체" if _gap >= _lim else ""))
+        if _gap >= _lim:
+            _HEALTH.append(f"★원천 정체 — {_src_nm} 성과 입력이 {_gap}일째 멈춤(마지막 {_ld}) "
+                           f"— SNS/CRM 통합관리 시트 확인 필요")
 
     # 예산(PMKT/CRM 예산): 구분 라벨 행 × 월 컬럼 (헤더명 기반)
     _mlbl = ["2026/01", "2026/02", "2026/03", "2026/04", "2026/05", "2026/06"]
@@ -2151,6 +2213,10 @@ try:
             _HEALTH.append(f"히어로 PMKT 0건 → 기존값 보존({len(_prev_heroes)}종)")
             print(f"[보존] 히어로 PMKT 읽기 0 — 앱 기존값 유지({len(_prev_heroes)}종)")
 
+    # 마지막 입력일을 카드에 함께 싣는다 — 손입력 원천이 멈춘 걸 화면에서 바로 알 수 있게.
+    agg_off["last_input"] = _LAST_INPUT.get("오피셜 IG") or ""
+    agg_wm["last_input"] = _LAST_INPUT.get("우먼 IG") or ""
+    crm["last_input"] = _LAST_INPUT.get("CRM") or ""
     perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget,
             "highlights": highlights, "hero": hero_list,
             # wks[].p 의 첫 값은 이 배열의 인덱스(경로명 반복 저장을 피하려고 인덱스로 넣는다)
