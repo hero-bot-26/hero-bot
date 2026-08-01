@@ -140,6 +140,30 @@ else:
     print(f"PLM 소스(드라이브, 데이터브릭스버전 탭): {meta['name']} (수정 {meta['modifiedTime']})")
 plm = {rec.style_no: rec for rec in recs}
 
+# ── ★원천 신선도 감시(2026-08-01) ────────────────────────────────────────────
+#   PLM → Databricks 적재가 7/22 이후 멈췄는데도 그 아래 파이프(테이블→시트→앱)는 매일 정상
+#   동작해서, 앱이 열흘째 같은 값을 새 값처럼 보여줬다. 파일 수정시각으론 못 잡는다(매일 갱신됨)
+#   → **내용 지문**을 남겨 '며칠째 안 바뀌었는지'로 판단한다. 임계 넘으면 헬스 경고 → CI 슬랙 DM.
+#   적재 주기 실측(2026): 5/11·5/15·5/18·5/26·5/29·6/1·6/4·6/5·6/9·6/23·6/29·7/6·7/13·7/22
+#   ≈ 주 1회 → 임계 10일.
+_FRESH_WATCH = []
+try:
+    from soo.hero_ops import freshness_watch as _fw
+    from soo.hero_ops.plm_ingest import DBX_SHEET_ID as _FW_SHEET
+    _fp_plm = _fw.fingerprint(sorted(
+        f"{r.style_no}|{r.plm_status}|" + "|".join(
+            f"{n}:{(r.stages.get(n).actual if r.stages.get(n) else '')}" for n in sorted(r.stages))
+        for r in recs))
+    _st = _fw.track(sheets, _FW_SHEET, "plm_milestone", _fp_plm, TODAY, stale_days=10,
+                    note="PLM 마일스톤(데이터브릭스 적재)")
+    print(f"[신선도] PLM 마일스톤 — 마지막 변경 {_st['last_changed']} ({_st['days']}일 전)"
+          + (" ★정체" if _st["stale"] else ""))
+    if _st["stale"]:
+        _FRESH_WATCH.append(f"PLM 마일스톤이 {_st['days']}일째 그대로 (마지막 변경 {_st['last_changed']}) "
+                            f"— PLM→Databricks 적재 확인 필요")
+except Exception as _efw:
+    print(f"[신선도] PLM 감시 스킵: {type(_efw).__name__}: {_efw}")
+
 # 앱 "완료 클릭" 기록(단계완료 탭) — 수동 단계 done 판정에 반영(재생성해도 유지).
 from soo.hero_ops.triggers import load_completions, load_quantity_inputs, load_grade_inputs, load_mstrd_inputs, parse_mstrd_grades
 completions = load_completions(sheets)
@@ -551,6 +575,9 @@ except Exception as e:
 # ── 데이터 갱신 헬스체크 수집 (비어있음/구조변경 등 '조용한 실패' 가시화) ──
 _HEALTH = []
 _HEALTH.extend(_EARLY_MSGS)   # ★_HEALTH 정의 전(PO수량 블록)에 쌓인 경고
+# 원천 정체 경고(슬랙 DM으로 나간다) — 27SS 감시는 아래에서 채워지므로 마지막에 한 번 더 흡수한다.
+_HEALTH.extend("★원천 정체 — " + _m for _m in (globals().get("_FRESH_WATCH") or []))
+_FRESH_WATCH = []
 _HEALTH.extend(_STALE_MSGS)   # ★_HEALTH 정의 전(대시보드 블록)에 쌓인 경고를 여기서 합류시킨다
 SNS_SHEET_ID = "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE"  # [무탠다드] SNS/CRM 콘텐츠 통합 관리
 TRACKER_SHEET_ID = "1oz6zM-x2nqaDSAufWJ2a-QZh-1F6LQipttNkVKoFAn8"  # 캠페인 운영관리 트래커([히어로 PDP]에 운영 히어로 품목)
@@ -2208,6 +2235,29 @@ try:
     sched27, warns27 = load_27ss_sched(sheets, _src("plm_27ss_req"), today=TODAY, only=_cand)
     if not sched27:
         raise ValueError("스케줄 0건 — 조용한 0 덮어쓰기 방지로 기존값 유지")
+    try:                                   # 27SS 작업의뢰도 같은 감시(멈추면 단계 진척이 굳는다)
+        from soo.hero_ops import freshness_watch as _fw2
+        from soo.hero_ops.plm_ingest import DBX_SHEET_ID as _FW_SHEET2
+        _fp27 = _fw2.fingerprint(sorted(
+            f"{k}|" + "|".join(v.get("dates") or []) for k, v in sched27.items()))
+        _st27 = _fw2.track(sheets, _FW_SHEET2, "plm_27ss_req", _fp27, TODAY, stale_days=10,
+                           note="27SS 작업의뢰 기획시트")
+        print(f"[신선도] 27SS 작업의뢰 — 마지막 변경 {_st27['last_changed']} ({_st27['days']}일 전)"
+              + (" ★정체" if _st27["stale"] else ""))
+        if _st27["stale"]:
+            # ★이 블록은 헬스체크 출력보다 뒤라서 _HEALTH에 넣어도 이미 늦다 → 여기서 직접 통지한다.
+            _msg27 = (f"27SS 작업의뢰 기획시트가 {_st27['days']}일째 그대로 "
+                      f"(마지막 변경 {_st27['last_changed']})")
+            _HEALTH.append("★원천 정체 — " + _msg27)
+            print("[HEALTHCHECK] ★원천 정체 — " + _msg27)
+            if os.environ.get("SLACK_BOT_TOKEN"):
+                try:
+                    from soo.hero_ops import notify as _nt27
+                    _nt27.send("⚠️ 히어로 앱 원천 정체 (" + TODAY.isoformat() + ")\n- " + _msg27)
+                except Exception:
+                    pass
+    except Exception as _e27f:
+        print(f"[신선도] 27SS 감시 스킵: {type(_e27f).__name__}: {_e27f}")
     blk = "const STY_SCHED_27SS = " + json.dumps(sched27, ensure_ascii=False, indent=2) + ";"
     html2, ns27 = re.subn(r"const STY_SCHED_27SS = \{.*?\n\};", blk, html2, count=1, flags=re.DOTALL)
 
