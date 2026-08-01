@@ -467,6 +467,25 @@ try:
             _fh["ytd_from"] = "2026-07-01" if _fw_tabs["YTD"][0] == "FWTD" else None   # 앱 라벨용
         dash["heroes"] = dash["heroes"] + _fw_heroes
         print(f"DASHBOARD 26FW: 히어로 {len(_fw_heroes)}개 추가 (누계 탭 {_fw_tabs['YTD'][0]})")
+        # ★시즌 뒤집힘 트립와이어(2026-08-01 사고 재발 방지) — 26SS 블록 히어로가 26FW로 표시되는 사고가
+        #   달이 바뀌는 날 조용히 났다. 배지는 이제 force_season으로 고정돼 있지만, 다른 경로로 다시
+        #   틀어지면 여기서 잡아 슬랙까지 올린다(주입은 계속 — 값 자체는 정상이므로).
+        _exp_ss = set(_map26["style_to_hero"].values()) | set(_map26["goods_to_hero"].values())
+        _exp_fw = set(_fw_map["goods_to_hero"].values()) | set((_fw_map.get("style_to_hero") or {}).values())
+        _bad_season = [f"{h.get('name')}={h.get('season')}" for h in dash["heroes"]
+                       if h.get("season") == "26SS" and h.get("name") not in _exp_ss]
+        _bad_season += [f"{h.get('name')}={h.get('season')}" for h in dash["heroes"]
+                        if h.get("season") == "26FW" and h.get("name") not in _exp_fw]
+        if _bad_season:
+            _HEALTH.append("★시즌 배지 불일치 — " + " · ".join(_bad_season[:6]))
+            print("[경고] 시즌 배지가 매핑과 안 맞는 히어로: " + " · ".join(_bad_season[:10]))
+        _sc_dash = {}
+        for _h in dash["heroes"]:
+            _sc_dash[_h.get("season")] = _sc_dash.get(_h.get("season"), 0) + 1
+        print("DASHBOARD 시즌 분포: " + " · ".join(f"{k} {v}종" for k, v in sorted(_sc_dash.items())))
+        if _sc_dash.get("26SS", 0) < 10:      # 26SS는 확정 15종 — 급감 = 시즌 배지 사고
+            _HEALTH.append(f"★시즌 배지 이상 — 26SS 히어로가 {_sc_dash.get('26SS', 0)}종뿐(정상 15종)")
+            print(f"[경고] 26SS 히어로 {_sc_dash.get('26SS', 0)}종 — 시즌 배지 뒤집힘 의심")
     except Exception as _efw:
         print(f"[주의] DASHBOARD 26FW 블록 스킵 — 26SS만 유지: {type(_efw).__name__}: {_efw}")
     if _FRESH_SALES:

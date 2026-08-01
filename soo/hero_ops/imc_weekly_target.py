@@ -257,16 +257,29 @@ def load_source(drive):
 
 # ── 1-b) 신규 입고 원천 (무탠본부_오더시트 MD투입) ──────────────────────────
 def load_hero_styles(sheets) -> dict[str, str]:
-    """26FW 대시보드 히어로 탭 B열 → {STY: 히어로명}. 중복 STY는 먼저 나온 히어로에 귀속."""
+    """26FW 대시보드 히어로 탭 B열 → {STY: 히어로명}. 중복 STY는 먼저 나온 히어로에 귀속.
+
+    ★죽은 블록은 세지 않는다(2026-08-01). 히어로가 다른 품목으로 옮겨가면 옛 탭에 **품번만 남은 빈 블록**이
+    남는데(컬러키 C열이 비어 있고 헤더는 '0SKU'), 그걸 소유로 세는 바람에 실제 소유 탭과 충돌해
+    "여러 히어로 탭에 같은 STY" 오류로 매일 주입이 멈췄다(MWFNPAA09 커브드팬츠↔웜 팬츠).
+    → **컬러키(C열 `STY-XX`)가 하나라도 살아 있는 탭만** 그 STY의 소유로 본다.
+    """
     res = sheets.spreadsheets().values().batchGet(
         spreadsheetId=DASH_SHEET_ID,
-        ranges=[f"'{h}'!{DASH_STY_RANGE}" for h in HERO_LABELS]).execute()["valueRanges"]
+        ranges=[f"'{h}'!A13:C400" for h in HERO_LABELS]).execute()["valueRanges"]
+    live = {}          # (hero, sty) → 살아있는 컬러키 수
+    for hero, vr in zip(HERO_LABELS, res):
+        for r in vr.get("values", []):
+            sty = str(r[1]).strip() if len(r) > 1 else ""
+            key = str(r[2]).strip() if len(r) > 2 else ""
+            if sty and key.startswith(sty + "-"):
+                live[(hero, sty)] = live.get((hero, sty), 0) + 1
     sty2hero, dupes = {}, []
     for hero, vr in zip(HERO_LABELS, res):
         for r in vr.get("values", []):
-            sty = str(r[0]).strip() if r else ""
-            if not sty:
-                continue
+            sty = str(r[1]).strip() if len(r) > 1 else ""
+            if not sty or not live.get((hero, sty)):
+                continue                      # 빈(이동·폐기) 블록 — 소유로 세지 않는다
             if sty in sty2hero and sty2hero[sty] != hero:
                 dupes.append(f"{sty}({sty2hero[sty]}↔{hero})")
             sty2hero.setdefault(sty, hero)
