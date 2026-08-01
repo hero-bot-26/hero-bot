@@ -2210,6 +2210,22 @@ try:
         raise ValueError("스케줄 0건 — 조용한 0 덮어쓰기 방지로 기존값 유지")
     blk = "const STY_SCHED_27SS = " + json.dumps(sched27, ensure_ascii=False, indent=2) + ";"
     html2, ns27 = re.subn(r"const STY_SCHED_27SS = \{.*?\n\};", blk, html2, count=1, flags=re.DOTALL)
+
+    # ── 27SS PO 수량(오더시트 MD투입 타겟시즌=2027SS) ─────────────────────────
+    #   ★27SS 보드는 stage8.poQuantities가 통째로 비어 있어 수량 뷰의 'PO 전송'이 항상 '—'였다.
+    #   t=계획 발주수량(4채널 합) · plm=그중 **PLM PO 번호가 찍힌 발행분**(사용자 지시: PLM 기준이 정확).
+    try:
+        from soo.hero_ops.po_ingest import parse_po_qty as _ppq
+        _po27 = _ppq(sheets, "2027SS")
+        _po27_blk = {k: {"t": v["po"]["t"], "plm": (v.get("plm") or {}).get("t", 0)}
+                     for k, v in _po27.items() if v["po"]["t"]}
+        if _po27_blk:
+            _b27 = "const PO_QTY_27SS = " + json.dumps(_po27_blk, ensure_ascii=False, indent=2) + ";"
+            html2, _n27p = re.subn(r"const PO_QTY_27SS = \{.*?\n\};", _b27, html2, count=1, flags=re.DOTALL)
+            print(f"27SS PO수량 주입: {len(_po27_blk)} 스타일 · 계획 {sum(v['t'] for v in _po27_blk.values()):,}"
+                  f" · PLM 발행 {sum(v['plm'] for v in _po27_blk.values()):,} (교체 {_n27p})")
+    except Exception as _ep27:
+        print(f"[주의] 27SS PO수량 로드 실패 — 직전값 유지: {type(_ep27).__name__}: {_ep27}")
     assert ns27 == 1, f"STY_SCHED_27SS 교체 실패 (matched {ns27})"
     _dl = sum(1 for v in sched27.values() if "delayed" in v["stages"])
     print(f"27SS 스케줄: {len(sched27)} STY 주입 (지연 {_dl}) / 후보 {len(_cand or [])}")

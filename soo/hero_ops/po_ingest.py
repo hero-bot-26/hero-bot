@@ -39,6 +39,12 @@ _HEAD_ALIASES = {
     "chn_on": ("차이나 온라인",),
     "chn_off": ("차이나 오프라인",),
 }
+# 선택 컬럼 — 없으면 그냥 건너뛴다(필수 아님).
+#   ★'PLM PO' = PLM에서 실제로 PO가 발행돼 번호가 찍힌 행. 오더시트 수량은 '계획'이고
+#     이 번호가 있는 행만 '발행분'이다(사용자 지적 2026-08-01: "PO 수량은 PLM 기준이 정확").
+_OPT_ALIASES = {
+    "plm_po": ("PLM PO", "PLM PO NO", "PLM_PO"),
+}
 CHANNELS = ("dom_on", "dom_off", "chn_on", "chn_off")
 STYLE_RE = re.compile(r"^M[A-Z0-9]{8}$")
 
@@ -90,6 +96,11 @@ def parse_po_qty(sheets, season, sheet_id=PO_SHEET_ID) -> dict:
         raise RuntimeError(
             f"MD투입 헤더 못 찾음: {missing} — 후보 {[_HEAD_ALIASES[k] for k in missing]} / "
             f"R{_HEADER_ROW} 실제 헤더 {[n for n in names if n][:40]}")
+    for key, aliases in _OPT_ALIASES.items():          # 선택 컬럼(없어도 진행)
+        for a in aliases:
+            if a in pos:
+                idx[key] = pos[a][0]
+                break
     _renamed = {k: v for k, v in used.items() if v != _HEAD_ALIASES[k][0]}
     if _renamed:
         print(f"[po_ingest] 헤더 개명 감지 — {_renamed} (별칭으로 처리)")
@@ -119,10 +130,14 @@ def parse_po_qty(sheets, season, sheet_id=PO_SHEET_ID) -> dict:
         t = sum(vals.values())
         if not t:
             continue
-        sl = out.setdefault(style, {"po": _zero(), "colors": {}})
+        sl = out.setdefault(style, {"po": _zero(), "plm": _zero(), "colors": {}})
         for c in CHANNELS:
             sl["po"][c] += vals[c]
         sl["po"]["t"] += t
+        if "plm_po" in idx and str(cell("plm_po", r)).strip():   # PLM PO 번호가 찍힌 행 = 발행분
+            for c in CHANNELS:
+                sl["plm"][c] += vals[c]
+            sl["plm"]["t"] += t
         color = str(cell("color", r)).strip()
         if color:
             cc = sl["colors"].setdefault(color, _zero())
