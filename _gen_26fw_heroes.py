@@ -18,7 +18,10 @@ DO_PUSH = "--push" in sys.argv
 #   → 기본을 시트로 두고, 옛 경로가 필요할 때만 --drive 로 명시한다.
 USE_SHEET = "--drive" not in sys.argv
 
-# MDP 26FW 추출 트랙별 베이스라인 (단계 n → 'YYYY-MM-DD'). ⚠ 사용자 확인 대상.
+# MDP 26FW 트랙별 베이스라인 (단계 n → 'YYYY-MM-DD').
+# ★2026-08-01: 아래 값은 이제 **폴백**이다 — MDP 기획 관리판 `#.상세일정`에서 매 실행 자동으로 읽는다
+#   (`soo.hero_ops.mdp_baseline`). 시트가 바뀌면 앱도 따라가고, 27FW·28SS도 같은 방식으로 자동 인식된다.
+#   읽기 실패 시에만 이 하드코딩 값을 쓴다(조용한 0/공백 방지).
 BASELINE = {
     "가을": {3: "2025-12-19", 4: "2026-01-22", 6: "2026-01-28", 7: "2026-01-28",
             8: "2026-02-20", 9: "2026-02-20", 10: "2026-04-17", 11: "2026-05-01",
@@ -29,6 +32,34 @@ BASELINE = {
 }
 def season_to_track(s):  # 간절기→가을, 겨울·기모·기타→겨울
     return "가을" if s == "간절기" else "겨울"
+
+
+def _load_mdp_baseline_26fw(sheets):
+    """MDP `#.상세일정`의 26FW 블록 → BASELINE 형태로. 실패하면 하드코딩 폴백을 그대로 쓴다."""
+    try:
+        from soo.hero_ops.mdp_baseline import load_mdp_baseline
+        warns = []
+        bl = load_mdp_baseline(sheets, "26FW", warns=warns)
+        got = {t: {n: d.isoformat() for n, d in st.items()} for t, st in bl.items() if t in ("가을", "겨울")}
+        if len(got) < 2 or any(len(v) < 5 for v in got.values()):
+            print(f"[주의] MDP 26FW 기준일 부족 — 폴백 사용 ({ {k: len(v) for k, v in got.items()} })")
+            for w in warns[:3]:
+                print("   ", w)
+            return None
+        # 폴백에만 있는 단계(시트에 행이 없는 것)는 채워 넣는다 — 있던 기준이 사라지지 않게.
+        for trk, base in BASELINE.items():
+            for n, v in base.items():
+                got.setdefault(trk, {}).setdefault(n, v)
+        _diff = [f"{t} 단계{n} {BASELINE[t].get(n, '-')}→{got[t][n]}"
+                 for t in got for n in sorted(got[t]) if BASELINE.get(t, {}).get(n) != got[t][n]]
+        print(f"MDP 26FW 기준일 시트 로드: 가을 {len(got['가을'])}단계 · 겨울 {len(got['겨울'])}단계"
+              + (f" · 폴백과 다른 값 {len(_diff)}건 ({' / '.join(_diff[:4])})" if _diff else " · 폴백과 동일"))
+        for w in warns[:3]:
+            print("   ", w)
+        return got
+    except Exception as e:
+        print(f"[주의] MDP 26FW 기준일 로드 실패 — 폴백 사용: {type(e).__name__}: {e}")
+        return None
 def _d(s):
     return datetime.date.fromisoformat(s) if s and len(s) == 10 else None
 
@@ -196,6 +227,11 @@ def rollup(matched, stage_n):
     if est:
         return "pending", f"예정 ~{min(est)}"
     return "pending", ""
+
+# ★단계 기준일 = MDP 시트에서 로드(실패 시 위 하드코딩 폴백). 26FW·27FW·28SS 모두 같은 경로.
+_MDP_BL = _load_mdp_baseline_26fw(sheets)
+if _MDP_BL:
+    BASELINE = _MDP_BL
 
 heroes = []
 for i, series in enumerate(series_order, 1):

@@ -56,7 +56,7 @@ MDP_SHEET_ID = "10guWc_5t06nu9QryPymTIl2oogQfV4qOEO81iXSgenI"
 MDP_TAB = "#.상세일정"
 MDP_YEAR = 2026
 MDP_COLS = {"봄": "G", "여름": "J"}
-# 앱 14단계 → (MDP 행, 그 행의 뜻)
+# ★MDP에서 가져올 단계 목록(행 번호는 이제 공용 로더가 문구로 찾는다 — 값은 설명용으로만 남김)
 MDP_STAGE_ROWS = {
     5:  (133, "수량 결정 & 예판가 & 발매일 확정"),
     6:  (131, "컬러 확정 및 BT 투입"),
@@ -116,41 +116,24 @@ def _resolve_target(raw: str, ceiling: dt.date | None,
 
 
 def load_mdp_baseline(sheets, sheet_id: str | None = None,
-                      warns: list[str] | None = None) -> dict[str, dict[int, dt.date]]:
-    """MDP '#.상세일정' → {트랙('봄'/'여름'): {stage: date}}. 실패하면 {} (호출부가 타겟 없이 진행)."""
+                      warns: list[str] | None = None, season: str = "27SS") -> dict[str, dict[int, dt.date]]:
+    """MDP '#.상세일정' → {트랙('봄'/'여름'): {stage: date}}. 실패하면 {} (호출부가 타겟 없이 진행).
+
+    ★2026-08-01: 행/열 하드코딩을 걷어내고 **공용 로더**(`soo.hero_ops.mdp_baseline`)로 넘긴다 —
+    시트에서 시즌 블록·트랙 컬럼·단계 행을 문구로 찾으므로 27FW·28SS도 코드 수정 없이 붙는다.
+    공용 로더는 SS 트랙을 간절기/여름/상시로 돌려주므로 여기서 봄/여름 이름으로 바꿔 준다
+    (아래 TRACK_TO_MDP 매핑을 그대로 유지하기 위함).
+    """
     warns = warns if warns is not None else []
-    rng = [f"'{MDP_TAB}'!{col}{row}"
-           for row, _ in MDP_STAGE_ROWS.values() for col in MDP_COLS.values()]
-    try:
-        resp = sheets.spreadsheets().values().batchGet(
-            spreadsheetId=(sheet_id or MDP_SHEET_ID), ranges=rng).execute()
-    except Exception as e:
-        warns.append(f"MDP 트랙 베이스라인 로드 실패({type(e).__name__}) — 앞단 단계 타겟 없이 진행")
-        return {}
-    cell = {}
-    for vr in resp.get("valueRanges", []):
-        a1 = vr["range"].split("!")[-1].replace("$", "")
-        vals = vr.get("values", [])
-        cell[a1] = (vals[0][0] if vals and vals[0] else "").strip()
-
-    def _mdp_date(raw: str) -> dt.date | None:
-        m = re.match(r"^(\d{1,2})/(\d{1,2})$", (raw or "").strip())
-        if not m:
-            return None
-        try:
-            return dt.date(MDP_YEAR, int(m.group(1)), int(m.group(2)))
-        except ValueError:
-            return None
-
-    out: dict[str, dict[int, dt.date]] = {t: {} for t in MDP_COLS}
-    for stage, (row, label) in MDP_STAGE_ROWS.items():
-        for track, col in MDP_COLS.items():
-            d = _mdp_date(cell.get(f"{col}{row}", ""))
-            if d:
-                out[track][stage] = d
-            else:
-                warns.append(f"MDP {track} {label}({col}{row}) 일자 못 읽음 — 단계 {stage} 타겟 없음")
-    return {t: v for t, v in out.items() if v}
+    from soo.hero_ops.mdp_baseline import load_mdp_baseline as _generic
+    bl = _generic(sheets, season, sheet_id=(sheet_id or MDP_SHEET_ID), warns=warns)
+    out = {}
+    for app_track, mdp_track in (("간절기", "봄"), ("여름", "여름")):
+        if bl.get(app_track):
+            out[mdp_track] = {n: d for n, d in bl[app_track].items() if n in MDP_STAGE_ROWS}
+    if not out:
+        warns.append("MDP 트랙 베이스라인 비어 있음 — 앞단 단계 타겟 없이 진행")
+    return out
 
 
 def build_sty_dates(row: dict, today: dt.date, sty: str,
