@@ -1930,6 +1930,44 @@ try:
         except Exception as _edm:
             _HEALTH.append(f"상품성연령 로드 실패({type(_edm).__name__}) — 성·연령 구성 미표시")
 
+        # (3f) 히어로 x 매체(utm) 유입 — 히어로매체기간 탭(노트북 (7)셀, 2026-08-02 신설).
+        #   "퍼포먼스 마케팅을 히어로 단위로" — utm_campaign(광고코드)엔 상품이 없지만
+        #   goods_no x utm 세션 원천이 있어 매체별 유입은 히어로 단위로 정확히 나온다.
+        #   medium 관례: da=디스플레이 · sa=검색광고 · sh=쇼핑 · cr=CRM · if=인플루언서.
+        #   ★'(없음)'(utm 없음) = 온사이트/직접 → 광고 집계에서 뺀다(그건 경로 뷰가 담당).
+        _MEDIA_TOP = 12                       # 히어로·기간당 상위 매체만 싣는다(앱 용량)
+        _media, _media_fw = {}, {}
+        try:
+            for r in read_tab(sheets, _SALES_ID, "히어로매체기간"):
+                _mh = str(r.get("hero") or "").strip()
+                _mp = str(r.get("period") or "").strip()
+                _msrc = str(r.get("src") or "").strip()
+                _mmed = str(r.get("med") or "").strip()
+                if not _mh or not _mp or _msrc in ("", "(없음)"):
+                    continue
+                _mfw = str(r.get("season") or "").strip() == "26FW"
+                _mslot = _fw_slot(_mp) if _mfw else (_mp if _mp in _PERIODS else None)
+                if not _mslot:
+                    continue
+                _tgt3 = (_media_fw if _mfw else _media)
+                _cell3 = _tgt3.setdefault(_mh, {}).setdefault(_mslot, {}).setdefault((_msrc, _mmed),
+                                                                                     {"s": 0, "p": 0, "u": 0, "ly": 0})
+                _cell3["s"] += round(_num(r.get("sessions")))
+                _cell3["p"] += round(_num(r.get("pdp")))
+                _cell3["u"] += round(_num(r.get("users")))
+                _cell3["ly"] += round(_num(r.get("pdp_ly")))
+        except Exception as _emd:
+            _HEALTH.append(f"히어로매체기간 로드 실패({type(_emd).__name__}) — 매체 유입 미표시")
+
+        def _media_rows(box, hero):
+            """{기간: [[source, medium, 세션, PDP, 유저, 전년PDP], …]} — PDP 상위 N."""
+            out = {}
+            for per, cells in (box.get(hero) or {}).items():
+                rows = sorted(([sr, md, c["s"], c["p"], c["u"], c["ly"]] for (sr, md), c in cells.items()),
+                              key=lambda x: -x[3])
+                out[per] = rows[:_MEDIA_TOP]
+            return out
+
         # 진행중 주(span<2=사실상 1일) 제외 → 남은 최근 2주. 볼륨은 일평균(÷span)으로 비교.
         _usable = [k for k in sorted(_wk_keys) if _wk_span.get(k, 7) >= 2]
         _cur_k = _usable[-1] if _usable else None
@@ -2108,9 +2146,11 @@ try:
         for _hh, _PP in hero_perf.items():
             _PP["wks"] = _weeks_for(_hh, _hero_wk, _path_wk)
             _PP["pdtl"] = _path_dtl.get(_hh, {})
+            _PP["media"] = _media_rows(_media, _hh)
         for _hh, _PP in hero_perf_fw.items():
             _PP["wks"] = _weeks_for(_hh, _hero_wk_fw, _path_wk_fw)
             _PP["pdtl"] = _path_dtl_fw.get(_hh, {})
+            _PP["media"] = _media_rows(_media_fw, _hh)
         _wk_pts = sum(len(v.get("wks") or []) for v in list(hero_perf.values()) + list(hero_perf_fw.values()))
         print(f"주차 스냅샷: 히어로 {len(hero_perf) + len(hero_perf_fw)}종 · 주차포인트 {_wk_pts} · 경로 {len(_path_names)}종"
               f" · 경로상세 {len(_path_dtl) + len(_path_dtl_fw)}종")
@@ -2159,7 +2199,7 @@ try:
           "paths": v.get("paths", {}),
           # ★주차 스냅샷(wks) · 경로 중분류(pdtl) · 상품 퍼널(gf) · 조회자 성연령(demo) — 2026-08-01 신설
           "wks": v.get("wks", []), "pdtl": v.get("pdtl", {}),
-          "gf": v.get("gf", {}), "demo": v.get("demo", {}),
+          "gf": v.get("gf", {}), "demo": v.get("demo", {}), "media": v.get("media", {}),
           "season": v.get("season", ""),
           "goal": _goals.get(k, {}).get("gmv", 0),
           "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in _perf_src],
