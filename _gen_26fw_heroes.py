@@ -1297,6 +1297,7 @@ try:
             return float(v)
         except (TypeError, ValueError):
             return 0.0
+    _PATH_NAMES = []          # 주차 스냅샷 경로 사전(아래 try 안에서 채움. 실패해도 emit이 죽지 않게 기본값)
     try:
         # ★26SS 히어로 매핑 — 시트39(gid1392316906) 확정 매핑(uid+신품번, 사용자 검증 524.5억=525.4).
         #   style_to_hero(행별 신품번→hero) + goods_to_hero(uid 폴백: 신품번 빈칸/누락 goods). 26FW는 파일 교체.
@@ -1569,6 +1570,7 @@ try:
         # (2) PMKT주차 — goods×ISO주차 → 히어로별 최근 2주(WoW). 스파크라인 폐기(가시성↓, 사용자 요청).
         #   WoW = 최근 완료주 vs 직전주. pdp(유입)·buy(구매UV)·gmv(direct 거래액). 전환율 WoW는 프론트서 buy/pdp.
         _wk_keys, _hero_wk, _wk_label, _wk_span, _sty_wk = set(), {}, {}, {}, {}
+        _wk_range = {}          # {(yyyy,week): (시작 YYYY-MM-DD, 종료)} — 주차 스냅샷 라벨용
         for r in read_tab(sheets, _SALES_ID, "PMKT주차"):
             _hfw_k = _hero_of_fw(r.get("style_no"), r.get("goods_no"))
             if _hfw_k:
@@ -1616,6 +1618,7 @@ try:
                 SW["mkt_gmv"] += round(_num(r.get("mkt_gmv")))
                 SW["mkt_pdp"] += round(_num(r.get("mkt_pdp_uv")))
             _wk_label.setdefault(_key, str(r.get("week_start") or "")[5:].replace("-", "/"))
+            _wk_range.setdefault(_key, (str(r.get("week_start") or "")[:10], str(r.get("week_end") or "")[:10]))
             # 주 일수(span) — 소스 주 경계가 불규칙(W29=1일, W28=5일 등, 데이터 경계로 잘림).
             #   진행중(1일짜리) 주는 WoW에서 제외하고, 남은 주는 '일평균'으로 정규화해 공정 비교.
             if _key not in _wk_span:
@@ -1652,34 +1655,78 @@ try:
         except Exception as _epath:
             _HEALTH.append(f"PMKT경로기간 로드 실패({type(_epath).__name__}) — 유입경로 뷰 미표시")
 
-        # (3b) 유입경로 x 주차 — 경로별 전주비(WoW) 원천(PMKT경로주차 탭, 노트북 (4)셀).
+        # (3b) 유입경로 x 주차 — 경로별 전주비(WoW) + ★주차 스냅샷(과거 주차 회고) 원천.
         #   히어로 행 WoW와 '같은 주차 키·같은 일평균 정규화'를 써야 화면에서 기준이 어긋나지 않는다.
-        _path_wk = {}          # {hero: {path: {(yyyy,week): {pdp,buy}}}}
+        #   ★2026-08-01: 탭이 goods 단위 최근 12주 → **히어로 x 시즌 x 경로 x 주차(2025-01-01~)** 로 바뀌었다.
+        #   (goods x 경로 x 83주는 40만행이라 시트에 못 싣는다.) 옛 포맷(goods_no 열)도 그대로 읽는다 —
+        #   노트북 잡이 아직 새 셀로 안 돌았을 때 조용히 비지 않게.
+        _path_wk = {}          # {hero: {path: {(yyyy,week): {pdp,buy,gmv}}}}
+        _pw_label, _pw_span = {}, {}
         try:
             for r in read_tab(sheets, _SALES_ID, "PMKT경로주차"):
                 _pp = str(r.get("path") or "").strip()
-                _phf = _hero_of_fw(None, r.get("goods_no"))
-                if _phf and _pp:
-                    try:
-                        _pkf = (int(_num(r.get("yyyy"))), int(_num(r.get("week_no"))))
-                    except (TypeError, ValueError):
-                        _pkf = None
-                    if _pkf:
-                        _pwf = _path_wk_fw.setdefault(_phf, {}).setdefault(_pp, {}).setdefault(_pkf, {"pdp": 0, "buy": 0})
-                        _pwf["pdp"] += round(_num(r.get("pdp_uv")))
-                        _pwf["buy"] += round(_num(r.get("buy_uv")))
-                _ph = _hero_of(None, r.get("goods_no"))
-                if not _ph or not _pp:
+                if not _pp:
                     continue
                 try:
                     _pk = (int(_num(r.get("yyyy"))), int(_num(r.get("week_no"))))
                 except (TypeError, ValueError):
                     continue
-                _pw = _path_wk.setdefault(_ph, {}).setdefault(_pp, {}).setdefault(_pk, {"pdp": 0, "buy": 0})
-                _pw["pdp"] += round(_num(r.get("pdp_uv")))
-                _pw["buy"] += round(_num(r.get("buy_uv")))
+                _pv = {"pdp": round(_num(r.get("pdp_uv"))), "buy": round(_num(r.get("buy_uv"))),
+                       "gmv": round(_num(r.get("gmv")))}
+                if _pk not in _pw_label:
+                    _ws3, _we3 = str(r.get("week_start") or "")[:10], str(r.get("week_end") or "")[:10]
+                    _pw_label[_pk] = (_ws3, _we3)
+                    try:
+                        _pw_span[_pk] = (datetime.date.fromisoformat(_we3) - datetime.date.fromisoformat(_ws3)).days + 1
+                    except (ValueError, TypeError):
+                        _pw_span[_pk] = 7
+
+                def _acc(_tgt, _hero):
+                    _c = _tgt.setdefault(_hero, {}).setdefault(_pp, {}).setdefault(_pk, {"pdp": 0, "buy": 0, "gmv": 0})
+                    for _mk, _mv in _pv.items():
+                        _c[_mk] += _mv
+
+                _hname = str(r.get("hero") or "").strip()
+                if _hname:                                   # 새 포맷 — 히어로·시즌이 원천에 들어 있다
+                    if str(r.get("season") or "").strip() == "26FW":
+                        _acc(_path_wk_fw, _hname)
+                    else:
+                        _acc(_path_wk, _hname)
+                    continue
+                _phf = _hero_of_fw(None, r.get("goods_no"))  # 옛 포맷 — goods를 매핑으로 롤업
+                if _phf:
+                    _acc(_path_wk_fw, _phf)
+                _ph = _hero_of(None, r.get("goods_no"))
+                if _ph:
+                    _acc(_path_wk, _ph)
         except Exception as _epw:
             _HEALTH.append(f"PMKT경로주차 로드 실패({type(_epw).__name__}) — 유입경로 전주비 '–' 표시")
+
+        # (3c) 유입경로 상세(중분류 prev_path2) x 기간 — PMKT경로상세 탭(노트북 (5)셀, 2026-08-01 신설).
+        #   대분류만 보면 온라인팀 기획전 유입이 '메인-세일/발매'·'기타'로 흩어져 안 보인다(사용자 지적).
+        #   {hero: {period: {대분류: {중분류: {pdp,buy,pdp_ly,buy_ly}}}}}
+        _path_dtl, _path_dtl_fw = {}, {}
+        try:
+            for r in read_tab(sheets, _SALES_ID, "PMKT경로상세"):
+                _dh = str(r.get("hero") or "").strip()
+                _dp1 = str(r.get("path") or "").strip()
+                _dp2 = str(r.get("path2") or "").strip() or "기타"
+                _dper = str(r.get("period") or "").strip()
+                if not _dh or not _dp1 or not _dper:
+                    continue
+                _isfw = str(r.get("season") or "").strip() == "26FW"
+                _slot = _fw_slot(_dper) if _isfw else (_dper if _dper in _PERIODS else None)
+                if not _slot:
+                    continue
+                _dt_tgt = (_path_dtl_fw if _isfw else _path_dtl)
+                _dc = _dt_tgt.setdefault(_dh, {}).setdefault(_slot, {}).setdefault(_dp1, {}).setdefault(
+                    _dp2, {"pdp": 0, "buy": 0, "pdp_ly": 0, "buy_ly": 0})
+                _dc["pdp"] += round(_num(r.get("pdp_uv")))
+                _dc["buy"] += round(_num(r.get("buy_uv")))
+                _dc["pdp_ly"] += round(_num(r.get("pdp_uv_ly")))
+                _dc["buy_ly"] += round(_num(r.get("buy_uv_ly")))
+        except Exception as _edt:
+            _HEALTH.append(f"PMKT경로상세 로드 실패({type(_edt).__name__}) — 경로 중분류 미표시")
 
         # 진행중 주(span<2=사실상 1일) 제외 → 남은 최근 2주. 볼륨은 일평균(÷span)으로 비교.
         _usable = [k for k in sorted(_wk_keys) if _wk_span.get(k, 7) >= 2]
@@ -1801,6 +1848,70 @@ try:
                     for _ppf in _PERIODS}})
             _stysf.sort(key=lambda x: -x["periods"]["YTD"]["pdp"])
             _PF["stys"] = _stysf
+
+        # ── ★주차 스냅샷(과거 주차 회고) 조립 — 2026-08-01 신설 ─────────────────────
+        #   지금까지는 '최근 완료주 vs 직전주'만 있어서 "그 주에 유입이 올랐나"를 돌아볼 수 없었다.
+        #   PMKT주차(goods x 주차, 2025-01-01~)와 PMKT경로주차(히어로 x 경로 x 주차, 2025-01-01~)를
+        #   히어로별 주차 배열로 접어 넣는다. **26년 주차만 싣고**, 전년 동주차(W번호 일치)는 ly로 붙인다
+        #   (= 화면 '26년 1월부터', YoY 비교는 25년 1월분이 짝으로 붙는 구조).
+        _WK_FROM_Y = 2026
+        _path_names = sorted({p for _m in (_path_wk, _path_wk_fw) for _h in _m.values() for p in _h})
+        _PATH_NAMES = _path_names
+        _pname_ix = {p: i for i, p in enumerate(_path_names)}
+
+        def _mmdd(s):
+            return str(s or "")[5:].replace("-", "/")
+
+        def _weeks_for(hero, wk_map, pw_map):
+            """히어로 하나의 주차 배열. [{y,w,f,t,d, pdp,buy,gmv, ly{...}, p:[[경로ix,pdp,buy,gmv,pdp_ly,buy_ly]]}]"""
+            _hw = wk_map.get(hero, {})
+            _hp = pw_map.get(hero, {})
+            _keys = sorted({k for k in _hw if k[0] >= _WK_FROM_Y}
+                           | {k for _pm in _hp.values() for k in _pm if k[0] >= _WK_FROM_Y})
+            _out = []
+            for (_y, _w) in _keys:
+                _cur = _hw.get((_y, _w), {})
+                _lyk = (_y - 1, _w)
+                _ly = _hw.get(_lyk, {})
+                # ★ISO 주차 버킷 함정: 12/29~31은 WEEKOFYEAR가 1이라 그 해 'W1'에 1월 초와 함께 섞인다
+                #   (원천이 YEAR(d)+WEEKOFYEAR(d)로 이미 접혀 있어 여기서 못 쪼갠다).
+                #   전년 W1이 8일 넘게 벌어져 있으면 섞인 버킷 → 전년비를 아예 비운다(부풀린 비교 방지).
+                _lrng0 = _wk_range.get(_lyk) or _pw_label.get(_lyk) or ("", "")
+                try:
+                    if (datetime.date.fromisoformat(_lrng0[1]) - datetime.date.fromisoformat(_lrng0[0])).days + 1 > 9:
+                        _ly = {}
+                except (ValueError, TypeError):
+                    pass
+                _rng = _wk_range.get((_y, _w)) or _pw_label.get((_y, _w)) or ("", "")
+                _lrng = _wk_range.get(_lyk) or _pw_label.get(_lyk) or ("", "")
+                _span = _wk_span.get((_y, _w)) or _pw_span.get((_y, _w)) or 7
+                _paths = []
+                for _pn, _pm in _hp.items():
+                    _pc = _pm.get((_y, _w))
+                    _pl = _pm.get(_lyk) or {}
+                    if not _pc:
+                        continue
+                    _paths.append([_pname_ix[_pn], _pc.get("pdp", 0), _pc.get("buy", 0), _pc.get("gmv", 0),
+                                   _pl.get("pdp", 0), _pl.get("buy", 0)])
+                _paths.sort(key=lambda x: -x[1])
+                _out.append({
+                    "y": _y, "w": _w, "f": _mmdd(_rng[0]), "t": _mmdd(_rng[1]), "d": _span,
+                    "pdp": _cur.get("pdp", 0), "buy": _cur.get("buy", 0), "gmv": _cur.get("gmv", 0),
+                    "ly": {"pdp": _ly.get("pdp", 0), "buy": _ly.get("buy", 0), "gmv": _ly.get("gmv", 0),
+                           "f": _mmdd(_lrng[0]), "t": _mmdd(_lrng[1])},
+                    "p": _paths,
+                })
+            return _out
+
+        for _hh, _PP in hero_perf.items():
+            _PP["wks"] = _weeks_for(_hh, _hero_wk, _path_wk)
+            _PP["pdtl"] = _path_dtl.get(_hh, {})
+        for _hh, _PP in hero_perf_fw.items():
+            _PP["wks"] = _weeks_for(_hh, _hero_wk_fw, _path_wk_fw)
+            _PP["pdtl"] = _path_dtl_fw.get(_hh, {})
+        _wk_pts = sum(len(v.get("wks") or []) for v in list(hero_perf.values()) + list(hero_perf_fw.values()))
+        print(f"주차 스냅샷: 히어로 {len(hero_perf) + len(hero_perf_fw)}종 · 주차포인트 {_wk_pts} · 경로 {len(_path_names)}종"
+              f" · 경로상세 {len(_path_dtl) + len(_path_dtl_fw)}종")
         _wk_labels = []
         _pdp_wk_labels = []
     except Exception as _eh:
@@ -1836,6 +1947,8 @@ try:
         [{"name": k, "periods": v.get("periods", {}),
           "wow": v.get("wow", {}), "stys": v.get("stys", []),
           "paths": v.get("paths", {}),
+          # ★주차 스냅샷(wks) · 경로 중분류(pdtl) — 2026-08-01 신설
+          "wks": v.get("wks", []), "pdtl": v.get("pdtl", {}),
           "season": v.get("season", ""),
           "goal": _goals.get(k, {}).get("gmv", 0),
           "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in _perf_src],
@@ -1890,7 +2003,9 @@ try:
             print(f"[보존] 히어로 PMKT 읽기 0 — 앱 기존값 유지({len(_prev_heroes)}종)")
 
     perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget,
-            "highlights": highlights, "hero": hero_list}
+            "highlights": highlights, "hero": hero_list,
+            # wks[].p 의 첫 값은 이 배열의 인덱스(경로명 반복 저장을 피하려고 인덱스로 넣는다)
+            "path_names": _PATH_NAMES}
     perf_block = "const IMC_PERF = " + json.dumps(perf, ensure_ascii=False) + ";"
     html2, nperf = re.subn(r"const IMC_PERF = \{.*?\};", perf_block, html2, count=1, flags=re.DOTALL)
     assert nperf == 1, f"IMC_PERF 교체 실패 (matched {nperf})"

@@ -54,12 +54,15 @@ def main():
     except Exception as e:
         print(f"[주의] 26SS 매핑 로드 실패: {type(e).__name__}: {e}")
 
-    # uid 중복 제거(같은 uid가 두 시즌에 있으면 26FW 우선)
+    # ★중복 제거 키 = (uid, season) — 2026-08-01 변경.
+    #   예전엔 uid 하나만 남겨(26FW 우선) 캐리오버 uid의 26SS 행이 통째로 사라졌다(26SS 양말 15→0).
+    #   노트북 GOODS_FILTER는 uid를 DISTINCT로 다시 접으므로 필터엔 영향이 없고,
+    #   히어로 단위 경로 집계(v_hero_map)에서 시즌 레인이 제대로 갈린다.
     seen, out = set(), []
     for uid, hero, season in rows:
-        if not uid.isdigit() or uid in seen:
+        if not uid.isdigit() or (uid, season) in seen:
             continue
-        seen.add(uid)
+        seen.add((uid, season))
         out.append([uid, hero, season])
     out.sort(key=lambda r: int(r[0]))
     if len(out) < 500:      # 안전장치 — 비정상적으로 적으면 시트를 덮지 않는다
