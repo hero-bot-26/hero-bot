@@ -465,11 +465,15 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
     else:
         g2h, s2h = build_maps(sheets)
     cur_season = current_season(as_of)          # 오늘 기준 현재 시즌(2~7월 SS / 8~1월 FW)
+    # ★블록 시즌 = force_season 우선(2026-08-01 사고). 달이 바뀌어 current_season이 26FW로 넘어가는 순간
+    #   26SS 블록의 히어로 시즌 배지(14종)와 준비물량 발주 시즌이 통째로 26FW로 뒤집혔다.
+    #   블록이 어느 시즌인지는 호출자가 알고 있으므로(매핑 파일이 시즌별) 날짜가 아니라 그 값을 따른다.
+    blk_season = force_season or cur_season
     # 컬러 크로스워크(코드↔한글) — 컬러명 '한글(코드)' 통일 + 오더 매칭용
-    # ★준비물량은 오더시트(무탠본부) 발주수량을 '현재 타겟시즌'만 집계 → 타시즌·미래발주 제외.
+    # ★준비물량은 오더시트(무탠본부) 발주수량을 블록 시즌만 집계 → 타시즌·미래발주 제외.
     try:
         code2kor, kor2code = load_color_maps(sheets)
-        color_prep, style_prep = parse_orders(sheets, code2kor, kor2code, season=cur_season)
+        color_prep, style_prep = parse_orders(sheets, code2kor, kor2code, season=blk_season)
         if not with_targets:      # 26FW: 오더시트 준비물량은 현재 타겟시즌(7월=26SS) 기준이라 어긋난다
             color_prep, style_prep = {}, {}
         if prep_map is not None:  # 26FW: 목표 시트의 '준비수량'을 소진율 분모로 쓴다
@@ -656,7 +660,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
                 })
         out_heroes.append({
             "name": hero,
-            "season": force_season or (cur_season if hero in order_heroes else hero_season.get(hero, cur_season)),
+            "season": force_season or (blk_season if hero in order_heroes else hero_season.get(hero, blk_season)),
             "periods": _per_full(H["periods"]),
             "target": _tgt(hero_target[hero]) if hero in hero_target else None,
             "stock": _stock(hero_stock[hero]) if hero in hero_stock else None,

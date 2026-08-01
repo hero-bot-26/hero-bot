@@ -414,6 +414,9 @@ try:
     _dash_s2h = _map26["style_to_hero"]
     dash = build_dashboard(sheets, drive, _SALES_ID, TODAY.isoformat(),
                            style2hero=_dash_s2h, goods2hero=_map26["goods_to_hero"],
+                           # ★시즌은 매핑 파일(26SS)로 고정 — 안 주면 8/1부터 current_season이 26FW로 넘어가
+                           #   26SS 히어로 14종이 26FW 배지로 뒤집힌다(2026-08-01 발생·수정).
+                           force_season="26SS",
                            inbound_season="26SS")   # SS입고 = 전년 12/1~
     _DASH_HEROES = dash.get("heroes", [])
     # ── 26FW 히어로도 같은 대시보드에 싣는다 (홈 26FW → '상세'가 빈 화면이던 문제) ──
