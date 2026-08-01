@@ -1783,6 +1783,55 @@ try:
         except Exception as _edt:
             _HEALTH.append(f"PMKT경로상세 로드 실패({type(_edt).__name__}) — 경로 중분류 미표시")
 
+        # (3d) 상품 퍼널(노출·클릭·CTR) — 상품퍼널기간 탭(노트북 (6)셀, 2026-08-01 신설).
+        #   공식 온사이트 대시보드와 같은 재료(goods_funnel_daily). CTR=클릭/노출.
+        #   히어로/STY 롤업은 PMKT기간과 같은 매핑을 쓴다(26SS=_hero_of · 26FW=_hero_of_fw).
+        _GFK = ("imp", "clk", "gv", "gv_uv", "imp_ly", "clk_ly", "gv_ly", "gv_uv_ly")
+
+        def _gf_cell(box, key):
+            return box.setdefault(key, {k: 0 for k in _GFK})
+
+        try:
+            for r in read_tab(sheets, _SALES_ID, "상품퍼널기간"):
+                _fper = str(r.get("period") or "").strip()
+                _vals = {k: round(_num(r.get(k))) for k in _GFK}
+                _fh = _hero_of(None, r.get("goods_no"))
+                if _fh and _fper in _PERIODS:
+                    _c = _gf_cell(hero_perf.setdefault(_fh, {"periods": {}, "season": _HERO_SEASON}).setdefault("gf", {}), _fper)
+                    for k in _GFK:
+                        _c[k] += _vals[k]
+                _ffw = _hero_of_fw(None, r.get("goods_no"))
+                _fslot = _fw_slot(_fper)
+                if _ffw and _fslot:
+                    _c2 = _gf_cell(hero_perf_fw.setdefault(_ffw, {"periods": {}, "season": "26FW"}).setdefault("gf", {}), _fslot)
+                    for k in _GFK:
+                        _c2[k] += _vals[k]
+        except Exception as _egf:
+            _HEALTH.append(f"상품퍼널기간 로드 실패({type(_egf).__name__}) — 노출·클릭·CTR 미표시")
+
+        # (3e) 조회자 성·연령 — 상품성연령 탭(히어로 x 기간 x 성별 x 연령대).
+        try:
+            for r in read_tab(sheets, _SALES_ID, "상품성연령"):
+                _dh2 = str(r.get("hero") or "").strip()
+                _dper2 = str(r.get("period") or "").strip()
+                if not _dh2 or not _dper2:
+                    continue
+                _isfw2 = str(r.get("season") or "").strip() == "26FW"
+                _slot2 = _fw_slot(_dper2) if _isfw2 else (_dper2 if _dper2 in _PERIODS else None)
+                if not _slot2:
+                    continue
+                _tgt2 = hero_perf_fw if _isfw2 else hero_perf
+                _P2 = _tgt2.setdefault(_dh2, {"periods": {}, "season": ("26FW" if _isfw2 else _HERO_SEASON)})
+                _row2 = _P2.setdefault("demo", {}).setdefault(_slot2, {})
+                _k2 = (str(r.get("gender") or "미상").strip(), str(r.get("age_group") or "미상").strip())
+                _cell2 = _row2.setdefault(_k2, {"imp": 0, "clk": 0, "uv": 0, "uv_ly": 0})
+                _cell2["imp"] += round(_num(r.get("imp")))
+                _cell2["clk"] += round(_num(r.get("clk")))
+                _cell2["uv"] += round(_num(r.get("gv_uv")))
+                _cell2["uv_ly"] += round(_num(r.get("gv_uv_ly")))
+        except Exception as _edm:
+            _HEALTH.append(f"상품성연령 로드 실패({type(_edm).__name__}) — 성·연령 구성 미표시")
+
         # 진행중 주(span<2=사실상 1일) 제외 → 남은 최근 2주. 볼륨은 일평균(÷span)으로 비교.
         _usable = [k for k in sorted(_wk_keys) if _wk_span.get(k, 7) >= 2]
         _cur_k = _usable[-1] if _usable else None
@@ -1998,12 +2047,21 @@ try:
     #   26FW는 MSTRD `HERO STY` 매핑 기반이라 스타일/히어로가 추가되면 자동으로 목록에 붙는다.
     _perf_src = list(hero_perf.items()) + [(k, v) for k, v in (hero_perf_fw or {}).items()
                                            if v.get("periods")]
+    # 성·연령 dict(튜플 키) → [성별, 연령, 노출, 클릭, 조회UV, 전년조회UV] 배열(조회UV 내림차순)
+    for _v in list(hero_perf.values()) + list(hero_perf_fw.values()):
+        _dm = _v.get("demo")
+        if not _dm:
+            continue
+        _v["demo"] = {per: sorted(([g, a, c["imp"], c["clk"], c["uv"], c["uv_ly"]] for (g, a), c in cells.items()),
+                                  key=lambda x: -x[4])
+                      for per, cells in _dm.items()}
     hero_list = sorted(
         [{"name": k, "periods": v.get("periods", {}),
           "wow": v.get("wow", {}), "stys": v.get("stys", []),
           "paths": v.get("paths", {}),
-          # ★주차 스냅샷(wks) · 경로 중분류(pdtl) — 2026-08-01 신설
+          # ★주차 스냅샷(wks) · 경로 중분류(pdtl) · 상품 퍼널(gf) · 조회자 성연령(demo) — 2026-08-01 신설
           "wks": v.get("wks", []), "pdtl": v.get("pdtl", {}),
+          "gf": v.get("gf", {}), "demo": v.get("demo", {}),
           "season": v.get("season", ""),
           "goal": _goals.get(k, {}).get("gmv", 0),
           "goal_roas": _goals.get(k, {}).get("roas", "")} for k, v in _perf_src],
