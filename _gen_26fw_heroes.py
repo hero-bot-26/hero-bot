@@ -1699,17 +1699,24 @@ try:
                 SW["gmv"] += round(_num(r.get("gmv")))
                 SW["mkt_gmv"] += round(_num(r.get("mkt_gmv")))
                 SW["mkt_pdp"] += round(_num(r.get("mkt_pdp_uv")))
-            _wk_label.setdefault(_key, str(r.get("week_start") or "")[5:].replace("-", "/"))
-            _wk_range.setdefault(_key, (str(r.get("week_start") or "")[:10], str(r.get("week_end") or "")[:10]))
+            # ★주 범위는 **그 주의 모든 행을 합쳐서**(min start · max end) 잡는다.
+            #   행 하나(goods 하나)의 min/max로 잡으면 그 상품에 유입이 없던 날만큼 주가 짧아진다
+            #   — 실제로 W27이 6일, W28이 5일로 표시됐다(실제로는 둘 다 7일).
+            #   이 값은 라벨뿐 아니라 **전주비 일평균 정규화(÷span)** 에도 쓰이므로 값이 틀리면 비교도 틀린다.
+            _ws0, _we0 = str(r.get("week_start") or "")[:10], str(r.get("week_end") or "")[:10]
+            if _ws0 and _we0:
+                _prev_rng = _wk_range.get(_key)
+                _wk_range[_key] = ((min(_prev_rng[0], _ws0), max(_prev_rng[1], _we0))
+                                   if _prev_rng else (_ws0, _we0))
+                _wk_label[_key] = _wk_range[_key][0][5:].replace("-", "/")
             # 주 일수(span) — 소스 주 경계가 불규칙(W29=1일, W28=5일 등, 데이터 경계로 잘림).
             #   진행중(1일짜리) 주는 WoW에서 제외하고, 남은 주는 '일평균'으로 정규화해 공정 비교.
-            if _key not in _wk_span:
-                try:
-                    _ws2 = datetime.date.fromisoformat(str(r.get("week_start"))[:10])
-                    _we2 = datetime.date.fromisoformat(str(r.get("week_end"))[:10])
-                    _wk_span[_key] = (_we2 - _ws2).days + 1
-                except (ValueError, TypeError):
-                    _wk_span[_key] = 7
+            try:                                   # 합집합 범위로 매번 다시 계산
+                _rg = _wk_range.get(_key)
+                _wk_span[_key] = ((datetime.date.fromisoformat(_rg[1])
+                                   - datetime.date.fromisoformat(_rg[0])).days + 1) if _rg else 7
+            except (ValueError, TypeError):
+                _wk_span[_key] = 7
         # (3) 유입경로(prev_path1) x 기간 — 온사이트 경로 구성·전환율·유입 전년비. PMKT경로기간 탭(노트북 산출).
         #   히어로별 {period: {path: {pdp,buy,pdp_ly,buy_ly}}}. 프론트가 비중(pdp/합)·전환율(buy/pdp)·전년비(pdp/pdp_ly) 계산.
         try:
@@ -1755,11 +1762,13 @@ try:
                     continue
                 _pv = {"pdp": round(_num(r.get("pdp_uv"))), "buy": round(_num(r.get("buy_uv"))),
                        "gmv": round(_num(r.get("gmv")))}
-                if _pk not in _pw_label:
-                    _ws3, _we3 = str(r.get("week_start") or "")[:10], str(r.get("week_end") or "")[:10]
-                    _pw_label[_pk] = (_ws3, _we3)
+                _ws3, _we3 = str(r.get("week_start") or "")[:10], str(r.get("week_end") or "")[:10]
+                if _ws3 and _we3:                      # 여기도 합집합(위 PMKT주차와 같은 이유)
+                    _pr = _pw_label.get(_pk)
+                    _pw_label[_pk] = ((min(_pr[0], _ws3), max(_pr[1], _we3)) if _pr else (_ws3, _we3))
                     try:
-                        _pw_span[_pk] = (datetime.date.fromisoformat(_we3) - datetime.date.fromisoformat(_ws3)).days + 1
+                        _pw_span[_pk] = (datetime.date.fromisoformat(_pw_label[_pk][1])
+                                         - datetime.date.fromisoformat(_pw_label[_pk][0])).days + 1
                     except (ValueError, TypeError):
                         _pw_span[_pk] = 7
 
