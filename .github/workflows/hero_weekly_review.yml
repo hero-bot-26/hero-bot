@@ -1,0 +1,99 @@
+name: 히어로 주간 세일즈 리뷰 (시트+덱)
+
+# 월요일 오후 5시 온·오프 세일즈 회의용 산출물을 아침에 미리 만들어 둔다.
+#   ① 리뷰 시트  — 브리핑 / 요약(히어로 15종) / STY전체 / 유입 / 덱 품목 상세
+#   ② 리뷰 덱    — 7장 PPTX → 구글 슬라이드 변환 업로드
+#
+# ★ 전주 비교는 시트 안의 숨김 탭 _HISTORY 로 한다. 사람이 스냅샷 사본을 뜰 필요가 없다.
+#   최초 1회만 아래를 로컬에서 실행해 과거 주차를 시딩했다:
+#       python -m soo.hero_ops.weekly_review --bootstrap <전주 스냅샷 시트ID>
+#
+# ★ 라이브 대시보드는 매일 09:30 잡이 채운다. 그 전에 읽으면 반쯤 쓰인 값을 읽는 사고가 났었다.
+#   그래서 실행은 09:30 이후로 잡고, 스크립트도 기준일이 전일이 될 때까지 대기한다(wait_live_fresh).
+on:
+  schedule:
+    - cron: "30 1 * * 1"      # 10:30 KST 월요일. 회의(17:00)보다 충분히 앞선다.
+  workflow_dispatch:
+    inputs:
+      no_upload:
+        description: "슬라이드 업로드 생략 (true/false)"
+        required: false
+        default: "false"
+      no_wait:
+        description: "라이브 신선도 대기 생략 — 테스트용 (true/false)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: hero-weekly-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      # PPTX 안의 한글 폰트 — 슬라이드 변환 시 글립스가 깨지지 않도록.
+      - name: Install Korean font
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-nanum
+
+      - name: Build weekly review sheet & deck
+        env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          DECK_OUT: ${{ github.workspace }}/_out
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.no_upload }}" = "true" ]; then ARGS="$ARGS --no-upload"; fi
+          if [ "${{ github.event.inputs.no_wait }}"   = "true" ]; then ARGS="$ARGS --no-wait"; fi
+          python -m soo.hero_ops.weekly_review_deck $ARGS | tee _run.log
+          echo "SUMMARY<<EOF" >> $GITHUB_ENV
+          grep -E '^(SHEET|SLIDES)' _run.log >> $GITHUB_ENV || true
+          echo "EOF" >> $GITHUB_ENV
+
+      # PPTX 원본도 아티팩트로 남긴다 — 슬라이드에서 손보기 전 원본이 필요할 때가 있다.
+      - name: Upload pptx artifact
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hero-weekly-review-pptx
+          path: _out/*.pptx
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: 슬랙 알림 (링크 전달)
+        if: success()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "📊 히어로 주간 세일즈 리뷰 준비 완료 (오늘 17:00 회의)
+
+          ${{ env.SUMMARY }}
+
+          시트 '브리핑' 탭부터 보면 됩니다. 주간 기준 · 전년비 → 전주비 → 목표비 순.
+          덱의 액션 문구는 초안이라 회의 전에 한 번 훑어주세요."
+
+      - name: 실패 알림 (슬랙 DM)
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 히어로 주간 세일즈 리뷰 생성 실패 ($(date -u +%Y-%m-%d)) — Actions 로그 확인.
+          단골 원인: 라이브 대시보드 09:30 잡 미완료(신선도 대기 타임아웃),
+          대시보드 품목 탭 이름/열 블록 변경, _HISTORY 탭 손상, GOOGLE_OAUTH_TOKEN 만료."

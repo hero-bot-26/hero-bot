@@ -5,3 +5,4 @@ google-auth-httplib2>=0.2.0
 PyYAML>=6.0.1
 requests>=2.31.0
 playwright>=1.40
+python-pptx  # 주간 리뷰 덱 생성
