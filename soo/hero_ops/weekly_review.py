@@ -579,15 +579,19 @@ def build_brief(items, prev, last, period, deck_items, inflow=None):
             if ch == 'on':
                 inf = inflow.get(item) or {}
                 d = inf.get('daily') or []
-                if len(d) >= 14:
-                    recent = sum(v for _, v in d[-7:]) / 7
-                    before = sum(v for _, v in d[-14:-7]) / 7
-                    dw = wow(before, recent)
-                    rows.append(['', '    1. 유입은 직전 7일 일평균 %s명에서 %s명으로 %s '
-                                     '(원천 적재 %s까지라 주간 정합 비교는 불가)'
-                                 % (format(int(before), ','), format(int(recent), ','),
-                                    '급상승' if (dw or 0) > .3 else pc(dw),
-                                    inf.get('last_load', '-'))])
+                # ★ 히어로 마스터앱 성과와 같은 프레임으로 읽는다:
+                #   '최종 적재일 당일 UV' vs '그 직전 7일 일평균'.
+                #   (최근 7일 평균 vs 그 전 7일 평균으로 잡으면 앱 숫자와 어긋난다)
+                if len(d) >= 8:
+                    cur_d, cur_v = d[-1]
+                    before = sum(v for _, v in d[-8:-1]) / 7
+                    dw = wow(before, cur_v)
+                    dow = '월화수목금토일'[dt.date.fromisoformat(cur_d).weekday()]
+                    rows.append(['', '    1. 유입은 원천이 %s까지만 적재돼 주간 정합 비교는 불가. '
+                                     '%s요일 기준 직전 7일 일평균 %s명에서 %s명으로 %s'
+                                 % (cur_d, dow, format(int(round(before)), ','),
+                                    format(int(cur_v), ','),
+                                    '급상승' if (dw or 0) > .15 else pc(dw))])
                     rows.append(['', '    2. 확인 필요 > 유입 급신장 원인(외부 매체·기획전) 특정'])
             else:
                 rows.append(['', '    1. 확인 필요 > 팝업·매장 전개 목표비 달성상황'])
