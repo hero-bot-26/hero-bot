@@ -51,7 +51,8 @@ DECK_ITEMS = ['커브드팬츠', '라이트다운']    # 덱·컬러상세·유�
 N_ITEMS = 15                                 # 대시보드 앞 15탭 = 히어로 품목
 MAXROW = 160
 HIST = '_HISTORY'
-HIST_KEEP_WEEKS = 26
+HIST_KEEP_WEEKS = 5      # 약 한 달치만 보관하고 그 이전 주차는 폐기.
+#                          전주비는 직전 1주만 있으면 되고, 전년비는 대시보드 자체 전년 컬럼에서 온다.
 
 # WEEK 블록 내 오프셋 (CE=0 기준). CR~ 는 같은 블록의 '25년 전년' 구간.
 W = {'gmv': 1, 'yoy': 2, 'tgt': 3, 'qty': 4, 'ach': 5, 'pdisc': 10, 'margin': 12,

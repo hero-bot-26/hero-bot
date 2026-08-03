@@ -605,9 +605,17 @@ def build(ctx, out_path):
     return d.save(out_path)
 
 
-def upload(path, name):
-    creds = get_credentials(WR._ROOT / 'credentials.json', WR._ROOT / 'token.json')
-    drive = build_services(creds)['drive']
+DECK_NAME = '히어로 주간 세일즈 리뷰'
+KEEP_DAYS = 30           # 덱은 약 한 달만 보관하고 그 이전 것은 폐기(휴지통)한다.
+
+
+def _drive():
+    return build_services(get_credentials(WR._ROOT / 'credentials.json',
+                                          WR._ROOT / 'token.json'))['drive']
+
+
+def upload(path, name, drive=None):
+    drive = drive or _drive()
     f = drive.files().create(
         body={'name': name, 'mimeType': 'application/vnd.google-apps.presentation'},
         media_body=MediaFileUpload(
@@ -616,6 +624,36 @@ def upload(path, name):
             resumable=True),
         fields='id,webViewLink').execute()
     return f['webViewLink']
+
+
+def purge_old_decks(drive=None, keep_days=KEEP_DAYS, keep_id=None):
+    """KEEP_DAYS 지난 주간 리뷰 덱을 휴지통으로 보낸다.
+
+    영구 삭제(files.delete)가 아니라 trashed 로 둔다 — 잘못 지웠을 때 되돌릴 수 있어야 한다.
+    이름 접두가 정확히 맞고 내가 소유한 슬라이드만 대상으로 한다."""
+    drive = drive or _drive()
+    cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=keep_days))
+    q = ("name contains '%s' and mimeType='application/vnd.google-apps.presentation' "
+         "and 'me' in owners and trashed=false and createdTime < '%s'"
+         % (DECK_NAME, cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')))
+    try:
+        res = drive.files().list(q=q, fields='files(id,name,createdTime)',
+                                 pageSize=100).execute()
+    except Exception as e:
+        print('덱 정리 건너뜀:', e)
+        return []
+    gone = []
+    for f in res.get('files', []):
+        if not f['name'].startswith(DECK_NAME) or f['id'] == keep_id:
+            continue
+        try:
+            drive.files().update(fileId=f['id'], body={'trashed': True}).execute()
+            gone.append('%s (%s)' % (f['name'], f['createdTime'][:10]))
+        except Exception as e:
+            print('  덱 폐기 실패 %s: %s' % (f['name'], e))
+    if gone:
+        print('덱 폐기(휴지통) %d건: %s' % (len(gone), ', '.join(gone)))
+    return gone
 
 
 def main():
@@ -630,7 +668,10 @@ def main():
     build(ctx, str(p))
     print('PPTX', p)
     if '--no-upload' not in argv:
-        print('SLIDES', upload(str(p), '히어로 주간 세일즈 리뷰 (%s주)' % ctx['week_end']))
+        drive = _drive()
+        link = upload(str(p), '%s (%s주)' % (DECK_NAME, ctx['week_end']), drive)
+        print('SLIDES', link)
+        purge_old_decks(drive, keep_id=link.split('/d/')[-1].split('/')[0])
     print('SHEET', ctx['url'])
     return ctx
 
