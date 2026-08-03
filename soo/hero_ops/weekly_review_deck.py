@@ -371,7 +371,7 @@ def s_inflow(d, ctx, item, c, src):
             % (ic(ea), ic(eb), pct(ext['b'][1] / ext['b'][0] if ext['b'][0] else None, False)),
             10, False, RGBColor(0xBB, 0xBB, 0xBB))
 
-    daily = inf.get('daily') or []
+    daily = (inf.get('daily') or [])[-12:]
     if daily:
         txt(sl, RX, 3.6, 3.2, 0.24, '일별 유입 UV', 11.5, True, INK)
         by, bh = 3.98, 1.22

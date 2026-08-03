@@ -32,6 +32,7 @@
 ★ 라이브 시트는 09:30 잡이 끝난 뒤에 읽어야 한다(반쯤 쓰인 상태를 읽는 사고 이력 있음).
   wait_live_fresh() 가 기준일이 전일인지 확인하고 아니면 대기한다.
 """
+import re
 import sys
 import time
 import datetime as dt
@@ -476,77 +477,190 @@ def build_item(item, p, l):
     return rows, pct
 
 
-def build_brief(items, prev, last, period, deck_items):
-    """회의 서두에 읽을 브리핑 — 주간 기준, 전년비·전주비·목표비 순.
-    사실 서술만 자동 생성한다(해석·액션은 사람이 붙인다)."""
+def build_brief(items, prev, last, period, deck_items, inflow=None):
+    """회의 서두에 그대로 읽는 브리핑 — 사용자 확정 포맷.
+
+        [커브드 팬츠 지난 주 실적]
+        1. 주간 3.2억, 달성율 250%, 전주 대비 +27% 신장
+          1. 온라인 1.0억으로 달성율 428%로 전주대비 가장 크게 신장함(+69%). A > B > C 순
+            1. 확인 필요 > …
+          2. 오프라인 2.2억으로 달성율 206%로 전주대비(+14%) 신장, 온라인과 판매순위는 동일함
+          3. 키즈 …
+        (그 아래 주간 실적 표)
+
+    사실 서술만 자동 생성하고, 원인·판단이 필요한 자리는 '확인 필요 >' 로 남긴다."""
+    inflow = inflow or {}
+
     def eok(v):
+        if not v:
+            return '0'
+        return '%.1f억' % (v / 1e8) if abs(v) >= 1e8 else format(round(v / 1e4), ',') + '만'
+
+    def pc(v, plus=True):
         if v is None:
             return '-'
-        return '%.2f억' % (v / 1e8) if abs(v) >= 1e8 else format(round(v / 1e4), ',') + '만'
+        return ('%+.0f%%' if plus else '%.0f%%') % (v * 100)
 
-    def pc(v):
-        return '-' if v is None else '%+.1f%%' % (v * 100)
+    def is_kids(r):
+        return str(r.get('sty', ''))[:2] in ('MK', 'WK') or '키즈' in str(r.get('name', ''))
 
-    tot_l = sum((last.get(i, {}).get('total', {}).get('t_gmv') or 0) for i in items)
-    tot_p = sum((prev.get(i, {}).get('total', {}).get('t_gmv') or 0)
-                for i in items if i in prev)
-    cmp_l = sum((last.get(i, {}).get('total', {}).get('t_gmv') or 0)
-                for i in items if i in prev)
+    def rank(sty, ch, n=3):
+        v = [r for r in sty if (r.get('%s_gmv' % ch) or 0) > 0 and not is_kids(r)]
+        v.sort(key=lambda r: -(r.get('%s_gmv' % ch) or 0))
+        return v[:n]
+
+    def nm(r):
+        # 앞에 붙는 라인명 [시티 레저] 와 (MAIN)/(SUB) 태그는 브리핑 문장에서 뗀다.
+        s = re.sub(r'^\s*\[[^\]]*\]\s*', '', str(r.get('name') or ''))
+        for tag in ('(MAIN) ', '(SUB) '):
+            s = s.replace(tag, '')
+        return s.replace(' 팬츠', '').replace(' 재킷', '').strip()
+
+    def josa(word, pair='은는'):
+        """받침 유무로 은/는·이/가·을/를 고른다."""
+        w = str(word).strip()
+        if not w:
+            return pair[1]
+        ch = w[-1]
+        has = ('가' <= ch <= '힣') and (ord(ch) - 0xAC00) % 28 != 0
+        return pair[0] if has else pair[1]
+
     rows = [['히어로 주간 브리핑'], ['대상 주차', period],
-            ['원칙', '실적은 주간 기준. 전년비 → 전주비 → 목표비 순으로 읽는다'], []]
-    rows.append(['■ 전체'])
-    rows.append(['히어로 합계 GMV', eok(tot_l)])
-    if tot_p:
-        rows.append(['전주비(전주 데이터 있는 품목만)',
-                     '%s → %s  %s' % (eok(tot_p), eok(cmp_l), pc(wow(tot_p, cmp_l)))])
-    rows.append([])
+            ['원칙', '주간 기준 · 전년비 → 전주비 → 목표비 순. 아래 개조식을 그대로 읽으면 된다'], []]
 
-    rows.append(['■ 품목별 한 줄'])
-    rows.append(['품목', '지난주 GMV', '전년비', '전주비', '목표비', '한 줄'])
-    body = []
-    for item in items:
-        l = last.get(item, {}).get('total', {})
-        p = prev.get(item, {}).get('total', {})
-        if not l.get('t_gmv'):
-            continue
-        ly = l.get('t_ly_gmv')
-        w = wow(p.get('t_gmv'), l.get('t_gmv'))
-        onw = wow(p.get('on_gmv'), l.get('on_gmv'))
-        offw = wow(p.get('off_gmv'), l.get('off_gmv'))
-        note = []
-        if onw is not None and offw is not None:
-            note.append('온라인 %s / 오프라인 %s' % (pc(onw), pc(offw)))
-        if l.get('t_margin') and p.get('t_margin'):
-            note.append('매총 %.1f%%→%.1f%%' % (p['t_margin'] * 100, l['t_margin'] * 100))
-        so, sq = l.get('stock_on'), l.get('on_qty')
-        if so and sq:
-            wk = so / sq
-            if wk < 6:
-                note.append('★온라인 재고 %.1f주치로 부족' % wk)
-        body.append([item, l.get('t_gmv'), wow(ly, l.get('t_gmv')) if ly else None, w,
-                     l.get('t_ach'), ' · '.join(note)])
-    body.sort(key=lambda x: -(x[1] or 0))
-    pct = [(len(rows) + i, c) for i in range(len(body)) for c in (2, 3, 4)]
-    rows += body
-    rows.append([])
-
-    rows.append(['■ 덱 품목 상세'])
     for item in deck_items:
         l, p = last.get(item, {}), prev.get(item, {})
         t, tp = l.get('total', {}), p.get('total', {})
         if not t.get('t_gmv'):
             continue
-        rows.append(['[%s]' % item, '%s (전주비 %s)' % (eok(t.get('t_gmv')),
-                                                     pc(wow(tp.get('t_gmv'), t.get('t_gmv'))))])
-        pmap = {x['sty']: x for x in p.get('sty', [])}
-        sty = [x for x in l.get('sty', []) if x.get('t_gmv')]
-        sty.sort(key=lambda x: -(x.get('t_gmv') or 0))
-        for r in sty[:6]:
+        pmap = {r['sty']: r for r in p.get('sty', [])}
+        sty = []
+        for r in l.get('sty', []):
+            r = dict(r)
             pr = pmap.get(r['sty'], {})
-            rows.append(['', '%s  %s  전주비 %s' % (r['name'][:34], eok(r.get('t_gmv')),
-                                                pc(wow(pr.get('t_gmv'), r.get('t_gmv'))))])
+            for ch in ('t', 'on', 'off'):
+                r['_w_' + ch] = wow(pr.get('%s_gmv' % ch), r.get('%s_gmv' % ch))
+            sty.append(r)
+
+        onw = wow(tp.get('on_gmv'), t.get('on_gmv'))
+        offw = wow(tp.get('off_gmv'), t.get('off_gmv'))
+        rows.append(['[%s 지난 주 실적]' % item])
+
+        head = '주간 %s' % eok(t.get('t_gmv'))
+        if t.get('t_ach'):
+            head += ', 달성율 %s' % pc(t['t_ach'], False)
+        head += ', 전주 대비 %s %s' % (pc(wow(tp.get('t_gmv'), t.get('t_gmv'))),
+                                   '신장' if (wow(tp.get('t_gmv'), t.get('t_gmv')) or 0) >= 0 else '역신장')
+        if t.get('t_ly_gmv'):
+            head += ' (전년비 %s)' % pc(wow(t['t_ly_gmv'], t.get('t_gmv')))
+        rows.append(['', '1. ' + head])
+
+        n = 0
+        for ch, lbl, w_ in (('on', '온라인', onw), ('off', '오프라인', offw)):
+            if not t.get('%s_gmv' % ch):
+                continue
+            n += 1
+            big = (w_ is not None and onw is not None and offw is not None
+                   and w_ >= max(onw, offw))
+            s = '%s %s으로' % (lbl, eok(t.get('%s_gmv' % ch)))
+            if t.get('%s_ach' % ch):
+                s += ' 달성율 %s로' % pc(t['%s_ach' % ch], False)
+            s += ' 전주대비 %s%s(%s)' % ('가장 크게 ' if big else '',
+                                     '신장함' if (w_ or 0) >= 0 else '역신장함', pc(w_))
+            top = rank(sty, ch)
+            if ch == 'on' and top:
+                s += '. ' + ' > '.join(nm(r) for r in top) + ' 순'
+            if ch == 'off' and top:
+                same = [nm(r) for r in top] == [nm(r) for r in rank(sty, 'on')]
+                s += ', 온라인과 판매순위는 %s' % ('동일함' if same
+                                            else '상이함 (' + ' > '.join(nm(r) for r in top) + ')')
+            rows.append(['', '  %d. %s' % (n, s)])
+
+            if ch == 'on':
+                inf = inflow.get(item) or {}
+                d = inf.get('daily') or []
+                if len(d) >= 14:
+                    recent = sum(v for _, v in d[-7:]) / 7
+                    before = sum(v for _, v in d[-14:-7]) / 7
+                    dw = wow(before, recent)
+                    rows.append(['', '    1. 유입은 직전 7일 일평균 %s명에서 %s명으로 %s '
+                                     '(원천 적재 %s까지라 주간 정합 비교는 불가)'
+                                 % (format(int(before), ','), format(int(recent), ','),
+                                    '급상승' if (dw or 0) > .3 else pc(dw),
+                                    inf.get('last_load', '-'))])
+                    rows.append(['', '    2. 확인 필요 > 유입 급신장 원인(외부 매체·기획전) 특정'])
+            else:
+                rows.append(['', '    1. 확인 필요 > 팝업·매장 전개 목표비 달성상황'])
+
+        kids = [r for r in sty if is_kids(r) and (r.get('t_gmv') or 0) > 0]
+        if kids:
+            n += 1
+            kg = sum(r.get('t_gmv') or 0 for r in kids)
+            kw = wow(sum(pmap.get(r['sty'], {}).get('t_gmv') or 0 for r in kids), kg)
+            # 규모가 미미하면 증감률만 말하는 게 과장이 된다. 비중을 같이 붙인다.
+            shr = kg / (t.get('t_gmv') or 1)
+            if shr < .02:
+                state = '주간 %s·비중 %.1f%%로 규모 미미' % (eok(kg), shr * 100)
+                if kw is not None and abs(kw) >= .15:
+                    state += ' (증감 %s)' % pc(kw)
+            elif kw is None or abs(kw) < .15:
+                state = '주간 %s로 큰 변동 없는 상황' % eok(kg)
+            else:
+                state = '주간 %s, %s %s' % (eok(kg), '신장' if kw > 0 else '역신장', pc(kw))
+            rows.append(['', '  %d. 키즈 %s%s %s' % (n, item, josa(item), state)])
+            rows.append(['', '    1. 확인 필요 > 온라인 목표달성 전환 시점'])
+
+        for a in _brief_alerts(item, t):
+            rows.append(['', '  ! %s' % a])
         rows.append([])
+
+    rows.append(['■ 주간 실적 (STY별)'])
+    rows.append(['', '', 'Total (On+Off)', '', '', '', '',
+                 'Online', '', '', '', '', 'Offline', '', '', '', ''])
+    rows.append(['상품명', '스타일',
+                 'GMV', 'YoY', '목표 판매량', '판매수량', '달성율', '매총율',
+                 'GMV', '목표 판매량', '판매수량', '달성율', '매총율',
+                 'GMV', '목표 판매량', '판매수량', '달성율', '매총율'])
+    pct = []
+    for item in deck_items:
+        l = last.get(item, {})
+        t = l.get('total', {})
+        if not t.get('t_gmv'):
+            continue
+        line = [item, ''] + [t.get('t_gmv'), wow(t.get('t_ly_gmv'), t.get('t_gmv'))
+                             if t.get('t_ly_gmv') else None,
+                             t.get('t_tgt'), t.get('t_qty'), t.get('t_ach'), t.get('t_margin')]
+        for ch in ('on', 'off'):
+            line += [t.get('%s_gmv' % ch), t.get('%s_tgt' % ch), t.get('%s_qty' % ch),
+                     t.get('%s_ach' % ch), t.get('%s_margin' % ch)]
+        rows.append(line)
+        pct += [(len(rows) - 1, c) for c in (3, 6, 7, 11, 12, 16, 17)]
+        sty = sorted([r for r in l.get('sty', []) if (r.get('t_gmv') or 0) > 0],
+                     key=lambda r: -(r.get('t_gmv') or 0))
+        for r in sty:
+            line = ['  ' + str(r.get('name') or ''), r.get('sty', '')]
+            line += [r.get('t_gmv'), wow(r.get('t_ly_gmv'), r.get('t_gmv'))
+                     if r.get('t_ly_gmv') else None,
+                     r.get('t_tgt'), r.get('t_qty'), r.get('t_ach'), r.get('t_margin')]
+            for ch in ('on', 'off'):
+                line += [r.get('%s_gmv' % ch), r.get('%s_tgt' % ch), r.get('%s_qty' % ch),
+                         r.get('%s_ach' % ch), r.get('%s_margin' % ch)]
+            rows.append(line)
+            pct += [(len(rows) - 1, c) for c in (3, 6, 7, 11, 12, 16, 17)]
     return rows, pct
+
+
+def _brief_alerts(item, t):
+    out = []
+    st, so, sf = t.get('stock_t') or 0, t.get('stock_on') or 0, t.get('stock_off') or 0
+    if so and t.get('on_qty') and so / t['on_qty'] < 6:
+        out.append('확인 필요 > 온라인 재고 %.1f주치 — 이관 검토' % (so / t['on_qty']))
+    if st and abs(st - (so + sf)) > 1:
+        out.append('확인 필요 > 잔여재고 합계 ≠ ON+OFF (%s개 미귀속)'
+                   % format(int(st - so - sf), ','))
+    if not t.get('t_tgt'):
+        out.append('주간 목표 미세팅 — 달성율 산출 불가')
+    return out
 
 
 # ---------------------------------------------------------------- 유입
@@ -657,7 +771,7 @@ def build_inflow(s, last, deck_items, sink=None):
                         pct.append((len(rows) - 1, 4))
                 sink.setdefault(item, {}).update(
                     matched=[(str(a), str(b), v, nd) for a, b, v in seg], last_load=end,
-                    daily=[(d, by[d]) for d in sorted(by)[-12:]])
+                    daily=[(d, by[d]) for d in sorted(by)[-14:]])
     return rows, pct
 
 
@@ -795,15 +909,15 @@ def main():
             spreadsheetId=REVIEW_SID, range="'%s'" % t).execute(), 'clear ' + t)
 
     payload = {}
-    r, p = build_brief(tabs, prev, last, period, DECK_ITEMS)
+    inflow = {}
+    r, p = build_inflow(s, last, DECK_ITEMS, inflow)      # 브리핑이 유입 수치를 쓰므로 먼저
+    payload['유입'] = (r, p, ())
+    r, p = build_brief(tabs, prev, last, period, DECK_ITEMS, inflow)
     payload['브리핑'] = (r, p, ())
     r, p, w = build_summary(tabs, prev, last, period)
     payload['요약'] = (r, p, w)
     r, p = build_sty_all(tabs, prev, last)
     payload['STY전체'] = (r, p, ())
-    inflow = {}
-    r, p = build_inflow(s, last, DECK_ITEMS, inflow)
-    payload['유입'] = (r, p, ())
     for item in DECK_ITEMS:
         r, p = build_item(item, prev.get(item, {}), last.get(item, {}))
         payload[item] = (r, p, ())
