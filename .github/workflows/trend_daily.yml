@@ -52,7 +52,13 @@ jobs:
           fi
           python run_trend_daily.py $ARGS
 
+      # ★ Slack 발송이 실패해도 스냅샷은 남긴다.
+      #   원래 이 스텝이 실패 시 건너뛰어져, 발송 실패한 날의 스냅샷이 통째로 버려졌다.
+      #   그러면 다음 날은 "어제 스냅샷 없음"이라 비교를 못 해 발송을 안 하고 성공(=스냅샷 커밋),
+      #   그 다음 날은 비교를 해서 발송하다 또 실패… 로 **성공/실패가 격일로 번갈아** 나타났다
+      #   (2026-07-24~08-04 실측). 채널 문제를 고쳐도 이 구조는 그대로 위험하므로 분리한다.
       - name: Commit snapshot back (변경 있을 때만)
+        if: always()
         run: |
           git config user.name  "trend-radar-bot"
           git config user.email "trend-radar-bot@users.noreply.github.com"
