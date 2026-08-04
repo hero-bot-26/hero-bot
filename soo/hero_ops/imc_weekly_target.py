@@ -101,10 +101,21 @@ PREIN_FROM = dt.date(2026, 6, 1)     # 기입고물량에 포함할 입고 시�
 SEASON_YEAR = 2026
 
 # ── 원천 레이아웃 (일자별 목표 셋팅) ─────────────────────────────────────────
+# ★ 아래는 **폴백 기본값일 뿐**, 실제 위치는 `_locate_src()` 가 라벨로 찾는다.
+#   담당자가 앞쪽에 보조 컬럼을 끼워 넣으면 통째로 밀린다 — 2026-08-04 실제 발생:
+#   F~I에 '채널별 일자별 매출목표 얼라인' 4열 삽입 → 주차 F→J · 라벨/날짜 G→K · 데이터 H→L.
+#   그 결과 라벨열 K가 데이터 열로 잡혀 시리즈 'HERO 시리즈'가 생겼고 시리즈 집합 가드에 걸려 중단됐다.
+#   (같은 파일을 읽는 `target_26fw.py` 는 같은 날 `_locate()` 로 고쳤는데 여기는 빠져 있었다.)
 SRC_COL0 = 8            # H열부터 스타일×채널 블록
 SRC_R_SERIES, SRC_R_LINE, SRC_R_CH, SRC_R_STYLE = 5, 6, 7, 8
 SRC_DAILY_ROW0 = 18     # 일자 그리드 시작
 SRC_C_WEEK, SRC_C_DATE = 6, 7          # F열 = 주차 라벨, G열 = 날짜("07월 01일" 텍스트)
+
+# 라벨열 판별용 — 이 라벨이 한 열에 모두 있으면 그 열이 라벨열(=날짜열), 데이터는 그 다음 열부터.
+SRC_LABEL_KEYS = ("HERO시리즈", "라인", "채널", "품번")
+SRC_ROW_LABELS = {"SRC_R_SERIES": "HERO시리즈", "SRC_R_LINE": "라인",
+                  "SRC_R_CH": "채널", "SRC_R_STYLE": "품번"}
+_WEEK_RE = re.compile(r"\d{1,2}\s*월\s*\d\s*주")
 
 # ── 타깃 레이아웃 (시트2) ────────────────────────────────────────────────────
 # ★ 주차 열 위치는 하드코딩하지 않는다. 2026-07-30에 I열에 '기입고물량'이 삽입되면서
@@ -166,6 +177,66 @@ def _to_date(v):
         return None
 
 
+def _locate_src(ws) -> dict:
+    """일자별 탭의 라벨열·헤더행·주차열 위치를 **시트에서 직접 찾는다**(하드코딩 오프셋 금지).
+
+    라벨열 = 위쪽 30행 안에 'HERO 시리즈'·'라인'·'채널'·'품번'이 모두 있는 열.
+             이 열은 데이터 행에서 날짜("07월 01일")를 담는 열이기도 하다. 데이터는 그 다음 열부터.
+    주차열 = 라벨열 왼쪽에서 "7월1주" 꼴이 5개 이상 나오는 첫 열.
+    못 찾으면 모듈 폴백 상수를 쓰되, 어느 항목이 폴백인지 로그에 남긴다.
+    """
+    scan_r = min(ws.max_row, 30)
+    scan_c = min(ws.max_column, 40)
+    loc, fell_back = {}, []
+
+    c_label = None
+    for c in range(1, scan_c + 1):
+        labels = {re.sub(r"\s+", "", str(ws.cell(r, c).value or ""))
+                  for r in range(1, scan_r + 1)}
+        if all(k in labels for k in SRC_LABEL_KEYS):
+            c_label = c
+            break
+    if c_label is None:
+        c_label, _ = SRC_C_DATE, fell_back.append("라벨열")
+    loc["c_date"] = c_label
+    loc["c_data0"] = c_label + 1
+
+    rowof = {}
+    for r in range(1, scan_r + 1):
+        v = re.sub(r"\s+", "", str(ws.cell(r, c_label).value or ""))
+        if v and v not in rowof:
+            rowof[v] = r
+    for key, lab in SRC_ROW_LABELS.items():
+        if lab in rowof:
+            loc[key] = rowof[lab]
+        else:
+            loc[key], _ = globals()[key], fell_back.append(lab + "행")
+
+    # 일별 그리드 시작 = 라벨열이 날짜로 읽히는 첫 행(헤더 아래)
+    r0 = None
+    for r in range(max(loc["SRC_R_STYLE"], SRC_R_STYLE) + 1, min(ws.max_row, 60) + 1):
+        if _to_date(ws.cell(r, c_label).value):
+            r0 = r
+            break
+    if r0 is None:
+        r0, _ = SRC_DAILY_ROW0, fell_back.append("일자시작행")
+    loc["r_daily0"] = r0
+
+    # 주차열 = 라벨열 왼쪽에서 "7월1주" 꼴이 5개 이상인 첫 열
+    probe = range(r0, min(ws.max_row, r0 + 60) + 1)
+    c_week = None
+    for c in range(c_label - 1, 0, -1):
+        hits = sum(1 for r in probe if _WEEK_RE.fullmatch(str(ws.cell(r, c).value or "").strip()))
+        if hits >= 5:
+            c_week = c
+            break
+    if c_week is None:
+        c_week, _ = SRC_C_WEEK, fell_back.append("주차열")
+    loc["c_week"] = c_week
+    loc["fell_back"] = fell_back
+    return loc
+
+
 def _col_letter(idx: int) -> str:
     """1-indexed 열 번호 → A1 표기."""
     s = ""
@@ -203,23 +274,36 @@ def load_source(drive):
 
     # --- 일자별 탭 ---
     ws = wb[SRC_TAB]
-    cols = []
-    for c in range(SRC_COL0, ws.max_column + 1):
-        series, ch = ws.cell(SRC_R_SERIES, c).value, ws.cell(SRC_R_CH, c).value
+    loc = _locate_src(ws)
+    print(f"[원천 레이아웃] 주차 {_col_letter(loc['c_week'])}열 · 날짜/라벨 {_col_letter(loc['c_date'])}열 "
+          f"· 데이터 {_col_letter(loc['c_data0'])}열~ · 일자 시작 R{loc['r_daily0']}"
+          + (f"  ⚠ 폴백: {', '.join(loc['fell_back'])}" if loc["fell_back"] else ""))
+
+    cols, blank_series = [], []
+    for c in range(loc["c_data0"], ws.max_column + 1):
+        series, ch = ws.cell(loc["SRC_R_SERIES"], c).value, ws.cell(loc["SRC_R_CH"], c).value
+        style = str(ws.cell(loc["SRC_R_STYLE"], c).value or "").strip()
         if not series or not ch:
+            # 시리즈 라벨만 빠진 열은 조용히 흘리지 않고 경고한다
+            # (2026-08-04 실제: AL열 라이트다운 키즈 online MKEDJ9K01 의 시리즈 칸이 비어 있었다).
+            if ch and style:
+                blank_series.append(f"{_col_letter(c)}({style} {str(ch).strip()})")
             continue
         cols.append({"c": c, "series": str(series).strip(),
-                     "line": str(ws.cell(SRC_R_LINE, c).value or "").strip(),
+                     "line": str(ws.cell(loc["SRC_R_LINE"], c).value or "").strip(),
                      "ch": str(ch).strip().lower(),
-                     "style": str(ws.cell(SRC_R_STYLE, c).value or "").strip(),
+                     "style": style,
                      "daily": {}})
+    if blank_series:
+        print(f"  ⚠ 시리즈 라벨이 비어 제외한 열 {len(blank_series)}개: {', '.join(blank_series)}"
+              f" — 원천 확인 필요(기본 소스가 weekly라 목표값 자체엔 영향 없음)")
 
     wk_range: dict[str, tuple[dt.date, dt.date]] = {}
-    for r in range(SRC_DAILY_ROW0, ws.max_row + 1):
-        d = _to_date(ws.cell(r, SRC_C_DATE).value)
+    for r in range(loc["r_daily0"], ws.max_row + 1):
+        d = _to_date(ws.cell(r, loc["c_date"]).value)
         if d is None:
             continue
-        wk = str(ws.cell(r, SRC_C_WEEK).value or "").strip()
+        wk = str(ws.cell(r, loc["c_week"]).value or "").strip()
         if wk:
             a, b = wk_range.get(wk, (d, d))
             wk_range[wk] = (min(a, d), max(b, d))
