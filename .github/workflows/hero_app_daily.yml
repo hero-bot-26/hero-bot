@@ -100,16 +100,15 @@ jobs:
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
         run: python _dash_fix_colors.py --apply
 
-      # 26FW 목표(담당자 엑셀 `26FW HERO 일자별 목표 셋팅`)를 대시보드 시트 히어로 탭에 값으로 기록.
-      #   목표 파일이 .xlsx라 IMPORTRANGE가 안 돼 봇이 매일 옮긴다. 컬러 배분 = STY 목표 × HW(물량비중).
-      - name: 대시보드 26FW 목표 반영
-        if: always()
-        continue-on-error: true
-        env:
-          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
-          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
-          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
-        run: python push_26fw_targets.py --apply
+      # ★★2026-08-04 제거: "대시보드 26FW 목표 반영"(push_26fw_targets.py --apply)
+      #   이 스텝은 **시즌 누계(YTD) 목표를 MTD 목표 칸(AI/BH)에 값으로** 박아 넣고 있었다.
+      #   7월엔 MTD==시즌누계라 티가 안 났지만 8/1부터 커브드팬츠 MTD 목표가 2,399 → 17,984(7.5배),
+      #   달성율 156% → 21%로 왜곡됐다. 게다가 값 덮어쓰기라 담당자가 `히어로목표(거래량)` 탭을
+      #   고쳐도 MTD 칸에는 영원히 반영되지 않았다.
+      #   → 대시보드 목표의 단일 진실소스는 **`히어로목표(거래량)` 탭 + 각 탭의 SUMPRODUCT 수식**.
+      #     (수식 범위는 그리드 확장에 맞춰 $C$..:$GV$.. 로 확장해 둠. 열이 더 늘면 범위도 늘릴 것.)
+      #   ※ push_26fw_targets.py 자체는 남겨둔다 — 목표 탭이 비는 시즌 전환기에 수동으로 쓸 수 있다.
+      #     단 재사용 시 tq["YTD"] 가 아니라 tq["MTD"] 를 AI/BH에 쓸 것.
 
       # 26FW 대시보드 A열 uid 자동 채움 + 노트북 GOODS_FILTER 동기화.
       #   ★uid 소스는 **ItemMaster '무탠'** — MSTRD SKU 의 uid 칸은 신규 SKU 에서 비어 있어(기획MD 후행 입력)

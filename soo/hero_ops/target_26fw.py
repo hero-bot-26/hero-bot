@@ -30,11 +30,18 @@ TARGET_TAB = "일자별 목표 셋팅"
 PERIODS = ["YTD", "MTD", "WEEK", "DAY"]
 STYLE_RE = re.compile(r"^M[A-Z0-9]{8}$")
 
-# 1-indexed 행 번호 (openpyxl)
+# 1-indexed 행/열 번호 (openpyxl) — ★기본값일 뿐, 실제 위치는 `_locate()` 가 라벨로 찾는다.
+#   담당자가 앞쪽에 보조 컬럼을 끼워 넣으면 통째로 밀린다(2026-08-04 실제 발생: 'F~I 채널별 일자별
+#   매출목표 얼라인' 4열 삽입 → 라벨 G→K·데이터 H→L → 파서가 날짜를 못 찾고 ValueError).
 _R_OPEN, _R_SELL, _R_SERIES, _R_CHANNEL, _R_STYLE, _R_PREP = 3, 4, 5, 7, 8, 10
 _R_DAILY_FROM = 18
 _C_LABEL = 7        # G열 = 라벨/날짜
 _C_DATA_FROM = 8    # H열~ = 품번×채널
+
+# 라벨열 판별에 쓰는 필수 라벨(이 셋이 한 열에 다 있으면 그 열이 라벨열)
+_LABEL_KEYS = ("품번", "채널", "준비수량")
+_ROW_LABELS = {"_R_OPEN": "판매개시일", "_R_SELL": "목표소진율", "_R_SERIES": "HERO 시리즈",
+               "_R_CHANNEL": "채널", "_R_STYLE": "품번", "_R_PREP": "준비수량"}
 
 _MD_RE = re.compile(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일")
 
@@ -49,6 +56,41 @@ def _num(v):
 
 def _base(style) -> str:
     return str(style).strip().split("-")[0]
+
+
+def _locate(ws) -> dict:
+    """라벨열·헤더행 위치를 **시트에서 직접 찾는다**(하드코딩 오프셋 금지).
+
+    라벨열 = 위쪽 30행 안에 '품번'·'채널'·'준비수량' 이 모두 있는 열. 데이터는 그 다음 열부터.
+    헤더행 = 라벨열에서 각 라벨이 실제로 있는 행. 못 찾으면 모듈 기본값으로 폴백한다.
+    """
+    scan_r = min(ws.max_row, 30)
+    scan_c = min(ws.max_column, 40)
+    c_label = None
+    for c in range(1, scan_c + 1):
+        labels = {str(ws.cell(r, c).value or "").strip() for r in range(1, scan_r + 1)}
+        if all(k in labels for k in _LABEL_KEYS):
+            c_label = c
+            break
+    if c_label is None:
+        c_label = _C_LABEL
+
+    rowof = {}
+    for r in range(1, scan_r + 1):
+        v = str(ws.cell(r, c_label).value or "").strip()
+        if v and v not in rowof:
+            rowof[v] = r
+    loc = {k: rowof.get(lab, globals()[k]) for k, lab in _ROW_LABELS.items()}
+    loc["_C_LABEL"] = c_label
+    loc["_C_DATA_FROM"] = c_label + 1
+    # 일별 그리드 시작 = 라벨열에서 날짜로 읽히는 첫 행(헤더 아래)
+    daily_from = None
+    for r in range(max(loc["_R_PREP"], _R_STYLE) + 1, min(ws.max_row, 60) + 1):
+        if _cell_date(ws.cell(r, c_label).value, 2026):
+            daily_from = r
+            break
+    loc["_R_DAILY_FROM"] = daily_from or _R_DAILY_FROM
+    return loc
 
 
 def _cell_date(v, year_from):
@@ -101,14 +143,19 @@ def parse_26fw_targets(drive, as_of, fid=None, tab=TARGET_TAB) -> dict:
         raise KeyError(f"'{tab}' 탭 없음 (탭: {wb.sheetnames})")
     ws = wb[tab]
 
+    loc = _locate(ws)
+    r_open, r_sell = loc["_R_OPEN"], loc["_R_SELL"]
+    r_chan, r_style, r_prep = loc["_R_CHANNEL"], loc["_R_STYLE"], loc["_R_PREP"]
+    c_label, c_data, r_daily = loc["_C_LABEL"], loc["_C_DATA_FROM"], loc["_R_DAILY_FROM"]
+
     # 열 메타: 데이터 열 → (base, 채널키)
     colmeta: dict[int, tuple[str, str]] = {}
     col_open: dict[int, object] = {}          # 열 → 판매개시일 원본 셀값
-    for c in range(_C_DATA_FROM, ws.max_column + 1):
-        sty = str(ws.cell(_R_STYLE, c).value or "").strip()
+    for c in range(c_data, ws.max_column + 1):
+        sty = str(ws.cell(r_style, c).value or "").strip()
         if not STYLE_RE.match(sty):
             continue
-        chan = str(ws.cell(_R_CHANNEL, c).value or "").strip().lower()
+        chan = str(ws.cell(r_chan, c).value or "").strip().lower()
         if chan.startswith("online"):
             kch = "on"
         elif chan.startswith("offline"):
@@ -116,9 +163,9 @@ def parse_26fw_targets(drive, as_of, fid=None, tab=TARGET_TAB) -> dict:
         else:
             continue
         colmeta[c] = (_base(sty), kch)
-        col_open[c] = ws.cell(_R_OPEN, c).value      # 판매개시일(참고용, 누적 게이트로는 쓰지 않음)
+        col_open[c] = ws.cell(r_open, c).value      # 판매개시일(참고용, 누적 게이트로는 쓰지 않음)
     if not colmeta:
-        raise ValueError("품번×채널 열을 못 찾음 — 시트 구조 변경 의심")
+        raise ValueError(f"품번×채널 열을 못 찾음 — 시트 구조 변경 의심 (라벨열 {c_label}, 품번행 {r_style})")
 
     acc: dict[str, dict] = {}
 
@@ -130,17 +177,17 @@ def parse_26fw_targets(drive, as_of, fid=None, tab=TARGET_TAB) -> dict:
 
     for c, (base, kch) in colmeta.items():
         sl = slot(base)
-        pv = _num(ws.cell(_R_PREP, c).value)
+        pv = _num(ws.cell(r_prep, c).value)
         if pv:
             sl["prep_on" if kch == "on" else "prep_off"] += pv
         if sl["sell"] is None:
-            sl["sell"] = _num(ws.cell(_R_SELL, c).value)
+            sl["sell"] = _num(ws.cell(r_sell, c).value)
 
     # 일별 그리드 — 먼저 날짜를 모아 시즌 시작(=최초 일자)을 정한다(27SS로 갈아껴도 자동).
     rows = []
     year_from = None
-    for r in range(_R_DAILY_FROM, ws.max_row + 1):
-        v = ws.cell(r, _C_LABEL).value
+    for r in range(r_daily, ws.max_row + 1):
+        v = ws.cell(r, c_label).value
         if v is None:
             continue
         if year_from is None:
@@ -151,7 +198,8 @@ def parse_26fw_targets(drive, as_of, fid=None, tab=TARGET_TAB) -> dict:
         if d:
             rows.append((r, d))
     if not rows:
-        raise ValueError("일별 목표 행을 못 찾음 — 시트 구조 변경 의심")
+        raise ValueError(f"일별 목표 행을 못 찾음 — 시트 구조 변경 의심 "
+                         f"(라벨열 {c_label}, 일별 시작행 {r_daily})")
 
     season_start = min(d for _, d in rows)
     windows = _windows(as_of, season_start)
