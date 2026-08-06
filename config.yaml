@@ -41,8 +41,12 @@ rank1_alert:
   enabled: true
   # 감시 주기(분). 워크플로 cron과 반드시 같은 값으로 — 메시지 문구에 그대로 들어간다.
   poll_minutes: 10
-  # 슬랙 @channel 멘션 여부. false면 멘션 없이 조용히 발송.
-  mention_channel: true
+  # @channel 멘션 정책 — 1위 알림은 이틀에 한 번꼴(과거 95일 중 44일)이라 전건 멘션은 과함.
+  #   hero   = 사전 지정 히어로 상품이 1위일 때만 멘션 (기본)
+  #   always = 무탠 계열이면 전부 멘션
+  #   never  = 멘션 없이 조용히 발송
+  # 히어로가 아닌 건도 알림 자체는 그대로 발송된다 (멘션만 빠짐).
+  mention_policy: hero
   # 1위 알림 스냅샷은 상단만 타이트하게 (일일 리포트는 12 = 2줄).
   crop_to_rank: 6
   # 비우면 secrets의 slack_target(일일 리포트와 같은 채널)로 발송.

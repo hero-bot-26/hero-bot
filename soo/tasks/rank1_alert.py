@@ -225,7 +225,7 @@ def run(
     screenshot_folder_id: str = "",
     crop_to_rank: int | None = 6,
     poll_minutes: int = 10,
-    mention_channel: bool = True,
+    mention_policy: str = "hero",
     force: bool = False,
     dry_run: bool = False,
 ) -> dict:
@@ -275,6 +275,8 @@ def run(
         is_hero = hero_entry is not None
         hero_line = getattr(hero_entry, "line", "") if hero_entry else ""
 
+        # 멘션은 정책에 따라 — 히어로 외 건(양말 7팩 등)까지 @channel 하면 이틀에 한 번 전원 호출.
+        mention = mention_policy == "always" or (mention_policy == "hero" and is_hero)
         message = build_message(
             views=views,
             item=item,
@@ -282,7 +284,7 @@ def run(
             hero_line=hero_line,
             detected_at=detected_at,
             poll_minutes=poll_minutes,
-            mention_channel=mention_channel,
+            mention_channel=mention,
         )
         log.info(persona.step(f"알림 대상 — #{item.rank} {item.product_name[:40]} [{'·'.join(views)}]"))
         for line in message.split("\n"):

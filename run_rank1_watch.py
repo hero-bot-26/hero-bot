@@ -96,7 +96,12 @@ def main() -> int:
     _crop = acfg.get("crop_to_rank", cfg.get("screenshot_crop_to_rank", 12))
     crop_to_rank = int(_crop) if _crop else None
     poll_minutes = int(acfg.get("poll_minutes", 10))
-    mention_channel = bool(acfg.get("mention_channel", True))
+    mention_policy = str(acfg.get("mention_policy", "hero")).strip().lower()
+    if "mention_channel" in acfg and not acfg.get("mention_channel"):
+        mention_policy = "never"  # 구 키 호환
+    if mention_policy not in ("hero", "always", "never"):
+        log.warning(persona.step(f"mention_policy='{mention_policy}' 알 수 없음 — 'hero'로 진행"))
+        mention_policy = "hero"
 
     sheets_svc = drive_svc = None
     heroes: dict = {}
@@ -131,7 +136,7 @@ def main() -> int:
             screenshot_folder_id=screenshot_folder_id,
             crop_to_rank=crop_to_rank,
             poll_minutes=poll_minutes,
-            mention_channel=mention_channel,
+            mention_policy=mention_policy,
             force=args.force,
             dry_run=args.dry_run,
         )
