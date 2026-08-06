@@ -205,7 +205,7 @@ try:
     from soo.hero_ops.imc_triggers import load_26fw_prep
     prep26 = load_26fw_prep(sheets, sid=_src("mstrd"))
     print(f"준비수량(26FW): 스타일 {len(prep26)}개 · 합계 {sum(v['t'] for v in prep26.values()):,}"
-          f" · 시점재고 {sum(v.get('st', 0) for v in prep26.values()):,}")
+          f" · 컬러 {sum(len(v.get('colors') or {}) for v in prep26.values())}개")
 except Exception as e:
     prep26 = {}
     print(f"[주의] 준비수량 로드 실패: {type(e).__name__}: {e}")
@@ -223,7 +223,7 @@ try:
         if not _pv:
             continue
         _k = _pnorm(_hero)
-        _acc = _PREP_HERO.setdefault(_k, {"t": 0, "o": 0, "f": 0, "st": 0, "so": 0, "sf": 0})
+        _acc = _PREP_HERO.setdefault(_k, {"t": 0, "o": 0, "f": 0})
         for _c in _acc:
             _acc[_c] += _pv.get(_c, 0)
         _PREP_STY.setdefault(_k, {})[_sty] = dict(_pv)
@@ -372,7 +372,7 @@ for i, series in enumerate(series_order, 1):
     # 준비수량 — MSTRD HERO STY 기준(실적 대시보드 소진율 분모와 동일 집합)
     _pk = re.sub(r"\s+", "", str(series or ""))
     prep_q = dict(_PREP_STY.get(_pk) or {})
-    prep_tot = dict(_PREP_HERO.get(_pk) or {"t": 0, "o": 0, "f": 0, "st": 0, "so": 0, "sf": 0})
+    prep_tot = dict(_PREP_HERO.get(_pk) or {"t": 0, "o": 0, "f": 0})
 
     heroes.append({
         "id": f"26FW_{i:03d}", "season": "26FW", "track": track,
