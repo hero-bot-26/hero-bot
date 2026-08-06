@@ -1,10 +1,21 @@
 name: Rank1 watch (랭킹 1위 즉시 알림)
 
+# ── 트리거 설계 (중요) ────────────────────────────────────────────────
+# GitHub 네이티브 schedule은 이 레포에서 실제로 시간당 1회꼴로 throttle된다.
+# (hourly.yml은 6회/시간 예약인데 실제 발화는 23:29·22:29·21:16·19:59처럼 불규칙 1회.
+#  반면 외부 cron(cron-job.org)의 workflow_dispatch는 매시 :00 정확히 들어온다.)
+# 그래서 "즉시 알림"을 schedule에 맡기면 최대 1시간까지 늦는다.
+#
+# 해법: 이미 신뢰할 수 있는 매시 :00 외부 cron(hourly.yml)에 얹는다.
+#   workflow_run(hourly 완료) → 그 안에서 10분 간격으로 6회 감시 = 1시간을 촘촘히 덮음.
+# schedule은 외부 cron이 죽었을 때를 위한 백스톱으로만 남긴다.
 on:
+  workflow_run:
+    workflows: ["Hourly ranking capture"]
+    types: [completed]
   schedule:
-    # 10분 주기. GitHub schedule은 몇 분 밀릴 수 있어 "정확히 10분"은 아니지만,
-    # 중복 방지가 (날짜·뷰·goods_no) 원장 기반이라 밀림/중복 발화 모두 안전하다.
-    - cron: "*/10 * * * *"
+    # 백스톱 — 위 체인이 끊겼을 때만 의미가 있다 (실발화는 시간당 1회 수준).
+    - cron: "5,35 * * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -16,14 +27,17 @@ on:
         required: false
         default: "false"
 
+# 루프(1시간짜리)와 단발 실행이 서로를 막지 않도록 그룹을 분리.
+# 루프는 새 시간이 시작되면 이전 루프를 취소하고 새로 시작한다.
 concurrency:
-  group: rank1-watch
-  cancel-in-progress: false
+  group: rank1-watch-${{ github.event_name == 'workflow_run' && 'loop' || 'once' }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
 
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 루프가 최대 ~55분 돌기 때문에 넉넉히. 단발 실행은 1분 안에 끝난다.
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v4
 
@@ -35,26 +49,26 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      # 1위가 무탠이 아닐 땐 여기서 끝 — 대부분의 실행이 이 스텝까지만 돈다.
-      # (Playwright 설치·Google 인증·시트 접근을 전부 건너뛰어 러너 시간을 아낀다.)
+      # ── 단발 경로 (schedule / 수동) ──────────────────────────────
+      # 1위가 무탠이 아닐 땐 여기서 끝 — Playwright 설치·구글 인증·시트 접근을 건너뛴다.
       - name: Probe — 현재 1위가 무탠인가
         id: probe
-        if: github.event.inputs.force != 'true'
+        if: github.event_name != 'workflow_run' && github.event.inputs.force != 'true'
         run: python run_rank1_watch.py --probe
 
       - name: Cache Playwright Chromium
-        if: steps.probe.outputs.hit == 'true' || github.event.inputs.force == 'true'
+        if: github.event_name == 'workflow_run' || steps.probe.outputs.hit == 'true' || github.event.inputs.force == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-v1
 
       - name: Install Playwright Chromium
-        if: steps.probe.outputs.hit == 'true' || github.event.inputs.force == 'true'
+        if: github.event_name == 'workflow_run' || steps.probe.outputs.hit == 'true' || github.event.inputs.force == 'true'
         run: python -m playwright install --with-deps chromium
 
-      - name: Alert — 1위 알림 발송
-        if: steps.probe.outputs.hit == 'true' || github.event.inputs.force == 'true'
+      - name: Alert — 1위 알림 발송 (단발)
+        if: github.event_name != 'workflow_run' && (steps.probe.outputs.hit == 'true' || github.event.inputs.force == 'true')
         env:
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
@@ -69,3 +83,20 @@ jobs:
             ARGS="$ARGS --dry-run"
           fi
           python run_rank1_watch.py $ARGS
+
+      # ── 루프 경로 (hourly 완료 후 1시간 동안 10분 간격) ──────────
+      # 한 번의 실행이 6회 감시를 수행. 알림이 없으면 회당 ~5초라 대부분 대기 시간이다.
+      - name: Watch loop — 10분 간격 6회
+        if: github.event_name == 'workflow_run'
+        env:
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_TARGET:             ${{ secrets.SLACK_TARGET }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            echo "── watch $i/6 ($(TZ=Asia/Seoul date '+%H:%M KST'))"
+            # 한 회차가 실패해도(네트워크·쿼터) 루프는 계속 — 10분 뒤 다시 시도한다.
+            python run_rank1_watch.py || echo "  (이번 회차 실패 — 계속 진행)"
+            if [ $i -lt 6 ]; then sleep 600; fi
+          done
