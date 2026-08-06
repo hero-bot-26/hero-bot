@@ -35,6 +35,19 @@ ranking:
   # 캡처 시 하단을 rank N까지만 보이게 자름 (null/0 = 풀페이지). 모바일/데스크톱 6열 = 2줄 = 12.
   screenshot_crop_to_rank: 12
 
+# 랭킹 1위 즉시 알림 — 시간 무관, 무탠 계열이 1위에 오르면 그 순간 @channel + 스냅샷 발송.
+# 감시 주체: .github/workflows/rank1_watch.yml (10분 주기). 중복 방지 원장 = Rank1Alerts 탭.
+rank1_alert:
+  enabled: true
+  # 감시 주기(분). 워크플로 cron과 반드시 같은 값으로 — 메시지 문구에 그대로 들어간다.
+  poll_minutes: 10
+  # 슬랙 @channel 멘션 여부. false면 멘션 없이 조용히 발송.
+  mention_channel: true
+  # 1위 알림 스냅샷은 상단만 타이트하게 (일일 리포트는 12 = 2줄).
+  crop_to_rank: 6
+  # 비우면 secrets의 slack_target(일일 리포트와 같은 채널)로 발송.
+  slack_channel: ""
+
 # 트렌드 레이더 — 전사용 "요즘 뭐가 잘 팔리나" 일일/주간 발행 (무탠 필터 없이 전 브랜드 Top500)
 trend:
   top_n: 500

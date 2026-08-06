@@ -37,6 +37,64 @@ _DISMISS_SPLASH_JS = r"""
 }
 """
 
+# 무신사가 수시로 띄우는 안내 모달(radix dialog) 방어막 — 2026-08 "랭킹 아카이브 오픈"
+# 튜토리얼 시트가 랭킹 상단을 통째로 덮어 1~6위가 안 보이는 캡처가 나갔다.
+# 특정 모달 이름에 의존하지 않도록: ① 확인/닫기 버튼 클릭 → ② 남은 다이얼로그·전면
+# 오버레이 강제 제거 → ③ radix가 걸어둔 스크롤 락 해제 (락이 남으면 lazy-load 스크롤과
+# full_page 캡처가 같이 망가진다). 모달이 없으면 전부 no-op.
+_DISMISS_MODAL_JS = r"""
+() => {
+    const done = [];
+    const OK = ['확인', '닫기', '오늘 하루 보지 않기', '다시 보지 않기', '건너뛰기'];
+    for (const dlg of document.querySelectorAll('[role="dialog"], [role="alertdialog"]')) {
+        for (const btn of dlg.querySelectorAll('button, [role="button"]')) {
+            const t = (btn.innerText || '').trim();
+            if (OK.some(x => t === x || t.startsWith(x))) {
+                btn.click();
+                done.push('click:' + t);
+                break;
+            }
+        }
+    }
+    return done;
+}
+"""
+
+_PURGE_OVERLAY_JS = r"""
+() => {
+    const gone = [];
+    for (const el of document.querySelectorAll('[role="dialog"], [role="alertdialog"]')) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 200 && r.height > 100) {
+            gone.push('dialog:' + (el.id || el.className || '?'));
+            el.remove();
+        }
+    }
+    // 전면 백드롭 — 뷰포트를 거의 다 덮는 fixed + 높은 z-index 요소만. (GNB/플로팅 버튼은
+    // 높이 조건에 걸리지 않아 살아남는다.)
+    for (const el of Array.from(document.body.querySelectorAll('*'))) {
+        if (!el.isConnected) continue;
+        const cs = getComputedStyle(el);
+        if (cs.position !== 'fixed') continue;
+        const z = parseInt(cs.zIndex || '0', 10) || 0;
+        if (z < 100) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width >= window.innerWidth * 0.95 && r.height >= window.innerHeight * 0.95) {
+            gone.push('overlay:z' + z);
+            el.remove();
+        }
+    }
+    // radix scroll lock 해제
+    for (const node of [document.body, document.documentElement]) {
+        node.style.overflow = '';
+        node.style.paddingRight = '';
+        node.style.pointerEvents = '';
+        node.removeAttribute('data-scroll-locked');
+    }
+    return gone;
+}
+"""
+
 # lazy-load된 product 카드들이 모두 그려지도록 한 번 끝까지 스크롤 → 위로 → 이미지 onload 대기.
 _TRIGGER_LAZY_LOAD_JS = r"""
 async () => {
@@ -115,6 +173,14 @@ def screenshot_ranking_full_page(
             try:
                 if page.evaluate(_DISMISS_SPLASH_JS):
                     page.wait_for_timeout(2000)
+            except Exception:
+                pass
+
+            # 안내 모달(랭킹 아카이브 튜토리얼 등) 닫기 → 남은 다이얼로그/백드롭 강제 제거
+            try:
+                if page.evaluate(_DISMISS_MODAL_JS):
+                    page.wait_for_timeout(800)
+                page.evaluate(_PURGE_OVERLAY_JS)
             except Exception:
                 pass
 

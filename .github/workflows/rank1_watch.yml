@@ -1,0 +1,71 @@
+name: Rank1 watch (랭킹 1위 즉시 알림)
+
+on:
+  schedule:
+    # 10분 주기. GitHub schedule은 몇 분 밀릴 수 있어 "정확히 10분"은 아니지만,
+    # 중복 방지가 (날짜·뷰·goods_no) 원장 기반이라 밀림/중복 발화 모두 안전하다.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "오늘 이미 알린 건도 재발송 (true/false)"
+        required: false
+        default: "false"
+      dry_run:
+        description: "시트 기록·슬랙 발송 없이 로그만 (true/false)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: rank1-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      # 1위가 무탠이 아닐 땐 여기서 끝 — 대부분의 실행이 이 스텝까지만 돈다.
+      # (Playwright 설치·Google 인증·시트 접근을 전부 건너뛰어 러너 시간을 아낀다.)
+      - name: Probe — 현재 1위가 무탠인가
+        id: probe
+        if: github.event.inputs.force != 'true'
+        run: python run_rank1_watch.py --probe
+
+      - name: Cache Playwright Chromium
+        if: steps.probe.outputs.hit == 'true' || github.event.inputs.force == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-v1
+
+      - name: Install Playwright Chromium
+        if: steps.probe.outputs.hit == 'true' || github.event.inputs.force == 'true'
+        run: python -m playwright install --with-deps chromium
+
+      - name: Alert — 1위 알림 발송
+        if: steps.probe.outputs.hit == 'true' || github.event.inputs.force == 'true'
+        env:
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_TARGET:             ${{ secrets.SLACK_TARGET }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            ARGS="$ARGS --force"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python run_rank1_watch.py $ARGS
