@@ -100,7 +100,6 @@ def build_message(
     lines.append("")
     name = item.product_name or item.goods_no
     lines.append(f"*<{item.url}|{name[:70]}>*")
-    lines.append(f"_{item.brand}_")
     lines.append("")
     lines.append(
         f"• 1위 확인 — *{_kst_time_label(detected_at)}* "
@@ -163,7 +162,6 @@ def _upload_png_to_slack(
     png: bytes,
     filename: str,
     title: str,
-    caption: str,
     slack_bot_token: str,
     slack_target: str,
     log: logging.Logger,
@@ -194,12 +192,12 @@ def _upload_png_to_slack(
             return False
 
     try:
+        # initial_comment 없음 — 바로 위 알림 메시지가 이미 설명이라 캡션은 중복.
         client.files_upload_v2(
             channel=upload_channel,
             file=png,
             filename=filename,
             title=title,
-            initial_comment=caption,
         )
         return True
     except SlackApiError as e:
@@ -345,7 +343,6 @@ def run(
                     png=png,
                     filename=f"rank1_{primary_view}_{detected_at.strftime('%Y%m%d_%H%M')}_{gn}.png",
                     title=f"[{primary_view}] 랭킹 1위 — {item.product_name[:60]}",
-                    caption=f"📸 *{_kst_time_label(detected_at)} [{primary_view}] 랭킹 캡처*",
                     slack_bot_token=slack_bot_token,
                     slack_target=slack_target,
                     log=log,
