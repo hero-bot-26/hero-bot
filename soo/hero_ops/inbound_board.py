@@ -31,7 +31,8 @@ from collections import defaultdict, OrderedDict
 PROD_SID = "13R4gcJ7cDlReY-vwjXZf0kMZ7tC4kr2-S7PC9uziVUQ"   # 무탠본부_오더시트
 PROD_TAB = "생산관리"
 MAP_SID = "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"      # MSTRD_26FW 상품MAP
-SCHED_TAB = "발매스케줄"
+HERO_STY_TAB = "HERO STY"       # 현행 진실소스(R6 헤더·R7~)
+SCHED_TAB = "발매스케줄"          # 구 소스(2026-08 상품MAP에서 삭제됨) — 폴백으로만
 
 GRADE = {'라이트다운':'S','힛탠다드':'S','커브드팬츠':'S',
  '웜 팬츠':'A','빅토리아 울':'A','그리드/메시 플리스':'A','에센셜 플리스':'A','리커버리':'A',
@@ -85,20 +86,51 @@ def _g(row, j):
 
 
 def build_pumbon2hero(sheets):
-    """발매스케줄 → {품번: 히어로}. 15 히어로 전체(시즌 무관, 캐리오버 포함)."""
-    res = sheets.spreadsheets().values().get(
-        spreadsheetId=MAP_SID, range=f"'{SCHED_TAB}'",
-        valueRenderOption="FORMATTED_VALUE").execute()
-    rows = res.get("values", [])
-    p2h = {}
-    for r in rows[9:]:                       # 헤더 R9, 데이터 R10~
-        ser = ALIAS.get(_g(r, 4), _g(r, 4))
-        if ser not in GRADE:
+    """{품번: 히어로}. 15 히어로 전체(시즌 무관, 캐리오버 포함).
+
+    ★소스 = 상품MAP `HERO STY` 탭(R6 헤더 / R7~ : A·C 품번, B HERO/HERO SUB, D 시리즈).
+      실적·매핑 진실소스와 같은 탭이다. 구 소스 `발매스케줄` 탭은 2026-08 상품MAP에서
+      **사라졌고**(탭 목록에 없음) 그동안 보드 빌드가 통째로 실패하고 있었다 →
+      HERO STY 우선, 없으면 발매스케줄 폴백, 둘 다 안 되면 예외를 올린다(조용한 0 금지).
+    """
+    def _from_hero_sty():
+        rows = sheets.spreadsheets().values().get(
+            spreadsheetId=MAP_SID, range=f"'{HERO_STY_TAB}'!A7:H600",
+            valueRenderOption="FORMATTED_VALUE").execute().get("values", [])
+        out = {}
+        for r in rows:
+            ser = ALIAS.get(_g(r, 3), _g(r, 3))
+            if ser not in GRADE:
+                continue
+            p = _g(r, 2) or _g(r, 0)
+            if p and p != "발주전":
+                out[p] = ser
+        return out
+
+    def _from_sched():
+        rows = sheets.spreadsheets().values().get(
+            spreadsheetId=MAP_SID, range=f"'{SCHED_TAB}'",
+            valueRenderOption="FORMATTED_VALUE").execute().get("values", [])
+        out = {}
+        for r in rows[9:]:                   # 헤더 R9, 데이터 R10~
+            ser = ALIAS.get(_g(r, 4), _g(r, 4))
+            if ser not in GRADE:
+                continue
+            p = _g(r, 3)
+            if p and p != "발주전":
+                out[p] = ser
+        return out
+
+    for name, fn in (("HERO STY", _from_hero_sty), ("발매스케줄", _from_sched)):
+        try:
+            p2h = fn()
+        except Exception as e:
+            print(f"[입고보드] 히어로 매핑 '{name}' 읽기 실패: {type(e).__name__}: {e}")
             continue
-        p = _g(r, 3)
-        if p and p != "발주전":
-            p2h[p] = ser
-    return p2h
+        if p2h:
+            print(f"[입고보드] 히어로 매핑 소스='{name}' 품번 {len(p2h)}개 · 히어로 {len(set(p2h.values()))}종")
+            return p2h
+    raise RuntimeError("입고 보드 히어로 매핑을 어느 탭에서도 못 읽었습니다 — 상품MAP 탭 구성 확인 필요")
 
 
 def _read_prod_columns(sheets):
@@ -249,6 +281,12 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
             else:
                 actual = sorted(c["actual_sheet"], key=lambda x: x["date"])
             act_total = sum(a["qty"] for a in actual)
+            # ★시트 AO/AP(실입고일·량) = 담당자가 적는 '실제로 들어온 내용'. WMS 확정과 별개 트랙으로 보관.
+            #   WMS는 커버리지가 넓고(시트 공란인 70 SKU·197k개도 잡음) 시트는 확정 전 도착을 먼저 알려준다.
+            #   → 실적은 WMS 기준을 쓰되, WMS가 0인데 시트에 입고가 적혀 있으면 '미입고' 빨간불을 켜지 않는다.
+            sheet_actual = sorted([a for a in c["actual_sheet"] if a["date"] >= _cut],
+                                  key=lambda x: x["date"])
+            sheet_total = sum(a["qty"] for a in sheet_actual)
             # 차수별 실입고 배분(FIFO): 실입고를 예정 차수 순서대로 채움 → '이 차수 예정만큼 들어왔나'
             # 누적이 아니라 각 예정 차수에 귀속된 실입고량(recv)을 계산.
             _pool = [dict(a) for a in actual]   # 소모용 복사본
@@ -266,6 +304,21 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
                 p["recv_dates"] = sorted(set(_fd))
             # 예정 초과분(예정에 귀속 안 된 실입고) = 예정 외 입고
             leftover = [{"date": a["date"], "qty": a["qty"]} for a in _pool if a["qty"] > 0]
+            # 시트 실입고도 같은 FIFO로 차수에 귀속(srecv/sdates) — '계획이 밀려 나중에 들어온 물량'을
+            # 그 차수 앞에 붙여 준다. 수량 집계엔 쓰지 않고 상태 판정·표기용.
+            _spool = [dict(a) for a in sheet_actual]
+            for p in planned:
+                _need = p["qty"]; _got = 0; _sd = []
+                for a in _spool:
+                    if _need <= 0:
+                        break
+                    if a["qty"] <= 0:
+                        continue
+                    _take = min(_need, a["qty"])
+                    a["qty"] -= _take; _need -= _take; _got += _take
+                    _sd.append(a["date"])
+                p["srecv"] = _got
+                p["sdates"] = sorted(set(_sd))
             _color = ("전 사이즈" if c["n"] > 1 else c["color"])
             next_date = None
             for p in planned:
@@ -277,7 +330,8 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
             first_open = next((p["date"] for p in planned if p.get("recv", 0) < p["qty"]), None)
             late_days = (as_of - _pdate(first_open)).days if first_open else None
             short_late = any(
-                p.get("recv", 0) < p["qty"] and (as_of - _pdate(p["date"])).days >= CONFIRM_GRACE_DAYS
+                p.get("recv", 0) < p["qty"] and p.get("srecv", 0) < p["qty"]
+                and (as_of - _pdate(p["date"])).days >= CONFIRM_GRACE_DAYS
                 for p in planned)
             if plan_total and act_total >= plan_total:
                 status = "확정 완료"
@@ -285,6 +339,8 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
                 status = "일부 확정"
             elif late_days is None:
                 status = "예정"
+            elif sheet_total > 0:
+                status = "확정 대기"          # 시트엔 입고가 적혀 있다 = 물류는 들어옴, 데이터만 아직
             elif late_days >= CONFIRM_GRACE_DAYS:
                 status = "미입고"
             elif late_days >= 0:
@@ -295,6 +351,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
                 "sku": code, "style": c["style"], "name": c["name"], "color": _color,
                 "planned": planned, "actual": actual, "leftover": leftover,
                 "plan_total": plan_total, "actual_total": act_total,
+                "sheet_total": sheet_total, "sheet_actual": sheet_actual,
                 "ordered_total": c["ordered_total"], "status": status,
                 "late_days": late_days, "short_late": short_late,
                 "next_date": next_date or (planned[0]["date"] if planned else None)})
