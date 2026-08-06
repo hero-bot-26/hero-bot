@@ -1,12 +1,13 @@
 """26FW 입고 보드 데이터 빌더.
 
 ★용어(2026-08-06 사용자 확정) — 두 날짜는 다른 사건이다.
-  물류입고 = 오더시트가 들고 있는 입고예정일/량(물류센터 도착 계획).
-  입고확정 = WMS 데이터에 입고로 잡힌 날/수량. 물류입고 후 통상 3~7일 걸린다.
-  → 물류입고일이 지났다고 바로 빨간불(미입고)이 아니라, 확정 유예(CONFIRM_GRACE_DAYS)를
+  입고예정 = 오더시트 '생산관리' AK/AL(금주입고일·금주입고량) = 물류센터 도착 계획.
+  입고확정 = WMS 데이터에 입고로 잡힌 날/수량. 입고예정일 이후 통상 3~7일 걸린다.
+  → 입고예정일이 지났다고 바로 빨간불(미입고)이 아니라, 확정 유예(CONFIRM_GRACE_DAYS)를
      넘겨도 데이터가 0이면 그때 미입고. 히어로는 타이트하게 달력 3일.
+  ※ 준비수량(MSTRD 상품MAP)은 '남은 재고 + 추가 발주'라 입고예정과 성격이 다르다 — 같을 이유가 없다.
 
-플랜(물류입고)  = 무탠본부_오더시트 '생산관리' 탭 (SKU=품번-컬러 단위).
+플랜(입고예정)  = 무탠본부_오더시트 '생산관리' 탭 (SKU=품번-컬러 단위).
 실적(입고확정)  = 우선 시트 실입고일/량(AO/AP). DBX WMS(입고일자별) 탭이 생기면 그걸로 대체/보강.
 
 히어로 범위 = MSTRD_26FW 상품MAP '발매스케줄'(품번→시리즈) 15 히어로.
@@ -18,7 +19,7 @@ INBOUND_BOARD = {
   heroes: [{name, grade, launch, status, plan_total, actual_total, sku_count, skus: [
      {sku, style, name, color, planned:[{date,qty,ordered}], actual:[{date,qty}],
       plan_total, actual_total, ordered_total, status, next_date,
-      late_days,        # 미확정 최초 물류입고일로부터 경과일(확정 대기/미입고 배지용)
+      late_days,        # 미확정 최초 입고예정일로부터 경과일(확정 대기/미입고 배지용)
       short_late}       # 일부 확정인데 잔량이 유예를 넘긴 차수가 있음
   ]}],
   status = 예정 / 확정 대기 / 미입고 / 일부 확정 / 확정 완료
@@ -49,7 +50,7 @@ C_PLAN_DATE, C_PLAN_QTY, C_ACT_DATE, C_ACT_QTY = 36, 37, 40, 41
 # 26FW 시즌 관련 입고만: 이 날짜 이후 예정/실입고만 포함(상시 히어로 과거 이력 배제)
 CUTOFF = datetime.date(2026, 6, 1)
 
-# ★입고확정 유예(달력 일수). 물류입고일 + 이 일수를 넘겨도 확정 데이터가 0이면 '미입고'(빨강).
+# ★입고확정 유예(달력 일수). 입고예정일 + 이 일수를 넘겨도 확정 데이터가 0이면 '미입고'(빨강).
 #   현업 리드타임은 3~7일이지만 히어로는 타이트하게 3일로 확정(2026-08-06 사용자).
 CONFIRM_GRACE_DAYS = 3
 
@@ -325,7 +326,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
                 if act_total < plan_total or not actual:
                     next_date = p["date"]
                     break
-            # ★상태 = 물류입고(예정) 대비 입고확정(WMS) 진행. 물류입고일 경과만으론 빨간불이 아니다.
+            # ★상태 = 입고예정 대비 입고확정(WMS) 진행. 예정일 경과만으론 빨간불이 아니다.
             #   확정 0 & 경과 < 유예 → '확정 대기'(회색) / 유예 경과 → '미입고'(빨강)
             first_open = next((p["date"] for p in planned if p.get("recv", 0) < p["qty"]), None)
             late_days = (as_of - _pdate(first_open)).days if first_open else None
@@ -379,7 +380,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
 
     return {
         "season": "26FW", "as_of": as_of.isoformat(),
-        "source": "생산관리 탭(물류입고 AK/AL) + " + ("DBX WMS 입고확정(입고일자별)" if dbx_actuals is not None else "시트 입고확정(AO/AP)"),
+        "source": "생산관리 탭(입고예정 AK/AL) + " + ("DBX WMS 입고확정(입고일자별)" if dbx_actuals is not None else "시트 입고확정(AO/AP)"),
         "cutoff": CUTOFF.isoformat(), "grace_days": CONFIRM_GRACE_DAYS,
         "heroes": heroes_out, "days": days}
 
@@ -404,7 +405,7 @@ if __name__ == "__main__":
     print(f"\nas_of {board['as_of']}  cutoff {board['cutoff']}  날짜버킷 {len(board['days'])}")
     for h in board["heroes"]:
         print(f"  [{h['grade']}] {h['name']:14s} SKU{h['sku_count']:3d} "
-              f"물류입고 {h['plan_total']:>8,} 입고확정 {h['actual_total']:>8,} 발매 {h['launch'] or '-'}")
+              f"입고예정 {h['plan_total']:>8,} 입고확정 {h['actual_total']:>8,} 발매 {h['launch'] or '-'}")
     # 상태 분포
     from collections import Counter
     st = Counter(s["status"] for h in board["heroes"] for s in h["skus"])
