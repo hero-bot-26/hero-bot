@@ -65,7 +65,10 @@ def main() -> int:
         creds = get_credentials(CREDENTIALS_PATH, TOKEN_PATH)
         svc = build_services(creds)
         sheets_svc = svc["sheets"]
-        heroes = load_hero_list(sheets_svc, cfg["hero_sheet_id"])
+        heroes = load_hero_list(
+            sheets_svc, cfg["hero_sheet_id"],
+            line_tabs=cfg.get("hero_line_tabs") or None, log=log,
+        )
         hero_uids = set(heroes.keys())
         log.info(persona.step(f"히어로 리스트 로드 — {len(hero_uids)}개"))
     except Exception as e:

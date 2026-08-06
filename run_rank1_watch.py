@@ -110,7 +110,10 @@ def main() -> int:
             creds = get_credentials(CREDENTIALS_PATH, TOKEN_PATH)
             svc = build_services(creds)
             sheets_svc, drive_svc = svc["sheets"], svc["drive"]
-            heroes = load_hero_list(sheets_svc, cfg["hero_sheet_id"])
+            heroes = load_hero_list(
+                sheets_svc, cfg["hero_sheet_id"],
+                line_tabs=cfg.get("hero_line_tabs") or None, log=log,
+            )
             log.info(persona.step(f"히어로 리스트 로드 — {len(heroes)}개"))
         except Exception as e:
             log.error(persona.task_failed(f"Google 인증/히어로 로드 실패: {e}"))
