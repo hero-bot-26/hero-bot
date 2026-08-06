@@ -183,11 +183,17 @@ MSTRD_STY_EXCEPTIONS = {"MMFFJBA01": "에센셜 플리스"}   # B열='핵심상�
 #   R4 소제목 TOTAL/ON/OFF). SKU(uid) 단위라 품번으로 합산하면 STY 준비수량이 된다.
 #   ★사용자 확정(2026-07-30): 앱의 준비수량은 이 열이 유일한 기준 —
 #   수량 탭('PO 발주'→'준비수량')·실적 대시보드 소진율 분모 모두 여기서 온다.
-_PREP_COLS = (26, 27, 28)     # 0-indexed A5 기준: AA/AB/AC
+_PREP_COLS = (26, 27, 28)     # 0-indexed A5 기준: AA/AB/AC = 26FW 준비물량 TOTAL/ON/OFF
+_STOCK_COLS = (44, 45, 46)    # AS/AT/AU = 26FW 시점재고량 TOTAL/ON/OFF (준비물량의 '남은 재고' 몫)
 
 
 def load_26fw_prep(sheets, sid=None):
-    """→ {품번: {'t': TOTAL, 'o': ON, 'f': OFF}} (준비물량 있는 스타일만)."""
+    """→ {품번: {'t','o','f',  'st','so','sf'}} — 준비물량(AA/AB/AC) + 시점재고량(AS/AT/AU).
+
+    ★준비물량 = 시점재고 + 발주량(사용자 정의 2026-08-06). MSTRD SKU 탭 안에서도
+      AA = AS + AJ가 15 히어로 중 14종에서 성립한다(커브드팬츠만 원천 11행이 어긋남).
+      앱은 발주수량을 오더시트 MD투입(타겟시즌 2026FW)에서 따로 읽으므로 여기선 재고만 얹는다.
+    """
     def _n(v):
         try:
             return float(str(v).replace(",", "").strip() or 0)
@@ -195,7 +201,7 @@ def load_26fw_prep(sheets, sid=None):
             return 0.0
 
     vals = sheets.spreadsheets().values().get(
-        spreadsheetId=(sid or MSTRD_SHEET), range=f"'{MSTRD_SKU_TAB}'!A5:AC16000",
+        spreadsheetId=(sid or MSTRD_SHEET), range=f"'{MSTRD_SKU_TAB}'!A5:AU16000",
         valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
     out: dict[str, dict] = {}
     for r in vals:
@@ -208,10 +214,12 @@ def load_26fw_prep(sheets, sid=None):
         if not code or "-" not in code:
             continue
         t, o, f = (_n(r[c]) if len(r) > c else 0.0 for c in _PREP_COLS)
-        if not (t or o or f):
+        st, so, sf = (_n(r[c]) if len(r) > c else 0.0 for c in _STOCK_COLS)
+        if not (t or o or f or st or so or sf):
             continue
-        d = out.setdefault(sty, {"t": 0, "o": 0, "f": 0})
+        d = out.setdefault(sty, {"t": 0, "o": 0, "f": 0, "st": 0, "so": 0, "sf": 0})
         d["t"] += round(t); d["o"] += round(o); d["f"] += round(f)
+        d["st"] += round(st); d["so"] += round(so); d["sf"] += round(sf)
     return out
 
 
