@@ -2625,10 +2625,13 @@ except Exception as e:
 # series=실수치 / heroes·grade=26FW / actions=IMC.items(hero_related)에서 유도. 실패 시 샘플 유지.
 npdp = 0
 try:
-    # ★2026-08-07 자기 게이트로 판정 — 이 탭만 늦은 날은 트렌드 차트만 직전값을 유지하고
-    #   PMKT·퍼널·실적은 정상 갱신한다(구조: PDP일별이 PMKT 그룹에 묶여 있던 것을 분리).
-    if not globals().get("_FRESH_PDPD", True):
-        raise RuntimeError("PDP일별 탭 기준일 불일치 — 트렌드 직전값 유지")
+    # ★★2026-08-07(2차) 하드 게이트 철회 — **막지 말고, 실제 기준일을 밝힌다.**
+    #   1차로 '전일과 다르면 주입 스킵'을 넣었더니 트렌드가 영구 동결될 구조였다:
+    #   CI가 이 탭을 더는 기다리지 않는데(WAIT_SKIP_TABS) 이 탭은 노트북 **마지막 셀**이라
+    #   생성 시점(13시경)엔 늘 아직 안 차 있다 → 매번 스킵 → 차트가 계속 옛값.
+    #   애초에 PDP 유입 원천은 실적보다 늦게 적재되는 게 정상이다(weekly_review 주석에도 명시).
+    #   → 있는 데이터를 넣되 `as_of`를 **데이터의 실제 마지막 날짜**로 세팅해 화면에 그대로 노출.
+    #     (종전엔 as_of=생성일이라, 8/5까지인 데이터에 '8/6'이 찍혀 하루 앞서 보였다.)
     from soo.hero_ops.sales_rollup import read_tab as _read_tab, SALES_SHEET_ID as _SALES_DEF
     _pdp_sid = _src("dashboard") or _SALES_DEF
     # 노트북 산출 = date, style_no, goods_no, pdp_uv → 여기서 26FW 히어로로 롤업.
@@ -2709,12 +2712,20 @@ try:
             if _hv:
                 _a["hero"] = _hv
             _acts.append(_a)
-        _pdp_obj = {"as_of": TODAY.isoformat(), "sample": False, "dates": _pdp_dates,
+        # ★as_of = **데이터의 실제 마지막 날짜**(생성일이 아니다). 유입 원천은 실적보다 늦게
+        #   적재되므로 여기서 정직하게 밝히고, 앱이 차트 옆에 '원천 ~M/D 기준'으로 그린다.
+        _pdp_last = _pdp_dates[-1]
+        _pdp_lag = (TODAY - datetime.date.fromisoformat(_pdp_last)).days
+        _pdp_obj = {"as_of": _pdp_last, "gen_at": TODAY.isoformat(), "lag_days": _pdp_lag,
+                    "sample": False, "dates": _pdp_dates,
                     "series": _series, "heroes": _order, "grade": _grade, "actions": _acts}
+        if _pdp_lag > 2:      # 전일(=1) 또는 이틀 전(=2)까진 원천 적재 지연으로 정상
+            _HEALTH.append(f"PDP 일별 유입 원천 지연 {_pdp_lag}일(마지막 {_pdp_last}) — 트렌드 꼬리 확인")
         html2, npdp = re.subn(r"window\.__PDP_DAILY = [^\n]*?;",
                               lambda _m: "window.__PDP_DAILY = " + json.dumps(_pdp_obj, ensure_ascii=False) + ";",
                               html2, count=1)
-        print(f"PDP일별 주입: {len(_pdp_dates)}일 · 히어로 {len(_order) - 1} · actions {len(_acts)} (교체 {npdp})")
+        print(f"PDP일별 주입: {len(_pdp_dates)}일({_pdp_dates[0]}~{_pdp_last}, 원천지연 {_pdp_lag}일) · "
+              f"히어로 {len(_order) - 1} · actions {len(_acts)} (교체 {npdp})")
         if npdp != 1:
             _HEALTH.append("window.__PDP_DAILY 교체 실패(앱 플레이스홀더 확인)")
     else:
