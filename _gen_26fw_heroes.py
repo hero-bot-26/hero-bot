@@ -2761,53 +2761,62 @@ try:
             continue
         _shop_tot.setdefault(p, {})[sn] = g
         _grand[p] = _grand.get(p, 0.0) + g
-    # 시즌별 매핑으로 히어로 롤업
+    # ★★2026-08-07(2차) 스타일 단위를 살려서 넣는다 — 앱이 **양방향 피벗**을 하기 때문.
+    #   히어로→매장 / 매장→스타일 / 스타일→매장 세 축을 한 데이터로 돌린다(라벨 클릭으로 축 전환).
+    #   1차엔 매장까지만 합쳐 넣었더니 "이 매장이 뭘 잘 파나"를 못 봤다.
+    #   ★침투지수는 뺐다(사용자: 내부에서 안 쓰는 말). 매장 총계는 비중 계산용으로만 남긴다.
+    #   전송량은 이름을 인덱스로 접어 줄인다(행 12,875개 × 5칸).
+    _shop_idx, _shops_meta = {}, []
+    for r in _tot_rows:
+        sn = str(r.get("shop_no") or "")
+        if sn and sn not in _shop_idx:
+            _shop_idx[sn] = len(_shops_meta)
+            _shops_meta.append([str(r.get("shop_nm") or ""), str(r.get("shop_region") or "")])
+    _sty_nm = globals().get("_sty_names") or {}
     _off_seasons = {}
     for _sea, _mapf in (("26FW", "hero_goods_26fw.json"), ("26SS", "hero_goods_26ss.json")):
         _mp = ROOT / _mapf
         if not _mp.exists():
             continue
         _s2h = json.loads(_mp.read_text(encoding="utf-8")).get("style_to_hero") or {}
-        _acc = {}          # hero → period → {gmv, qty, gmv_ly, shops:{shop_no:[nm,region,gmv,qty,gmv_ly]}}
+        _hs, _hi = [], {}
+        _ts, _ti, _th = [], {}, []
+        _rows_by_p = {}
         for r in _off_rows:
-            _h = _s2h.get(str(r.get("sty") or "").strip())
-            if not _h:
+            _sty = str(r.get("sty") or "").strip()
+            _h = _s2h.get(_sty)
+            sn = str(r.get("shop_no") or "")
+            p = str(r.get("period") or "")
+            if not _h or not p or sn not in _shop_idx:
                 continue
-            p, sn = str(r.get("period") or ""), str(r.get("shop_no") or "")
-            if not p or not sn:
-                continue
-            a = _acc.setdefault(_h, {}).setdefault(p, {"gmv": 0.0, "qty": 0.0, "gmv_ly": 0.0, "shops": {}})
-            g, q, gl = _num(r.get("gmv")), _num(r.get("qty")), _num(r.get("gmv_ly"))
-            a["gmv"] += g; a["qty"] += q; a["gmv_ly"] += gl
-            s = a["shops"].setdefault(sn, [str(r.get("shop_nm") or ""), str(r.get("shop_region") or ""), 0.0, 0.0, 0.0])
-            s[2] += g; s[3] += q; s[4] += gl
-        _out = {}
-        for _h, _pers in _acc.items():
-            _out[_h] = {}
-            for p, a in _pers.items():
-                G = _grand.get(p, 0.0)
-                share = a["gmv"] / G if G else 0.0
-                shops = []
-                for sn, (nm, rg, g, q, gl) in a["shops"].items():
-                    st = (_shop_tot.get(p, {}) or {}).get(sn, 0.0)
-                    pen = g / st if st else 0.0                     # 그 매장 매출 중 이 히어로 비중
-                    shops.append([nm, rg, round(g), round(q), round(gl),
-                                  round(pen / share, 2) if share else 0])
-                shops.sort(key=lambda x: -x[2])
-                _out[_h][p] = {"gmv": round(a["gmv"]), "qty": round(a["qty"]),
-                               "gmv_ly": round(a["gmv_ly"]), "share": round(share, 5), "shops": shops}
-        if _out:
-            _off_seasons[_sea] = _out
+            if _h not in _hi:
+                _hi[_h] = len(_hs); _hs.append(_h)
+            if _sty not in _ti:
+                _ti[_sty] = len(_ts); _ts.append(_sty); _th.append(_hi[_h])
+            _rows_by_p.setdefault(p, []).append(
+                [_shop_idx[sn], _ti[_sty], round(_num(r.get("gmv"))),
+                 round(_num(r.get("qty"))), round(_num(r.get("gmv_ly")))])
+        if _hs:
+            _off_seasons[_sea] = {"heroes": _hs, "stys": _ts, "sty_hero": _th,
+                                  "sty_name": [_sty_nm.get(t, "") for t in _ts],
+                                  "rows": _rows_by_p}
     _off_obj = {"as_of": TODAY.isoformat(),
                 "total": {p: round(g) for p, g in _grand.items()},
-                "shop_count": len({sn for v in _shop_tot.values() for sn in v}),
-                "cols": ["shop_nm", "region", "gmv", "qty", "gmv_ly", "idx"],
+                "shop_count": len(_shops_meta),
+                "shops": _shops_meta,
+                "shop_tot": {p: [round((_shop_tot.get(p, {}) or {}).get(sn, 0.0))
+                                 for sn, _ in sorted(_shop_idx.items(), key=lambda kv: kv[1])]
+                             for p in _grand},
+                "cols": ["shop_i", "sty_i", "gmv", "qty", "gmv_ly"],
                 "seasons": _off_seasons}
     html2, noff = re.subn(r"const OFFLINE_HERO = \{.*?\};",
                           lambda _m: "const OFFLINE_HERO = " + json.dumps(_off_obj, ensure_ascii=False) + ";",
                           html2, count=1, flags=re.DOTALL)
-    _n_h = sum(len(v) for v in _off_seasons.values())
-    print(f"OFFLINE_HERO 주입: 시즌 {list(_off_seasons)} · 히어로 {_n_h} · 매장 {_off_obj['shop_count']} · "
+    _n_h = sum(len(v["heroes"]) for v in _off_seasons.values())
+    _n_t = sum(len(v["stys"]) for v in _off_seasons.values())
+    _n_r = sum(len(rr) for v in _off_seasons.values() for rr in v["rows"].values())
+    print(f"OFFLINE_HERO 주입: 시즌 {list(_off_seasons)} · 히어로 {_n_h} · 스타일 {_n_t} · "
+          f"매장 {_off_obj['shop_count']} · 행 {_n_r:,} · "
           f"오프라인 전체 {{{', '.join(f'{p} {g/1e8:,.0f}억' for p, g in sorted(_grand.items()))}}} (교체 {noff})")
     if noff != 1:
         _HEALTH.append("OFFLINE_HERO 교체 실패(앱 플레이스홀더 확인)")
