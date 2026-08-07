@@ -4,7 +4,9 @@
 발매 카운트다운 알람을 온라인 담당에게 발송. 앞단 triggers.py 의 발송·잠금·dedup 재사용.
 
 확정 스펙 (project_hero_ops_system 메모리, 2026-06-18 IMC 정독):
-- 발매일 진실소스 = ★MSTRD_26FW 상품MAP '발매스케줄' 탭 (C=등급 D=신품번 E=시리즈 H=팀 N=품명 O=발매일).
+- 발매일 진실소스 = 무탠본부 아이템마스터 '무탠' 탭 B열(`load_mutan_release_dates`).
+  스타일·시리즈·팀·등급 = ★MSTRD_26FW 상품MAP 'HERO STY' 탭 (A·C=품번 B=등급 D=시리즈 G=팀 M=품명).
+  ★구 소스 '발매스케줄' 탭은 2026-08 상품MAP에서 삭제됨 — 되살리지 말 것(2026-08-07 이관).
 - 노출 룰 = '콘텐츠별 노출 스킴'(드롭): 발매 D-2 티징 → D-DAY 발매 노출(발매판/퀵버튼/앱스플래시/검색/뉴스).
   (시트 병합셀이라 룰은 코드에 고정. 변경 시 SCHEME 갱신.)
 - 담당 라우팅 = 발매스케줄 팀(남/여/키즈) → 온라인MD R&R. 실발송은 triggers.TEST_ONLY 잠금(본인 DM만).
@@ -25,8 +27,9 @@ from soo.auth import get_credentials, build_services
 from soo.hero_ops import triggers as T   # 공유 인프라(TEST_ONLY/_test_target/_slack_token/dedup/persona)
 
 ROOT = T.ROOT
-RELEASE_SHEET = T.HERO_SHEET          # ★MSTRD_26FW 상품MAP
-RELEASE_TAB = "발매스케줄"
+# ★2026-08-07 삭제: RELEASE_SHEET / RELEASE_TAB("발매스케줄").
+#   그 탭은 상품MAP에서 사라졌다(현재 탭 목록에 없음). 되살리지 말 것 —
+#   발매 목록은 `load_releases()`가 'HERO STY' + 무탠 아이템마스터로 만든다.
 GRADES = ("HERO", "HERO SUB", "핵심상품")
 
 # 노출 스킴(드롭) — 발매 D-N 별 핵심 액션. 소스 '콘텐츠별 노출 스킴' 탭(병합셀이라 고정).
@@ -61,22 +64,42 @@ def _to_date(v) -> datetime.date | None:
 
 
 def load_releases(sheets) -> list[dict]:
-    """발매스케줄 → [{style, series, team, name, grade, release(date)}] (HERO/SUB/핵심 + 발매일 有)."""
-    res = sheets.spreadsheets().values().get(
-        spreadsheetId=RELEASE_SHEET, range=f"'{RELEASE_TAB}'!A10:O400",
-        valueRenderOption="UNFORMATTED_VALUE").execute()
-    out = []
-    for r in res.get("values", []):
-        def c(i): return r[i] if i < len(r) and r[i] is not None else ""
-        grade = str(c(2)).strip()
-        if grade not in GRADES:
+    """26FW 발매 목록 → [{style, series, team, name, grade, release(date)}] (HERO/SUB/핵심 + 발매일 有).
+
+    ★★2026-08-07 소스 이관 — 구 소스 '발매스케줄'(상품MAP) 탭이 **삭제**됐다.
+      그 탭을 읽던 이 함수가 Sheets 400 을 내면서 **모듈 전체가 매일 exit 1**로 죽어
+      IMC 발매 노출 알람이 통째로 멈춰 있었다(2026-08-06 발견, daily 워크플로 마지막 스텝).
+      · 스타일·시리즈·팀·등급 = 같은 시트 **'HERO STY'** 탭(실적·입고 보드가 이미 쓰는 진실소스).
+        A·C=품번 B=HERO|HERO SUB|핵심상품 D=시리즈 **G=팀**(라우팅) M=품명.
+      · 발매일 = **무탠본부 아이템마스터**(`load_mutan_release_dates`의 rep_first).
+        발매일 진실소스가 무탠이라는 건 2026-07-13 에 이미 확정된 사실인데 이 함수만
+        옛 탭에 남아 있었다. 발매스케줄은 stale 날짜가 섞여 있어 폴백으로도 쓰지 않는다.
+      · 26FW 발매일이 없는 스타일(캐리오버·발주전)은 카운트다운 대상이 아니라 제외 —
+        구 소스에서도 '발매일 有' 조건이었으므로 동작은 같다.
+    """
+    def g(r, j):
+        return str(r[j]).strip() if j < len(r) and r[j] is not None else ""
+
+    sv = sheets.spreadsheets().values().get(
+        spreadsheetId=MSTRD_SHEET, range=f"'{MSTRD_STY_TAB}'!A7:N1100").execute().get("values", [])
+    rep_first = load_mutan_release_dates(sheets)["rep_first"]
+
+    out, seen = [], set()
+    for r in sv:
+        sty = g(r, 0) or g(r, 2)
+        grade, ser = g(r, 1).upper(), g(r, 3)
+        if not sty or sty == "-" or sty in seen:
             continue
-        style = str(c(3)).strip()
-        rel = _to_date(c(14))
-        if not style or not rel:
+        if sty in MSTRD_STY_EXCEPTIONS:      # B열='핵심상품'이나 HERO SUB로 인정(사용자 확정)
+            grade, ser = "HERO SUB", MSTRD_STY_EXCEPTIONS[sty]
+        if grade not in GRADES or not ser or ser == "-":
             continue
-        out.append({"style": style, "series": str(c(4)).strip(), "team": str(c(7)).strip(),
-                    "name": str(c(13)).strip(), "grade": grade, "release": rel})
+        rel = rep_first.get(sty)
+        if not rel:
+            continue
+        seen.add(sty)
+        out.append({"style": sty, "series": ser, "team": g(r, 6),
+                    "name": g(r, 12), "grade": grade, "release": rel})
     return out
 
 
@@ -880,19 +903,36 @@ def main() -> int:
     sheets = svc["sheets"]
     T.load_owner_map(sheets)        # 온라인 담당 Slack ID(담당자매핑에 있으면) 로드
 
-    releases = load_releases(sheets)
+    # ★★2026-08-07 원천 격리 — 알람군 하나의 소스가 사라져도 나머지는 계속 돈다.
+    #   사고: '26년 캠페인_특별 기획전' 탭 하나가 시트에서 없어지자 Sheets 400 이 위로 올라와
+    #   **모듈 전체가 exit 1**로 죽었고, 그 바람에 발매·오프라인·이슈·기획전 알람까지 전부
+    #   멈췄다(2026-08-06 발견). 원천 개명·삭제는 실무 시트에서 늘 일어나므로,
+    #   못 읽은 알람군만 건너뛰고 **로그에 크게 남긴다**(조용한 스킵 금지).
+    skipped = []
+
+    def _safe(label, fn):
+        try:
+            return fn(sheets)
+        except Exception as e:
+            print(f"[주의] {label} 원천 로드 실패 — 이 알람군만 스킵: {type(e).__name__}: {e}")
+            skipped.append(label)
+            return []
+
+    releases = _safe("IMC-3 발매(HERO STY+무탠)", load_releases)
     msgs3 = format_imc(compute_imc(releases, as_of))           # IMC-3 발매 노출
-    camps = load_campaigns(sheets)
+    camps = _safe(f"IMC-4 캠페인('{CAMPAIGN_TAB}')", load_campaigns)
     msgs4 = format_campaign(compute_campaign_alarms(camps, as_of))  # IMC-4 캠페인 역산
-    gates = load_offline_gates(sheets)
+    gates = _safe(f"IMC-6 오프라인('{OFFLINE_TAB}')", load_offline_gates)
     msgs6 = format_offline(compute_offline_alarms(gates, as_of))    # IMC-6 오프라인 게이트(+명절/매장오픈)
-    issues = load_release_issues(sheets)
+    issues = _safe(f"IMC-7 발매이슈('{ISSUE_TAB}')", load_release_issues)
     msgs7i = format_issue(compute_issue_alarms(issues, as_of))      # IMC-7 발매이슈 D-4
-    promos = load_general_promos(sheets)
+    promos = _safe(f"IMC-7 일반기획전('{PROMO_TAB}')", load_general_promos)
     msgs7p = format_promo(compute_promo_alarms(promos, as_of))      # IMC-7 일반기획전 D-1
     msgs = msgs3 + msgs4 + msgs6 + msgs7i + msgs7p
     print(f"기준일 {as_of} · 발매 {len(releases)}/노출 {len(msgs3)} · 캠페인 {len(camps)}/역산 {len(msgs4)} · "
           f"오프라인게이트 {len(gates)}/{len(msgs6)} · 발매이슈 {len(issues)}/{len(msgs7i)} · 일반기획전 {len(promos)}/{len(msgs7p)} · TEST_ONLY={T.TEST_ONLY}")
+    if skipped:
+        print(f"⚠️ 원천 {len(skipped)}건 로드 실패로 스킵 — {', '.join(skipped)} (탭 개명·삭제 확인 필요)")
     for m in msgs:
         print("\n" + "─" * 50)
         _, lbl = _imc_route(m["owner"])
