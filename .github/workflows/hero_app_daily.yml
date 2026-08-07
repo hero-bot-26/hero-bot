@@ -31,13 +31,6 @@ jobs:
       - name: Checkout hero_bot (생성기)
         uses: actions/checkout@v4
 
-      - name: Checkout hero-master-app (배포 repo)
-        uses: actions/checkout@v4
-        with:
-          repository: hero-bot-26/hero-master-app
-          token: ${{ secrets.APP_REPO_PAT }}     # hero-master-app 쓰기 권한 PAT
-          path: hero-master-app
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -67,6 +60,22 @@ jobs:
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
         run: python wait_sheet_fresh.py --timeout-min 240 --interval-min 5
 
+      # ★★2026-08-07 이 스텝을 '대기 뒤'로 옮겼다 — 원래는 잡 맨 앞(09:03)에 체크아웃하고
+      #   시트를 최대 4h 기다린 뒤(13:0x) push 했다. 그 4시간 사이에 main 이 움직이면
+      #   (그날 PR 머지 등) push 가 무조건 rejected 되고 **그날 데이터 갱신이 통째로 버려진다.**
+      #   실제 사고 2026-08-06: 생성은 성공했는데 `! [rejected] main -> main (fetch first)` 로
+      #   커밋 폐기 → 자동 갱신이 8/5 에서 멈춤(오후 수동 재생성으로 겨우 메움).
+      #   생성 직전에 체크아웃하면 경합 창이 4시간 → 수십 초로 줄고, 남는 초 단위 경합은
+      #   아래 push 재시도(rebase)가 받는다.
+      #   ※ 순서를 다시 앞으로 돌리지 말 것. app.html 은 UI 코드와 주입 데이터가 같은 파일이라
+      #     낡은 체크아웃 위에 생성하면 그 사이 머지된 UI 변경을 되돌려 버린다.
+      - name: Checkout hero-master-app (배포 repo) — ★생성 직전에
+        uses: actions/checkout@v4
+        with:
+          repository: hero-bot-26/hero-master-app
+          token: ${{ secrets.APP_REPO_PAT }}     # hero-master-app 쓰기 권한 PAT
+          path: hero-master-app
+
       - name: Generate app.html (구글시트 → app.html)
         env:
           GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}   # 서비스계정(있으면 우선·토큰만료 없음)
@@ -83,10 +92,28 @@ jobs:
           git add public/app.html
           if git diff --cached --quiet; then
             echo "변경 없음 — 커밋 스킵"
-          else
-            git commit -m "데이터 갱신 (자동) $(date -u +%Y-%m-%d)"
-            git push
+            exit 0
           fi
+          git commit -m "데이터 갱신 (자동) $(date -u +%Y-%m-%d)"
+          # 체크아웃~push 사이(수십 초)에 남이 main 에 얹었으면 rebase 하고 다시 민다.
+          # ★app.html 이 원격에서도 바뀌어 충돌하면 자동 병합하지 않는다 — 우리 생성본으로
+          #   덮으면 그 사이 머지된 UI 변경이 사라지고, 원격을 받으면 데이터가 낡는다.
+          #   둘 다 틀리므로 abort 하고 실패로 끝낸다(슬랙 알림 → 재실행이 정답).
+          for i in 1 2 3; do
+            if git push; then
+              echo "push 성공 (시도 $i)"
+              exit 0
+            fi
+            echo "push 거절 — origin/main 받아 rebase 후 재시도 ($i/3)"
+            git fetch origin main
+            if ! git rebase origin/main; then
+              git rebase --abort || true
+              echo "::error::app.html 이 원격에서도 변경됨 — 자동 rebase 불가. 워크플로를 재실행해 최신 main 위에서 다시 생성할 것."
+              exit 1
+            fi
+          done
+          echo "::error::push 3회 실패 — 수동 확인 필요"
+          exit 1
 
       # 26FW 대시보드 시트 준비물량 자동 보정 — MSTRD SKU에 새 컬러가 생기면 히어로 탭에 행을 채운다.
       #   ★행 삭제·수식 재배치는 하지 않는다(블록 범위 안쪽 삽입 → 소계·총계 수식이 자동 확장).

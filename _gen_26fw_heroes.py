@@ -2423,36 +2423,25 @@ except Exception as e:
     print(f"[주의] 27SS 스케줄 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
 # ── 26FW 발매센터 데이터 주입 (const LAUNCH_26FW) ──
-# 준비(상품기획 14단계 완료율=heroes) + 발매(★MSTRD_26FW 상품MAP 발매스케줄 품번→시리즈→발매일)
+# 준비(상품기획 14단계 완료율=heroes) + 발매(★무탠본부 아이템마스터 = 발매일 진실소스, `_MUTAN_REL`)
 #   + 판매(IMC_PERF 현재 누판 YTD, 이름정규화 조인). 상태=발매일 vs TODAY 자동전환.
+#
+# ★★2026-08-07 제거: '발매스케줄'(상품MAP) 탭 읽기.
+#   그 탭은 **2026-08 상품MAP에서 삭제**됐고(현재 탭 목록에 없음), 읽는 순간 Sheets 400
+#   "Unable to parse range" 가 나서 **이 try 블록이 통째로 abort** → LAUNCH_26FW 는 직전값으로
+#   동결되고, 아래에서 만드는 `_lm`(launch_meta)이 빈 dict 로 남아 **입고 보드 15 히어로의
+#   발매일이 전부 null → 화면에 '발매 미정'** 으로 떴다(2026-08-06 라이브 사고).
+#   게다가 이 읽기로 만들던 `_fw_agg` 는 발매일·SKU 카운트를 무탠 진실소스로 옮긴 뒤
+#   **이미 아무 데서도 읽지 않는 죽은 값**이었다 — 크래시만 시키고 있었다.
+#   → 통째 삭제. 발매일/신규·캐리오버/스타일수는 아래 `_MUT_BY_KEY`(무탠) 단독으로 간다.
+#   ※ 같은 탭을 보는 `soo/hero_ops/imc_triggers.py`(RELEASE_TAB)도 매일 죽는다 — 별건으로 남음.
 nlaunch = 0
 try:
-    _26FW_MAP_ID = _src("mstrd") or "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"   # ★MSTRD_26FW 상품MAP (mstrd 소스키)
     _FW_GRADE = {"라이트다운": "S", "힛탠다드": "S", "커브드팬츠": "S",
                  "웜 팬츠": "A", "빅토리아 울": "A", "그리드/메시 플리스": "A", "에센셜 플리스": "A", "리커버리": "A",
                  "헤비다운": "E", "슬랙스": "E", "데님팬츠": "E", "스웨트팬츠": "E", "벨트": "E", "양말": "E", "심리스 브라": "E"}
-    _FW_ALIAS = {"그리드/알파 플리스": "그리드/메시 플리스"}   # 발매스케줄 표기 → 표준 히어로명
     _FW_MD_PLANNING = {"리커버리"}                          # 발매일 미정 중 MD 기획진행(사용자 명시); 그 외 무일정=캐리오버
     def _fw_norm(s): return re.sub(r"\s+", "", str(s or ""))
-    def _fw_date(s):
-        m = re.match(r"\s*(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})", str(s or ""))
-        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
-
-    _sch = sheets.spreadsheets().values().get(
-        spreadsheetId=_26FW_MAP_ID, range="'발매스케줄'!A9:R600").execute().get("values", [])
-    _fw_agg = {n: {"dates": [], "new": 0, "carry": 0, "styles": set()} for n in _FW_GRADE}
-    for r in _sch:
-        if len(r) < 15:
-            continue
-        ser = _FW_ALIAS.get(str(r[4]).strip(), str(r[4]).strip())
-        if ser not in _FW_GRADE:
-            continue
-        a = _fw_agg[ser]; season = str(r[6]).strip(); nc = str(r[5]).strip(); d = _fw_date(r[14])
-        if season == "26FW":
-            a["styles"].add(str(r[3]).strip())
-            if "신규" in nc: a["new"] += 1
-            elif "캐리오버" in nc: a["carry"] += 1
-            if d: a["dates"].append(d)
 
     # 준비 완료율 (heroes 매트릭스, 이름정규화 조인)
     _prep = {_fw_norm(h["name"]): h for h in heroes}
@@ -2474,7 +2463,6 @@ try:
         _fw_goal_qty[_h] = _fw_goal_qty.get(_h, 0) + ((_tv.get("tq") or {}).get("YTD") or {}).get("t", 0)
     _fw_list = []
     for name, grade in _FW_GRADE.items():
-        a = _fw_agg[name]
         # 발매일 = 무탠 진실소스 단독. ★발매스케줄 폴백 폐기 — 슬랙스처럼 무탠에 26FW 신규
         # 발매 STY가 없는 히어로는 발매스케줄이 옛 품번을 신규로 오기한 stale 날짜(7/29)를
         # 물고 있어 캘린더와 어긋남 → 무탠 무일정=캐리오버로 통일(잘못된 데이터 제거).
