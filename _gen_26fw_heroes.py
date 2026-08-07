@@ -463,13 +463,26 @@ try:
     # ★그룹별 판정(2026-07-31) — 매출 탭과 PMKT 계열은 노트북에서 따로 채워져 한쪽만 늦는 날이 있다.
     #   한 덩어리로 막으면 멀쩡한 매출까지 옛값으로 묶여 '누계<당월' 같은 모순이 남는다.
     _SALES_TAB_SET = {"YTD", "MTD", "WEEK", "DAY", "FWTD", "직전WEEK"}
+    # ★★2026-08-07 PDP일별을 독립 그룹으로 분리.
+    #   이 탭은 성과탭 상단 'PDP 일별 유입 트렌드' **차트 하나**의 소스인데, PMKT 그룹에 묶여 있어
+    #   이것만 늦으면 PMKT·퍼널·경로 주입이 통째로 보류됐다. 실제로 노트북에서 이 셀이 제일 무겁고
+    #   (goods x 90일 156,144행을 매일 전량 재적재) 항상 마지막에 끝나, 매일 아침 CI가 4시간
+    #   대기를 꽉 채우고 타임아웃 → 실적·PMKT가 저녁 폴백 런에나 반영되고 있었다.
+    #   → 트렌드 차트 하나 때문에 숫자 블록을 묶지 않는다. 각자 자기 게이트로 판정.
+    _PDPD_TAB_SET = {"PDP일별"}
     _BAD_TABS = {b.split()[0] for b in _SALES_BAD}
     _FRESH_SALES = not (_BAD_TABS & _SALES_TAB_SET)      # 매출(대시보드·홈 26FW)
-    _FRESH_PMKT = not (_BAD_TABS - _SALES_TAB_SET)       # PMKT·퍼널·경로·PDP일별
+    _FRESH_PMKT = not (_BAD_TABS - _SALES_TAB_SET - _PDPD_TAB_SET)   # PMKT·퍼널·경로
+    _FRESH_PDPD = not (_BAD_TABS & _PDPD_TAB_SET)        # PDP 일별 트렌드 차트 전용
     if not _SALES_FRESH:
-        print(f"[신선도] 실적시트 기준일 불일치 {len(_SALES_BAD)}건 — 실적·PMKT 주입 스킵(직전값 유지): "
+        # ★그룹별로 실제 보류된 것만 적는다 — 셋을 분리한 뒤에도 문구가 '실적·PMKT 스킵'으로 고정돼 있으면
+        #   PDP일별 하나 늦은 날에도 실적이 멈춘 것처럼 읽혀(앱 헬스 배너 포함) 오진을 부른다.
+        _held = [n for n, ok in (("실적", _FRESH_SALES), ("PMKT·퍼널", _FRESH_PMKT),
+                                 ("PDP트렌드", _FRESH_PDPD)) if not ok] or ["없음"]
+        print(f"[신선도] 실적시트 기준일 불일치 {len(_SALES_BAD)}건 — 보류: {'/'.join(_held)}(직전값 유지): "
               + " · ".join(_SALES_BAD[:6]))
-        _STALE_MSGS.append("실적시트 기준일 불일치 → 실적·PMKT 갱신 보류(직전값 유지): " + " · ".join(_SALES_BAD[:4]))
+        _STALE_MSGS.append(f"실적시트 기준일 불일치 → {'/'.join(_held)} 갱신 보류(직전값 유지): "
+                           + " · ".join(_SALES_BAD[:4]))
     # 홈 실적 = 시트39 확정 26SS 매핑(uid+신품번, 사용자 검증 524.5억=525.4). 성과 탭과 동일 히어로 정의.
     _map26 = json.load(open(ROOT / "hero_goods_26ss.json", encoding="utf-8"))
     _dash_s2h = _map26["style_to_hero"]
@@ -2612,10 +2625,16 @@ except Exception as e:
 # series=실수치 / heroes·grade=26FW / actions=IMC.items(hero_related)에서 유도. 실패 시 샘플 유지.
 npdp = 0
 try:
+    # ★2026-08-07 자기 게이트로 판정 — 이 탭만 늦은 날은 트렌드 차트만 직전값을 유지하고
+    #   PMKT·퍼널·실적은 정상 갱신한다(구조: PDP일별이 PMKT 그룹에 묶여 있던 것을 분리).
+    if not globals().get("_FRESH_PDPD", True):
+        raise RuntimeError("PDP일별 탭 기준일 불일치 — 트렌드 직전값 유지")
     from soo.hero_ops.sales_rollup import read_tab as _read_tab, SALES_SHEET_ID as _SALES_DEF
     _pdp_sid = _src("dashboard") or _SALES_DEF
-    # 노트북 산출 = date, goods_no, style_no, pdp_uv (goods 단위) → 여기서 26FW 히어로로 롤업.
+    # 노트북 산출 = date, style_no, goods_no, pdp_uv → 여기서 26FW 히어로로 롤업.
     #   ★히어로 매핑을 생성기 한 곳(_hero_of_fw)에만 두려는 것(노트북엔 uid 목록만). 구 포맷(hero 컬럼)도 호환.
+    #   ★노트북이 style 단위로 집계해 보내도 그대로 동작한다 — _hero_of_fw 가 style 우선·goods 폴백이라
+    #     style_no 가 비면 goods_no 로 떨어진다(집계 경량화 대비).
     _pdp_rows = _read_tab(sheets, _pdp_sid, "PDP일별")
     _pdp_h_of = globals().get("_hero_of_fw")
     _pdp_by, _pdp_dates = {}, set()
