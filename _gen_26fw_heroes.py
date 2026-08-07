@@ -2733,6 +2733,87 @@ try:
 except Exception as e:
     print(f"[주의] PDP일별 주입 실패 — 트렌드 샘플 유지: {type(e).__name__}: {e}")
 
+# ── 오프라인 매장별 성과 주입 → const OFFLINE_HERO (성과탭 '오프라인' 블록) ──
+# 소스 = 노트북 셀 (5): `오프라인매장별`(히어로 x 매장 x base품번) + `오프라인매장총계`(매장 총계).
+#   ① 비중  = 그 히어로 오프라인 매출 ÷ **무탠 오프라인 전체 매출**(사용자 확정 2026-08-07)
+#   ② 매장 랭킹 = 매출액 순 + **침투지수** 병기
+#      침투지수 = (그 매장 매출 중 히어로 비중) ÷ (전사 오프라인 중 히어로 비중)
+#      → 1.0 = 평균, 1.4 = 40% 더 잘 팜. 매출 순위만 보면 늘 홍대·잠실·강남이라
+#        "매장 크기"만 보이고 "어디가 이 품목을 잘 파는지"가 안 보인다.
+#   ★히어로 이름이 시즌마다 다르다(26FW '커브드팬츠' vs 26SS '커브드 팬츠') → 시즌별로 따로 담는다.
+#   ★셀렉샵 전부 포함(사용자 확정). 무탠 취급이 작은 무신사 스토어는 지수가 크게 튀지만
+#     기본 정렬이 매출순이라 목록 아래에 깔린다.
+noff = 0
+try:
+    from soo.hero_ops.sales_rollup import read_tab as _rt2, SALES_SHEET_ID as _SD2
+    _off_sid = _src("dashboard") or _SD2
+    _num = lambda v: float(str(v).replace(",", "")) if str(v or "").strip() not in ("", "-") else 0.0  # noqa: E731
+    _off_rows = _rt2(sheets, _off_sid, "오프라인매장별")
+    _tot_rows = _rt2(sheets, _off_sid, "오프라인매장총계")
+    if not _off_rows or not _tot_rows:
+        raise RuntimeError("오프라인 매장 탭이 비었다")
+    # 매장 총계 / 전사 총계 (기간별)
+    _shop_tot, _grand = {}, {}
+    for r in _tot_rows:
+        p, sn = str(r.get("period") or ""), str(r.get("shop_no") or "")
+        g = _num(r.get("gmv"))
+        if not p or not sn:
+            continue
+        _shop_tot.setdefault(p, {})[sn] = g
+        _grand[p] = _grand.get(p, 0.0) + g
+    # 시즌별 매핑으로 히어로 롤업
+    _off_seasons = {}
+    for _sea, _mapf in (("26FW", "hero_goods_26fw.json"), ("26SS", "hero_goods_26ss.json")):
+        _mp = ROOT / _mapf
+        if not _mp.exists():
+            continue
+        _s2h = json.loads(_mp.read_text(encoding="utf-8")).get("style_to_hero") or {}
+        _acc = {}          # hero → period → {gmv, qty, gmv_ly, shops:{shop_no:[nm,region,gmv,qty,gmv_ly]}}
+        for r in _off_rows:
+            _h = _s2h.get(str(r.get("sty") or "").strip())
+            if not _h:
+                continue
+            p, sn = str(r.get("period") or ""), str(r.get("shop_no") or "")
+            if not p or not sn:
+                continue
+            a = _acc.setdefault(_h, {}).setdefault(p, {"gmv": 0.0, "qty": 0.0, "gmv_ly": 0.0, "shops": {}})
+            g, q, gl = _num(r.get("gmv")), _num(r.get("qty")), _num(r.get("gmv_ly"))
+            a["gmv"] += g; a["qty"] += q; a["gmv_ly"] += gl
+            s = a["shops"].setdefault(sn, [str(r.get("shop_nm") or ""), str(r.get("shop_region") or ""), 0.0, 0.0, 0.0])
+            s[2] += g; s[3] += q; s[4] += gl
+        _out = {}
+        for _h, _pers in _acc.items():
+            _out[_h] = {}
+            for p, a in _pers.items():
+                G = _grand.get(p, 0.0)
+                share = a["gmv"] / G if G else 0.0
+                shops = []
+                for sn, (nm, rg, g, q, gl) in a["shops"].items():
+                    st = (_shop_tot.get(p, {}) or {}).get(sn, 0.0)
+                    pen = g / st if st else 0.0                     # 그 매장 매출 중 이 히어로 비중
+                    shops.append([nm, rg, round(g), round(q), round(gl),
+                                  round(pen / share, 2) if share else 0])
+                shops.sort(key=lambda x: -x[2])
+                _out[_h][p] = {"gmv": round(a["gmv"]), "qty": round(a["qty"]),
+                               "gmv_ly": round(a["gmv_ly"]), "share": round(share, 5), "shops": shops}
+        if _out:
+            _off_seasons[_sea] = _out
+    _off_obj = {"as_of": TODAY.isoformat(),
+                "total": {p: round(g) for p, g in _grand.items()},
+                "shop_count": len({sn for v in _shop_tot.values() for sn in v}),
+                "cols": ["shop_nm", "region", "gmv", "qty", "gmv_ly", "idx"],
+                "seasons": _off_seasons}
+    html2, noff = re.subn(r"const OFFLINE_HERO = \{.*?\};",
+                          lambda _m: "const OFFLINE_HERO = " + json.dumps(_off_obj, ensure_ascii=False) + ";",
+                          html2, count=1, flags=re.DOTALL)
+    _n_h = sum(len(v) for v in _off_seasons.values())
+    print(f"OFFLINE_HERO 주입: 시즌 {list(_off_seasons)} · 히어로 {_n_h} · 매장 {_off_obj['shop_count']} · "
+          f"오프라인 전체 {{{', '.join(f'{p} {g/1e8:,.0f}억' for p, g in sorted(_grand.items()))}}} (교체 {noff})")
+    if noff != 1:
+        _HEALTH.append("OFFLINE_HERO 교체 실패(앱 플레이스홀더 확인)")
+except Exception as e:
+    print(f"[주의] OFFLINE_HERO 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
+
 HTML.write_text(html2, encoding="utf-8")
 
 print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · GEN_AT→{_GEN_KST.strftime('%Y-%m-%d %H:%M')}(교체 {nga}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch}) · PDP일별(교체 {npdp}) · INBOUND_BOARD(교체 {ninb})")
