@@ -127,6 +127,21 @@ jobs:
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
         run: python _dash_fix_colors.py --apply
 
+      # ★★2026-08-10 신설: 목표 진실소스 통일.
+      #   `히어로목표(거래량)` 탭은 IMPORTRANGE 가 아니라 **손으로 박은 값**이라, 담당자가 xlsx
+      #   `26FW HERO 일자별 목표 셋팅`을 고쳐도 대시보드엔 영원히 반영되지 않았다.
+      #   실제로 7/26 이후 갱신이 멈춰 9~12월 목표가 통째로 0 이었다(9/1이면 달성율이 깨졌을 것).
+      #   → xlsx 를 정본으로 고정하고 매일 이 스텝이 시트를 따라오게 한다.
+      #   멱등이라 이미 같으면 0건. 소문자 online/offline 블록만 쓰고 열·행은 건드리지 않는다.
+      - name: 대시보드 목표 동기화 (xlsx 정본 → 히어로목표(거래량))
+        if: always()
+        continue-on-error: true
+        env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: python _sync_target_raw.py --apply
+
       # ★★2026-08-04 제거: "대시보드 26FW 목표 반영"(push_26fw_targets.py --apply)
       #   이 스텝은 **시즌 누계(YTD) 목표를 MTD 목표 칸(AI/BH)에 값으로** 박아 넣고 있었다.
       #   7월엔 MTD==시즌누계라 티가 안 났지만 8/1부터 커브드팬츠 MTD 목표가 2,399 → 17,984(7.5배),
