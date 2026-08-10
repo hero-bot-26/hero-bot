@@ -2467,13 +2467,18 @@ try:
     _sales = {_fw_norm(k): v for k, v in _perf_fw.items()}
 
     _fw_styles = (_FW_HERO_MAP or {}).get("styles") or {}   # MSTRD HERO STY {품번:{grade,hero,...}}
-    # 히어로별 26FW 누계 목표수량(=목표 시트 일별 목표를 시즌 누계 창으로 합산) — 홈 26FW 달성율용
+    # 히어로별 26FW 목표수량(=목표 시트 일별 목표를 각 기간 창으로 합산) — 홈 26FW 달성율용.
+    # ★기간별로 다 만든다. 예전엔 YTD 하나만 뽑아 스칼라로 넘겼는데, 프론트는 그걸 기간 토글과
+    #   무관하게 그려서 **주간·월간을 봐도 시즌 누계 달성율이 찍혔다**(커브드팬츠 주간 196%인데 131% 표시).
+    #   목표 원천(FW_TARGETS)엔 처음부터 기간별 tq(YTD/MTD/WEEK/DAY)가 다 들어 있었다.
     _fw_goal_qty = {}
     for _b, _tv in (globals().get("FW_TARGETS") or {}).items():
         _h = (_fw_styles.get(_b) or {}).get("hero")
         if not _h:
             continue
-        _fw_goal_qty[_h] = _fw_goal_qty.get(_h, 0) + ((_tv.get("tq") or {}).get("YTD") or {}).get("t", 0)
+        _acc = _fw_goal_qty.setdefault(_h, {})
+        for _p in _PERIODS:
+            _acc[_p] = _acc.get(_p, 0) + (((_tv.get("tq") or {}).get(_p) or {}).get("t") or 0)
     _fw_list = []
     for name, grade in _FW_GRADE.items():
         # 발매일 = 무탠 진실소스 단독. ★발매스케줄 폴백 폐기 — 슬랙스처럼 무탠에 26FW 신규
@@ -2532,10 +2537,21 @@ try:
                 # 실적순, 발매 전(pending)은 뒤로 — 같은 pending끼리는 HERO → HERO SUB 순
                 _st.sort(key=lambda x: (x.get("pending", 0), -x["periods"]["ytd"]["gmv"],
                                         0 if x.get("grade") == "HERO" else 1, x["style"]))
-                # 달성율 = 시즌 누계 실적수량 ÷ 누계 목표수량(둘 다 7/1~ 기준). 목표 없으면 None → 화면 미표시.
-                _gq = _fw_goal_qty.get(name) or 0
+                # 달성율 = 실적수량 ÷ 목표수량. ★기간마다 따로 낸다 — 실적과 목표의 창이 같아야 한다
+                #   (주간 실적을 시즌 누계 목표로 나누면 아무 뜻도 없는 수가 된다).
+                #   목표 없으면 None → 화면 미표시(0으로 채우지 않는다).
+                _gt = _fw_goal_qty.get(name) or {}
+                _goal = {}
+                for _p in _PERIODS:
+                    _t = _gt.get(_p) or 0
+                    _a = (_pp.get(_p.lower()) or {}).get("qty") or 0
+                    _goal[_p.lower()] = {"target": _t or None, "qty": _a,
+                                         "pct": (_a / _t) if _t else None}
+                _gq = _gt.get("YTD") or 0
                 _aq = (_pp.get("ytd") or {}).get("qty") or 0
                 sales = {"gmv": _g, "periods": _pp, "stys": _st,
+                         "goal": _goal,
+                         # ↓ 구 필드(=YTD)는 하위호환용으로 남긴다. 새 코드는 goal[기간]을 쓸 것.
                          "goal_qty": _gq or None,
                          "goal_pct": (_aq / _gq) if _gq else None,
                          # 전환율 = 구매UV/PDP조회UV (실적·퍼널 정의 통일)
