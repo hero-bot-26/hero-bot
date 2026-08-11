@@ -57,3 +57,16 @@ jobs:
             ARGS="$ARGS --force"
           fi
           python run_ranking_daily.py $ARGS
+
+      # 실패 즉시 알림. 뷰별 try/except 로 잡히는 부분 누락(잡은 초록불인데 [전체]·[남자]가
+      # 빠졌던 2026-07-08 사고)은 여기서 안 잡히므로, Ops watch 가 Wide 탭 적재로 따로 검증한다.
+      - name: 실패 알림 (슬랙 DM)
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 랭킹봇 일일 리포트 실패 ($(date -u +%Y-%m-%d)) — Actions 로그 확인.
+          단골 원인: Sheets 429(분당 60읽기 초과), GOOGLE_OAUTH_TOKEN 만료, 슬랙 채널 권한.
+          복구: daily.yml 을 as_of=<대상일> 로 workflow_dispatch(이미 적재된 뷰는 자동 skip)."

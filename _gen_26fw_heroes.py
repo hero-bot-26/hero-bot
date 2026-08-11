@@ -2285,6 +2285,7 @@ except Exception as e:
 
 # ── 데이터 갱신 헬스체크 (조용한 실패 가시화: #3 권한 / #4 구조변경) ──
 # 핵심 데이터가 비었으면 경고. CI에서 SLACK_BOT_TOKEN 있으면 슬랙 DM으로도 통지.
+_HEALTH_SENT = 0     # ★여기까지 발송한 개수. 이 아래 블록에서 쌓이는 경고는 파일 끝에서 2차 발송한다.
 try:
     if _HEALTH:
         print("\n[HEALTHCHECK] 경고 " + str(len(_HEALTH)) + "건:")
@@ -2298,6 +2299,7 @@ try:
                 pass
     else:
         print("\n[HEALTHCHECK] 정상 (모든 IMC 소스 로드됨)")
+    _HEALTH_SENT = len(_HEALTH)
 except Exception:
     pass
 
@@ -2840,6 +2842,28 @@ except Exception as e:
     print(f"[주의] OFFLINE_HERO 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
 HTML.write_text(html2, encoding="utf-8")
+
+# ── 헬스체크 2차 발송 (★위 1차 발송 이후에 쌓인 경고) ─────────────────────────
+# 1차 발송 지점(#HEALTHCHECK)이 파일 중간이라, 그 아래에서 append 되는 경고는 지금까지
+# **콘솔에만 찍히고 슬랙으로는 한 번도 나간 적이 없다.** 하필 그 구간이
+# 입고 보드(INBOUND_BOARD)·발매(LAUNCH_26FW)·PDP일별·오프라인 — 조용히 깨지면 화면이
+# 가장 크게 틀어지는 것들이다(2026-08-06 '발매스케줄' 탭 삭제로 발매일 전건 null 이 됐을 때도
+# 경고는 쌓였지만 알림은 오지 않았다). → 남은 분량만 따로 보낸다.
+try:
+    _rest = _HEALTH[_HEALTH_SENT:]
+    if _rest:
+        print("\n[HEALTHCHECK/2차] 경고 " + str(len(_rest)) + "건:")
+        for w in _rest:
+            print("  - " + w)
+        if os.environ.get("SLACK_BOT_TOKEN"):
+            try:
+                from soo.hero_ops import notify as _notify2
+                _notify2.send("⚠️ 히어로 앱 데이터 갱신 경고 — 후반부 (" + TODAY.isoformat()
+                              + ")\n- " + "\n- ".join(_rest[:12]))
+            except Exception:
+                pass
+except Exception:
+    pass
 
 print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · GEN_AT→{_GEN_KST.strftime('%Y-%m-%d %H:%M')}(교체 {nga}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch}) · PDP일별(교체 {npdp}) · INBOUND_BOARD(교체 {ninb})")
 for h in heroes:

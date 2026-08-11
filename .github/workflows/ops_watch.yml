@@ -1,0 +1,89 @@
+name: Ops watch (자동화 이상 슬랙 알림)
+
+# 히어로 자동화 4종(랭킹봇 · 마스터앱 · 입고 · 26FW 대시보드)을 밖에서 점검해
+# 이상이 있을 때만 슬랙 DM 을 보낸다. 상세 판정 근거는 soo/hero_ops/ops_watch.py 주석 참조.
+#
+# ★왜 개별 워크플로의 `if: failure()` 로 하지 않았나
+#   그 방식은 "실행이 아예 안 된 것"을 원리상 못 잡는다. 정작 크게 당한 사고가 그쪽이었다 —
+#   2026-06-23 Actions 빌링 차단(잡이 2초 만에 죽어 스텝 0개), 외부 cron(cron-job.org) 중단,
+#   그리고 2026-08-08~10 DBX 잡 3일 연속 FAILED 를 메일로만 받아 사흘 방치.
+#   그래서 GitHub API · Databricks API · 구글시트를 **밖에서 읽는 감시자 하나**로 통합했다.
+#
+# ★판정 시각 게이트
+#   DBX 잡은 09:30 시작 · ~3시간 소요라 14시 전에는 시트가 전일 기준이 아닌 게 정상이다.
+#   게이트를 무시하면 매일 아침 거짓 경보가 뜬다(ops_watch.py 의 gate 인자).
+on:
+  schedule:
+    # KST 11·12·15·16·19·20시. GitHub schedule 은 이 레포에서 수 시간 밀리므로 넉넉히 걸어두고,
+    # 같은 경고는 원장(`_감시로그` 탭)으로 하루 1회만 발송해 중복을 막는다.
+    - cron: "0 2,3,6,7,10,11 * * *"
+  # 마스터앱 daily CI 가 끝난 직후 한 번 더 — 그날 갱신 결과를 바로 확인한다.
+  workflow_run:
+    workflows: ["Hero master app daily update"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "발송·기록 없이 로그만 (true/false)"
+        required: false
+        default: "false"
+      force:
+        description: "오늘 이미 보낸 건도 재발송 (true/false)"
+        required: false
+        default: "false"
+      no_gate:
+        description: "시각 게이트 무시하고 전 항목 즉시 판정 (true/false)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: ops-watch
+  cancel-in-progress: false
+
+permissions:
+  actions: read        # 다른 워크플로의 실행 이력 조회
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: 자동화 이상 점검
+        env:
+          GITHUB_TOKEN:             ${{ secrets.GITHUB_TOKEN }}
+          APP_REPO_PAT:             ${{ secrets.APP_REPO_PAT }}      # hero-master-app 커밋 조회
+          DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_PAT:           ${{ secrets.DATABRICKS_PAT }}
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          if [ "${{ github.event.inputs.force }}"   = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "${{ github.event.inputs.no_gate }}" = "true" ]; then ARGS="$ARGS --no-gate"; fi
+          python -m soo.hero_ops.ops_watch $ARGS
+
+      # 감시자 자신이 죽으면 아무도 안 알려준다 — 그 경우만 최소한의 DM 을 남긴다.
+      - name: 감시 실패 알림
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 자동화 감시(Ops watch)가 실패했다 ($(date -u +%Y-%m-%d)) — 감시가 멈춘 동안은
+          다른 자동화 이상도 알림이 오지 않는다. Actions 로그 확인.
+          단골 원인: GOOGLE_OAUTH_TOKEN 만료, DATABRICKS_PAT 만료, 시트 권한."

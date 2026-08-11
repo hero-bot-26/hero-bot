@@ -94,9 +94,32 @@ jobs:
           SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_TARGET:             ${{ secrets.SLACK_TARGET }}
         run: |
+          fails=0
           for i in 1 2 3 4 5 6; do
             echo "── watch $i/6 ($(TZ=Asia/Seoul date '+%H:%M KST'))"
             # 한 회차가 실패해도(네트워크·쿼터) 루프는 계속 — 10분 뒤 다시 시도한다.
-            python run_rank1_watch.py || echo "  (이번 회차 실패 — 계속 진행)"
+            if ! python run_rank1_watch.py; then
+              fails=$((fails + 1))
+              echo "  (이번 회차 실패 — 계속 진행 · 누적 $fails)"
+            fi
             if [ $i -lt 6 ]; then sleep 600; fi
           done
+          # ★회차 실패를 삼키는 구조라 워크플로는 늘 성공으로 끝난다 = 1위 알림이 한 시간 통째로
+          #   죽어도 아무도 모른다. 과반이 깨졌으면 그것만 실패로 올려 알림을 트리거한다.
+          echo "루프 종료 — 실패 $fails/6"
+          if [ $fails -ge 4 ]; then
+            echo "::error::1위 감시 6회 중 $fails 회 실패 — 이 시간대 알림이 사실상 죽었다"
+            exit 1
+          fi
+
+      - name: 실패 알림 (슬랙 DM)
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 랭킹 1위 즉시 알림 감시 실패 ($(date -u +%Y-%m-%d)) — 이 시간대에 무탠이 1위에
+          올라도 알림이 안 갔을 수 있다. Actions 로그 확인.
+          단골 원인: Playwright 캡처 실패(행사 스플래쉬 → skip_bf=Y 확인), Sheets 429,
+          GOOGLE_OAUTH_TOKEN 만료."
