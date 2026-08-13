@@ -65,6 +65,7 @@ import datetime as dt
 import io
 import re
 import sys
+import traceback
 from pathlib import Path
 
 # ── 원천/타깃 ────────────────────────────────────────────────────────────────
@@ -329,14 +330,25 @@ def load_source(drive):
             weekly.setdefault((key, "offline"), {})[wk] = _num(g.cell(rr, 3).value)
             rr += 1
 
-    # 두 탭의 시리즈 집합이 어긋나면 중단 (한쪽에만 추가된 시리즈를 조용히 흘리지 않기 위함)
+    # 두 탭의 시리즈 집합이 어긋나면 **그 시리즈만 빼고** 나머지는 주입한다.
+    #   ★2026-08-13 변경: 종전엔 raise 로 통째 중단이라, 담당자가 '일자별 목표 셋팅'에 힛탠다드를
+    #     넣고 정본 '목표 그래프' 블록을 아직 안 만든 이틀(8/12·8/13) 동안 **목표도 입고도 전혀
+    #     주입되지 않았다**. 한쪽에만 있는 시리즈는 어차피 어느 기준으로 써도 반쪽이므로
+    #     제외하는 게 맞지만, 그 때문에 멀쩡한 6종까지 멈출 이유는 없다.
+    #   조용히 흘리지 않기 위해 notes 로 올려 로그·슬랙에 남긴다(호출부에서 처리).
     s_daily = {norm(c["series"]) for c in cols}
     s_week = {k[0] for k in weekly}
+    notes = []
     if s_daily != s_week:
-        raise RuntimeError(
-            f"원천 두 탭의 시리즈가 다릅니다 — 주입 중단.\n"
-            f"  일자별만: {sorted(s_daily - s_week)}\n  주차별만: {sorted(s_week - s_daily)}")
-    return cols, weekly, wk_range
+        only_d, only_w = sorted(s_daily - s_week), sorted(s_week - s_daily)
+        drop = set(only_d) | set(only_w)
+        if only_d:
+            notes.append(f"'{SRC_TAB}'에만 있고 정본 '{SRC_WEEK_TAB}'에 블록이 없음: {', '.join(only_d)}")
+        if only_w:
+            notes.append(f"'{SRC_WEEK_TAB}'에만 있음: {', '.join(only_w)}")
+        cols = [c for c in cols if norm(c["series"]) not in drop]
+        weekly = {k: v for k, v in weekly.items() if k[0] not in drop}
+    return cols, weekly, wk_range, notes
 
 
 # ── 1-b) 신규 입고 원천 (무탠본부_오더시트 MD투입) ──────────────────────────
@@ -713,64 +725,85 @@ def main() -> int:
           f"기입고물량 열 {_col_letter(grid['prein']) if grid['prein'] else '없음'}")
 
     qty = inbound = cum = opening = None
+    warns: list[str] = []      # 주입은 됐지만 사람이 알아야 하는 것 (슬랙 통지)
+    hard: list[str] = []       # 한 축이 통째로 실패 — 종료코드 1
 
     # ── ① 목표 판매량 ──
+    #   ★원천 격리(2026-08-13): 목표가 죽어도 ② 입고는 주입한다. 종전엔 여기서 raise 하면
+    #     입고까지 같이 멈췄다(실제로 8/12·8/13 이틀 전량 미주입).
     if args.only in ("all", "target"):
-        cols, weekly, wk_range = load_source(drive)
-        if not cols:
-            raise RuntimeError("목표 원천에서 스타일×채널 열을 하나도 못 읽었습니다 — 주입 중단.")
-        if sum(sum(c["daily"].values()) for c in cols) <= 0:
-            raise RuntimeError("목표 원천 수량 합계가 0입니다 — 주입 중단(0으로 덮어쓰기 방지).")
-        wk_map = map_weeks(weeks, wk_range)
-        qty = aggregate(cols, weekly, wk_map, weeks, args.source)
-        unmapped = [str(e) for (_, e), m in zip(weeks, wk_map) if m is None]
-        dropped = sorted(set(wk_range) - {m for m in wk_map if m})
-        print(f"\n[목표 판매량] 소스={args.source} · 원천 열 {len(cols)}개")
-        if unmapped:
-            print(f"  ⚠ 원천 주차를 못 찾은 시트2 주차: {', '.join(unmapped)}")
-        if dropped:
-            print(f"  · 시트2 범위 밖이라 버린 원천 주차: {', '.join(dropped)}")
+        try:
+            cols, weekly, wk_range, notes = load_source(drive)
+            warns += [f"목표 원천 시리즈 불일치 — 제외하고 주입: {n}" for n in notes]
+            for n in notes:
+                print(f"  ⚠ {n} → 해당 시리즈 제외하고 나머지만 주입")
+            if not cols:
+                raise RuntimeError("목표 원천에서 스타일×채널 열을 하나도 못 읽었습니다 — 목표 주입 중단.")
+            if sum(sum(c["daily"].values()) for c in cols) <= 0:
+                raise RuntimeError("목표 원천 수량 합계가 0입니다 — 목표 주입 중단(0으로 덮어쓰기 방지).")
+            wk_map = map_weeks(weeks, wk_range)
+            qty = aggregate(cols, weekly, wk_map, weeks, args.source)
+            unmapped = [str(e) for (_, e), m in zip(weeks, wk_map) if m is None]
+            dropped = sorted(set(wk_range) - {m for m in wk_map if m})
+            print(f"\n[목표 판매량] 소스={args.source} · 원천 열 {len(cols)}개")
+            if unmapped:
+                print(f"  ⚠ 원천 주차를 못 찾은 시트2 주차: {', '.join(unmapped)}")
+            if dropped:
+                print(f"  · 시트2 범위 밖이라 버린 원천 주차: {', '.join(dropped)}")
+        except Exception as e:
+            qty = None
+            hard.append(f"목표 판매량 주입 실패 — {type(e).__name__}: {e}")
+            print(f"\n[목표 판매량] ★실패 — {type(e).__name__}: {e}")
+            traceback.print_exc()
+            print("  → 목표 행은 건드리지 않고 입고만 진행한다.")
 
-    # ── ② 신규 입고 ──
+    # ── ② 신규 입고 ── (①과 같은 이유로 격리)
     if args.only in ("all", "inbound"):
-        sty2hero = load_hero_styles(sheets)
-        as_of = dt.date.fromisoformat(args.as_of) if args.as_of else dt.date.today()
-        inbound, stat = load_inbound(sheets, sty2hero, weeks, args.basis, as_of, args.shift_overdue)
-        if not inbound:
-            raise RuntimeError(f"{ORDER_TAB}에서 {ORDER_SEASON} 입고를 하나도 못 읽었습니다 — 주입 중단.")
-        carry = load_prein(sheets)                    # 1/1 예측재고 (대시보드 HU)
-        opening = {}                                  # 기입고물량 = 재고 + 6/1~그리드직전 입고
-        for h in HERO_LABELS:
-            v = carry.get(h, 0.0) + stat["prein"].get(h, 0.0)
-            if v:
-                opening[h] = v
-        opening["TOTAL"] = sum(opening.values())
-        cum = cumulative(inbound, opening, weeks, args.cum, as_of)
-        print(f"\n[신규 입고] {ORDER_SEASON} · 기준={args.basis} · 대상 STY {len(sty2hero)}개 "
-              f"· 매칭 행 {stat['rows']}건")
-        ov = "지연→현재주차" if args.shift_overdue else "지연(예정주차 유지)"
-        for lbl, key in (("실입고", "actual"), ("예상", "plan"), (ov, "overdue")):
-            d = stat.get(key) or {}
-            if d:
-                print(f"  · {lbl} {sum(d.values()):,.0f} — "
-                      + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(d.items())))
-        pre = {h: v for h, v in opening.items() if v and h != "TOTAL"}
-        print(f"  · 기입고물량 = 1/1 예측재고 + 입고({PREIN_FROM}~{weeks[0][0] - dt.timedelta(days=1)})"
-              f" → {_col_letter(grid['prein']) if grid['prein'] else '열없음'}열, 합 {opening['TOTAL']:,.0f}")
-        for h, v in sorted(pre.items()):
-            print(f"      {h:<16} 재고 {carry.get(h, 0):>8,.0f} + 입고 {stat['prein'].get(h, 0):>9,.0f}"
-                  f" = {v:>9,.0f}")
-        if not grid["prein"] and pre:
-            print(f"  ⚠ '{PREIN_LABEL}' 열이 없어 기입고물량을 못 씁니다 — 누적 행에만 반영됩니다.")
-        print(f"  · 누적 방식 = {args.cum} (기준일 {as_of})")
-        for label, d in ((f"{PREIN_FROM} 이전이라 어디에도 미반영", stat["before"]),
-                         ("그리드 이후라 제외", stat["after"]),
-                         ("입고일 없어 제외", stat["nodate"])):
-            if d:
-                print(f"  · {label}: " + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(d.items())))
-        zero = [h for h in HERO_LABELS if not stat["total"].get(h)]
-        if zero:
-            print(f"  ⚠ 입고수량 0(미입력)이라 신규입고 행은 건드리지 않음: {', '.join(zero)}")
+        try:
+            sty2hero = load_hero_styles(sheets)
+            as_of = dt.date.fromisoformat(args.as_of) if args.as_of else dt.date.today()
+            inbound, stat = load_inbound(sheets, sty2hero, weeks, args.basis, as_of, args.shift_overdue)
+            if not inbound:
+                raise RuntimeError(f"{ORDER_TAB}에서 {ORDER_SEASON} 입고를 하나도 못 읽었습니다 — 입고 주입 중단.")
+            carry = load_prein(sheets)                    # 1/1 예측재고 (대시보드 HU)
+            opening = {}                                  # 기입고물량 = 재고 + 6/1~그리드직전 입고
+            for h in HERO_LABELS:
+                v = carry.get(h, 0.0) + stat["prein"].get(h, 0.0)
+                if v:
+                    opening[h] = v
+            opening["TOTAL"] = sum(opening.values())
+            cum = cumulative(inbound, opening, weeks, args.cum, as_of)
+            print(f"\n[신규 입고] {ORDER_SEASON} · 기준={args.basis} · 대상 STY {len(sty2hero)}개 "
+                  f"· 매칭 행 {stat['rows']}건")
+            ov = "지연→현재주차" if args.shift_overdue else "지연(예정주차 유지)"
+            for lbl, key in (("실입고", "actual"), ("예상", "plan"), (ov, "overdue")):
+                d = stat.get(key) or {}
+                if d:
+                    print(f"  · {lbl} {sum(d.values()):,.0f} — "
+                          + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(d.items())))
+            pre = {h: v for h, v in opening.items() if v and h != "TOTAL"}
+            print(f"  · 기입고물량 = 1/1 예측재고 + 입고({PREIN_FROM}~{weeks[0][0] - dt.timedelta(days=1)})"
+                  f" → {_col_letter(grid['prein']) if grid['prein'] else '열없음'}열, 합 {opening['TOTAL']:,.0f}")
+            for h, v in sorted(pre.items()):
+                print(f"      {h:<16} 재고 {carry.get(h, 0):>8,.0f} + 입고 {stat['prein'].get(h, 0):>9,.0f}"
+                      f" = {v:>9,.0f}")
+            if not grid["prein"] and pre:
+                print(f"  ⚠ '{PREIN_LABEL}' 열이 없어 기입고물량을 못 씁니다 — 누적 행에만 반영됩니다.")
+            print(f"  · 누적 방식 = {args.cum} (기준일 {as_of})")
+            for label, d in ((f"{PREIN_FROM} 이전이라 어디에도 미반영", stat["before"]),
+                             ("그리드 이후라 제외", stat["after"]),
+                             ("입고일 없어 제외", stat["nodate"])):
+                if d:
+                    print(f"  · {label}: " + ", ".join(f"{h} {v:,.0f}" for h, v in sorted(d.items())))
+            zero = [h for h in HERO_LABELS if not stat["total"].get(h)]
+            if zero:
+                print(f"  ⚠ 입고수량 0(미입력)이라 신규입고 행은 건드리지 않음: {', '.join(zero)}")
+        except Exception as e:
+            inbound = cum = opening = None
+            hard.append(f"신규 입고 주입 실패 — {type(e).__name__}: {e}")
+            print(f"\n[신규 입고] ★실패 — {type(e).__name__}: {e}")
+            traceback.print_exc()
+            print("  → 입고·누적 행은 건드리지 않고 목표만 진행한다.")
 
     data, skipped = build_updates(grid, qty, inbound, cum, opening)
     print(f"\n갱신 셀 {len(data)}건 (수량 행만 — 금액 칸 미변경)")
@@ -790,13 +823,39 @@ def main() -> int:
 
     if args.dry_run:
         print("\n[dry-run] 시트에 쓰지 않았습니다.")
-        return 0
+        _report(warns, hard, dry=True)
+        return 1 if hard else 0
 
-    sheets.spreadsheets().values().batchUpdate(
-        spreadsheetId=IMC_SHEET_ID,
-        body={"valueInputOption": "RAW", "data": data}).execute()
-    print(f"\n✅ 시트2 주입 완료 — {len(data)}개 행 × {len(weeks)}주 (금액 칸 미변경)")
-    return 0
+    if data:
+        sheets.spreadsheets().values().batchUpdate(
+            spreadsheetId=IMC_SHEET_ID,
+            body={"valueInputOption": "RAW", "data": data}).execute()
+        print(f"\n✅ 시트2 주입 완료 — {len(data)}개 행 × {len(weeks)}주 (금액 칸 미변경)")
+    else:
+        print("\n쓸 값이 없습니다 — 시트 미변경.")
+
+    _report(warns, hard)
+    # 한 축이 통째로 죽었으면 실패로 끝낸다(워크플로 슬랙 알림이 받는다).
+    # 시리즈 일부 제외 같은 부분 문제는 주입은 됐으므로 0으로 끝내되 아래에서 슬랙을 따로 보낸다.
+    return 1 if hard else 0
+
+
+def _report(warns: list[str], hard: list[str], dry: bool = False) -> None:
+    """주입 후 요약 — 경고는 슬랙 DM으로, 하드 실패는 로그만(워크플로 failure 훅이 알린다)."""
+    for h in hard:
+        print(f"\n★ {h}")
+    for w in warns:
+        print(f"\n⚠ {w}")
+    if warns and not hard and not dry:
+        # 부분 주입은 초록불로 끝나므로 여기서 직접 알리지 않으면 아무도 모른다.
+        try:
+            from soo.hero_ops import notify
+            notify.send("⚠️ IMC 주차별 목표 — 원천 불일치로 일부 시리즈를 빼고 주입했습니다.\n"
+                        + "\n".join(f"· {w}" for w in warns)
+                        + f"\n\n원천 `26FW HERO 일자별 목표 셋팅` 정본 탭('{SRC_WEEK_TAB}')에 "
+                          "해당 시리즈 블록이 생기면 자동으로 다시 잡힙니다.")
+        except Exception as e:      # 알림 실패가 주입을 되돌리진 않는다
+            print(f"슬랙 통지 실패: {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":
