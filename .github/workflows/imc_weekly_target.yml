@@ -53,6 +53,10 @@ jobs:
           GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          # ★부분 주입(시리즈 일부 제외)은 종료코드 0 이라 아래 failure 훅이 안 뜬다.
+          #   그 경우 모듈이 직접 슬랙 DM 을 보내므로 여기서 토큰을 넘겨야 한다.
+          #   (없으면 notify 가 조용히 스킵 → 아무도 모르는 상태로 되돌아간다)
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
         run: |
           ARGS="--only ${{ github.event.inputs.only || 'all' }}"
           ARGS="$ARGS --source ${{ github.event.inputs.source || 'weekly' }}"
