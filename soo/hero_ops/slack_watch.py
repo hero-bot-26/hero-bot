@@ -74,7 +74,7 @@ CURSOR_TAB = "_슬랙커서"
 CURSOR_HEADER = ["채널ID", "채널명", "마지막ts", "갱신시각"]
 QUEUE_TAB = "_슬랙제안"
 QUEUE_HEADER = ["발견일", "채널", "ts", "우선순위", "히어로", "날짜표현", "요약", "링크",
-                "원글(스레드)", "첨부링크"]
+                "원글(스레드)", "첨부링크", "문서제목"]
 
 FIRST_RUN_DAYS = 7          # 커서가 없는 채널의 첫 수집 범위. 14일이면 첫 발송이 너무 시끄럽다.
 THREAD_LOOKBACK_DAYS = 30   # ★부모 소급 범위 — 이보다 오래된 글에 달린 답글은 못 잡는다(아래 주석)
@@ -219,6 +219,40 @@ def extract_links(m: dict) -> list[str]:
     return out
 
 
+# ── 구글 링크 제목 해석 ───────────────────────────────────────────────────────
+# ★내용까지 읽지 않고 **제목만** 가져온다(사용자 결정 2026-08-15). 어느 문서 얘기인지 바로
+#   보이면서 Sheets/Docs 본문 읽기의 쿼터·권한 문제를 피한다.
+# ★못 읽는 게 정상이다 — 링크의 절반 이상이 미공유고(로컬 실측 12개 중 6개),
+#   CI 는 **서비스계정**이라 더 적다. 실패하면 조용히 URL 그대로 둔다.
+_GDOC_RE = re.compile(
+    r"https?://(?:docs|drive|sheets|slides)\.google\.com/[^\s]*?/d/([A-Za-z0-9_-]{20,})"
+    r"|https?://drive\.google\.com/[^\s]*?[?&]id=([A-Za-z0-9_-]{20,})")
+
+
+def gdoc_id(url: str) -> str:
+    m = _GDOC_RE.search(url or "")
+    return (m.group(1) or m.group(2)) if m else ""
+
+
+def resolve_titles(drive, urls: list[str], cache: dict) -> dict:
+    """{url: 제목}. 해석 못 한 URL 은 키가 없다(호출부가 URL 그대로 쓴다)."""
+    out = {}
+    for u in urls:
+        fid = gdoc_id(u)
+        if not fid:
+            continue
+        if fid not in cache:
+            try:
+                f = drive.files().get(fileId=fid, fields="name,mimeType",
+                                      supportsAllDrives=True).execute()
+                cache[fid] = f.get("name", "")
+            except Exception:
+                cache[fid] = ""      # 미공유·삭제 — 다시 묻지 않는다
+        if cache[fid]:
+            out[u] = cache[fid]
+    return out
+
+
 # ── 히어로 별칭 (앱 HERO_LINEUP 이 유일한 소스) ───────────────────────────────
 def load_aliases(app_html: str | None = None) -> dict:
     """별칭 → 히어로명. 못 읽으면 RuntimeError — 목록을 새로 지어내지 않는다(진실소스 하나)."""
@@ -356,11 +390,11 @@ def run(send: bool = False, days: int = 0, app_html: str | None = None) -> int:
     aliases = load_aliases(app_html)
     print(f"[slack-watch] 히어로 별칭 {len(aliases)}개 (앱 HERO_LINEUP)")
 
-    sheets = None
+    sheets = drive = None
     try:
         from soo.auth import build_services, get_credentials
-        sheets = build_services(get_credentials(ROOT / "credentials.json",
-                                                ROOT / "token.json"))["sheets"]
+        _svc = build_services(get_credentials(ROOT / "credentials.json", ROOT / "token.json"))
+        sheets, drive = _svc["sheets"], _svc["drive"]
         if send:                      # 드라이런은 시트를 건드리지 않는다(탭 생성도 쓰기다)
             for tab, hdr in ((CURSOR_TAB, CURSOR_HEADER), (QUEUE_TAB, QUEUE_HEADER)):
                 _ensure_tab(sheets, tab, hdr)
@@ -430,13 +464,26 @@ def run(send: bool = False, days: int = 0, app_html: str | None = None) -> int:
           f"→ 신규 후보 {len(cands)}건(답글발 {n_rep}) "
           + " · ".join(f"{k} {sum(1 for c in cands if c['prio'] == k)}" for k in order))
 
+    # 구글 링크 제목 해석 — 후보에 걸린 것만(전량 조회 금지). 못 읽으면 URL 그대로.
+    titles, _tc = {}, {}
+    if drive:
+        all_urls = [u for c in cands for u in (c.get("links") or [])]
+        gurls = [u for u in dict.fromkeys(all_urls) if gdoc_id(u)]
+        titles = resolve_titles(drive, gurls, _tc)
+        if gurls:
+            print(f"[slack-watch] 구글 링크 제목 해석 {len(titles)}/{len(gurls)}"
+                  f" (못 읽은 건 미공유 — CI 는 서비스계정이라 더 적다)")
+
     for c in cands[:40]:
         c["link"] = permalink(tok, c["cid"], c["ts"]) if send else ""
+        c["titled"] = [(u, titles[u]) for u in (c.get("links") or []) if u in titles]
         kind = "↳답글" if c.get("parent") else "글"
         print(f"  [{c['prio']}] {kind} #{c['ch']} {c['date'] or c['sched']} {c['heroes']}"
               + (f"  링크{len(c['links'])}" if c.get("links") else ""))
         if c.get("parent"):
             print(f"      (원글: {c['parent']})")
+        if c["titled"]:
+            print(f"      📄 {' · '.join(t for _, t in c['titled'][:3])}")
         print(f"      {c['text'][:160]}")
 
     if not send:
@@ -448,7 +495,9 @@ def run(send: bool = False, days: int = 0, app_html: str | None = None) -> int:
                             ", ".join(c["heroes"]), c["date"] or c["sched"],
                             ("[답글] " if c.get("parent") else "") + c["text"][:300],
                             c.get("link", ""), c.get("parent", ""),
-                            " ".join(c.get("links") or [])[:500]] for c in cands]) if sheets else None
+                            " ".join(c.get("links") or [])[:500],
+                            " · ".join(t for _, t in (c.get("titled") or []))[:300]]
+                           for c in cands]) if sheets else None
         _notify(cands)
     else:
         print("신규 후보 없음 — 발송 스킵")
@@ -473,8 +522,11 @@ def _notify(cands: list[dict]) -> None:
         if c.get("parent"):
             lines.append(f"    _원글: {c['parent']}_")
         lines.append(f"    {head}")
-        if c.get("links"):
-            lines.append("    🔗 " + " ".join(c["links"][:3]))
+        if c.get("titled"):
+            # 제목이 풀린 건 이름으로 — URL 만 나열하면 어느 문서 얘긴지 안 보인다.
+            lines.append("    📄 " + " · ".join(f"<{u}|{t}>" for u, t in c["titled"][:3]))
+        elif c.get("links"):
+            lines.append("    🔗 " + " ".join(c["links"][:2]))
     if len(real) > 15:
         lines.append(f"\n… 외 {len(real) - 15}건 (원장 `{QUEUE_TAB}` 탭)")
     try:
