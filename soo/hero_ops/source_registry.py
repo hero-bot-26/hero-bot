@@ -22,10 +22,7 @@ REG_TAB = "_소스설정"
 DEFAULTS = {
     "imc_calendar": {  # IMC 캘린더 액션 (SNS/CRM 통합 관리 시트의 2)일정·5)온사이트·6)PR·4)IG광고)
         "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "2)일정", "range": "", "expected": []},
-    "sns_perf": {      # SNS(IG) 성과 (4-1/4-2 성과_오피셜/우먼 IG, 접두일치 다탭 합산)
-        "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "4-1)성과_오피셜 IG", "range": "", "expected": []},
-    "crm_perf": {      # CRM 성과 (시트16)
-        "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "시트16", "range": "", "expected": []},
+    # ★sns_perf / crm_perf 는 2026-08-15 제거 — SNS/CRM 채널 성과가 앱 화면에 렌더된 적이 없어 수집 폐지.
     "budget": {        # 월 예산 (PMKT/CRM 예산)
         "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "PMKT/CRM 예산", "range": "", "expected": []},
     "dashboard": {     # 실적 대시보드 (Databricks 잡이 채우는 전용 시트, raw/PMKT 탭)

@@ -599,8 +599,9 @@ GOAL_SHEET_ID = "1_tZDl-heZyWT4VQYIAT3ZHFeMoQlK2FSOpEMyZjqvm0"  # PLM 시트(사
 GOAL_TAB = "히어로 마케팅 목표"
 MKT_SHEET_ID = "16jqlhmynIxXckdrpjICaDNajZd-xjnrl0x332qDCtzg"  # 마케팅팀 MKT calendar (캠페인 레벨/진행상황·에너지/바이럴)
 
-# SNS 클러스터 4개 소스키는 현재 물리적으로 같은 시트에 공존(imc_calendar). 소스키별 독립 오버라이드 유지:
-#   imc_calendar → SNS_SHEET_ID 전역(일정/온사이트/PR/IG광고) · sns_perf/crm_perf/budget → 각 호출부 sid=
+# SNS 클러스터 소스키는 현재 물리적으로 같은 시트에 공존(imc_calendar). 소스키별 독립 오버라이드 유지:
+#   imc_calendar → SNS_SHEET_ID 전역(일정/온사이트/PR/IG광고) · budget → 호출부 sid=
+#   (sns_perf/crm_perf 는 2026-08-15 채널 성과 폐지와 함께 제거됨)
 # (_REG·_src 는 파일 상단 sheets 정의 직후에 로드됨 — DASHBOARD 주입 블록이 여기보다 앞서 _src 를 씀)
 SNS_SHEET_ID = _src("imc_calendar") or SNS_SHEET_ID
 print("[소스] " + " · ".join(_SRCREG.describe(_REG)))
@@ -618,11 +619,6 @@ def _sheet_tabs(sid):
             _HEALTH.append(f"탭 목록 조회 실패({type(_e).__name__}) — 권한 확인")
             _TAB_TITLES[sid] = []
     return _TAB_TITLES[sid]
-
-
-def _match_tabs(key, sid=None):
-    """제목에 key가 들어간 실제 탭 전부(정렬). 기간 분할 탭(예: 오피셜 IG (26.7~)/(~26.6)) 대응."""
-    return sorted(t for t in _sheet_tabs(sid or SNS_SHEET_ID) if key in t)
 
 
 def _resolve_tab(tab, sid=None):
@@ -1254,8 +1250,12 @@ except Exception as e:
     _HEALTH.append(f"IMC 주입 예외: {type(e).__name__}")
     print(f"[주의] IMC 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
-# ── IMC 채널별 성과(과거 회고) 주입 → const IMC_PERF ──
-# SNS/CRM 통합 관리 시트의 성과 탭(4-1/4-2 IG, 시트16 CRM) + 예산 탭 집계.
+# ── IMC 성과 주입 → const IMC_PERF ──
+# ★2026-08-15: SNS/CRM 채널 성과(오피셜·우먼 IG, 시트16 CRM)와 하이라이트 수집을 **폐지**했다.
+#   앱 renderImcPerf 안에 카드 정의(igCard/crmCard/hl)는 있었지만 최종 innerHTML 조립부가 한 번도
+#   참조하지 않아 **화면에 나온 적이 없다** — 생성기만 매일 손입력 탭 3개를 읽어 Sheets 쿼터를 쓰고
+#   '★원천 정체' 경고 3줄(우먼 IG 2026-02·CRM 2025-12 고착)을 매일 띄우고 있었다.
+#   남기는 것 = 예산(PMKT/CRM 예산) + 히어로별 PMKT 성과(Databricks). 이게 실제로 화면에 그려진다.
 nperf = 0
 try:
     import re as _re3
@@ -1263,135 +1263,6 @@ try:
     def _n(s):
         d = _re3.sub(r"[^\d]", "", str(s or ""))
         return int(d) if d else 0
-
-    # ── ★손입력 원천 '마지막 입력일' 감시(2026-08-01) ─────────────────────────
-    #   SNS/CRM 성과 탭은 운영팀이 손으로 채우는 표라 **입력이 멈춰도 앱은 옛 누적치를 그대로 보여준다**
-    #   (실제로 우먼 IG는 2월, CRM은 작년 12월에서 멈춰 있었다). 시트 수정시각으론 못 잡으니
-    #   **표에 적힌 마지막 날짜**로 판정한다. 'M/D'는 연도가 없어 '오늘 이전 + 365일 이내'로 해석한다.
-    _LAST_INPUT = {}
-
-    def _last_md_tabs(dates_by_tab):
-        """열린 탭('(26.7~)'처럼 끝이 안 닫힌 것) 우선, 그 탭의 **마지막 행** 날짜."""
-        import re as _re_t
-        if not dates_by_tab:
-            return None
-        open_tabs = [t for t in dates_by_tab if _re_t.search(r"\(\d{2}\.\d{1,2}~\)\s*$", t)]
-        tab = (open_tabs or list(dates_by_tab))[-1]
-        hint = _re_t.search(r"\((\d{2})\.\d{1,2}~\)", tab)
-        year = 2000 + int(hint.group(1)) if hint else None
-        for v in reversed(dates_by_tab[tab]):          # 표는 시간순 → 뒤에서부터 첫 유효 날짜
-            d = _last_md([v], year=year)
-            if d:
-                return d
-        return None
-
-    def _last_md(vals, year=None):
-        best = None
-        for v in vals:
-            m = _re3.match(r"^\s*(\d{1,2})[/.-](\d{1,2})\s*$", str(v or "")) if False else None
-            import re as _re_l
-            m = _re_l.match(r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})", str(v or "")) or \
-                _re_l.match(r"^\s*(\d{1,2})[/.](\d{1,2})\s*$", str(v or ""))
-            if not m:
-                continue
-            try:
-                if len(m.groups()) == 3:
-                    d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-                else:
-                    mo, da = int(m.group(1)), int(m.group(2))
-                    d = datetime.date(year or TODAY.year, mo, da)
-                    if d > TODAY:                       # 연도 힌트가 없을 때만 작년으로 되돌린다
-                        d = datetime.date((year or TODAY.year) - 1, mo, da)
-            except ValueError:
-                continue
-            if d <= TODAY and (best is None or d > best):
-                best = d
-        return best.isoformat() if best else None
-
-    def _agg_ig(key, ch):  # 헤더명 기반(#4)
-        # ★운영팀이 성과 탭을 기간별로 쪼갬(오피셜 IG = '(26.7~)' + '(~26.6)') → 제목에 key가 든 탭
-        #   전부 합산. 앞으로 '(26.10~)'이 더 생겨도 자동 편입. 두 탭에 같은 게시물이 겹쳐 있어
-        #   (발행일+소재)로 중복 제거.
-        _sperf = _src("sns_perf") or SNS_SHEET_ID   # sns_perf 소스키 오버라이드(현재 SNS 시트와 동일)
-        tabs = _match_tabs(key, sid=_sperf)
-        if not tabs:
-            _HEALTH.append(f"성과 탭 '{key}' 없음 — 시트 탭 이름 확인")
-        agg = {"posts": 0, "views": 0, "reach": 0, "likes": 0, "hero": 0, "popular": 0}
-        tops = []
-        # ★중복 제거는 '탭 간'만. 한 탭 안의 같은 (발행일+소재)는 서로 다른 게시물일 수 있어
-        #   (우먼 탭은 유형 컬럼이 없어 피드/릴스 구분 불가) 건드리지 않는다.
-        seen_prev, dupes = set(), 0
-        _dates_by_tab = {}
-        for tab in tabs:
-            cur = set()
-            # 우먼(4-2)은 유형·인기게시물·히어로콘텐츠 컬럼이 없음 → optional 처리(오탐 방지)
-            rows, cm = _sns_table(tab, {"date": ["발행일"], "title": ["소재"], "form": ["유형"],
-                                        "views": ["조회"], "reach": ["도달"], "likes": ["좋아요"],
-                                        "popular": ["인기게시물", "인기 게시물"], "hero": ["히어로콘텐츠", "히어로 콘텐츠"]},
-                                  optional=("form", "popular", "hero"), sid=_sperf)
-            for r in rows:
-                title, v = _gv(r, cm, "title"), _n(_gv(r, cm, "views"))
-                if not title or (v == 0 and _n(_gv(r, cm, "reach")) == 0):
-                    continue
-                sig = (_gv(r, cm, "date"), title)
-                _dates_by_tab.setdefault(tab, []).append(_gv(r, cm, "date"))   # 마지막 입력일 판정용
-                if sig in seen_prev:  # 앞선 탭에 이미 있는 게시물(기간 분할 경계 중복)
-                    dupes += 1
-                    continue
-                cur.add(sig)
-                agg["posts"] += 1
-                agg["views"] += v
-                agg["reach"] += _n(_gv(r, cm, "reach"))
-                agg["likes"] += _n(_gv(r, cm, "likes"))
-                if _gv(r, cm, "popular").upper() == "O":
-                    agg["popular"] += 1
-                if _gv(r, cm, "hero").upper() == "O":
-                    agg["hero"] += 1
-                    tops.append({"ch": ch, "title": title[:40], "date": _gv(r, cm, "date"), "views": v, "type": _gv(r, cm, "form")})
-            seen_prev |= cur
-        # ★'지금 채우고 있는 탭'의 마지막 행 날짜로 본다. 과거 탭(이름이 '(~26.6)')엔 작년 날짜가
-        #   섞여 있어 오늘 기준 연도 추정을 하면 엉뚱하게 최신으로 잡힌다(8/1 → 올해로 오인).
-        _LAST_INPUT[f"{ch} IG"] = _last_md_tabs(_dates_by_tab)
-        print(f"성과 '{ch} IG': 탭 {tabs} → {agg['posts']}건(탭간 중복 {dupes} 제외)"
-              + (f" · 마지막 입력 {_LAST_INPUT[f'{ch} IG']}" if _LAST_INPUT.get(f"{ch} IG") else ""))
-        if agg["posts"] == 0:
-            _HEALTH.append(f"성과 '{key}' 0건")
-        return agg, tops
-
-    agg_off, tops_off = _agg_ig("성과_오피셜 IG", "오피셜")
-    agg_wm, tops_wm = _agg_ig("성과_우먼 IG", "우먼")
-
-    # CRM(시트16): 채널/발송수/GMV/ROAS (헤더명 기반)
-    crm = {"count": 0, "sends": 0, "gmv": 0, "roas": 0}
-    _ro_sum = _ro_n = 0
-    rows, cm = _sns_table("시트16", {"ch": ["채널"], "sends": ["발송수"], "gmv": ["GMV"], "roas": ["ROAS"],
-                                    "date": ["발송일"]},
-                          sid=_src("crm_perf") or SNS_SHEET_ID)
-    for r in rows:
-        g = _n(_gv(r, cm, "gmv"))
-        if g == 0:
-            continue
-        crm["count"] += 1
-        crm["gmv"] += g
-        crm["sends"] += _n(_gv(r, cm, "sends"))
-        try:
-            _ro_sum += float(_gv(r, cm, "roas").replace("%", "").replace(",", "")); _ro_n += 1
-        except ValueError:
-            pass
-    crm["roas"] = round(_ro_sum / _ro_n) if _ro_n else 0
-    if crm["count"] == 0:
-        _HEALTH.append("CRM(시트16) 성과 0건")
-    _LAST_INPUT["CRM"] = _last_md([_gv(r, cm, "date") for r in rows])
-    # 임계: IG는 자주 올리니 10일, CRM 발송은 뜸해서 45일
-    for _src_nm, _lim in (("오피셜 IG", 10), ("우먼 IG", 10), ("CRM", 45)):
-        _ld = _LAST_INPUT.get(_src_nm)
-        if not _ld:
-            continue
-        _gap = (TODAY - datetime.date.fromisoformat(_ld)).days
-        print(f"[신선도] {_src_nm} 성과 — 마지막 입력 {_ld} ({_gap}일 전)" + (" ★정체" if _gap >= _lim else ""))
-        if _gap >= _lim:
-            _HEALTH.append(f"★원천 정체 — {_src_nm} 성과 입력이 {_gap}일째 멈춤(마지막 {_ld}) "
-                           f"— SNS/CRM 통합관리 시트 확인 필요")
 
     # 예산(PMKT/CRM 예산): 구분 라벨 행 × 월 컬럼 (헤더명 기반)
     _mlbl = ["2026/01", "2026/02", "2026/03", "2026/04", "2026/05", "2026/06"]
@@ -1408,8 +1279,6 @@ try:
         budget["perf"].append(_n(_gv(_prow, cm, k)) if _prow else 0)
     if not _hrow:
         _HEALTH.append("예산 Hero 행 못 찾음")
-
-    highlights = sorted(tops_off + tops_wm, key=lambda x: -x["views"])[:10]
 
     # 시트 읽기 헬퍼(_raw/_g2/_hdr_idx) — 아래 '히어로 마케팅 목표' 로드 등에서 사용.
     # ★히어로별 PMKT 성과는 더 이상 캠페인 트래커가 아니라 Databricks 'PMKT주차'/'PMKT경로'(team.sales.pdp_path_daily_summary_v 기반)에서 로드(하단 hero_perf 블록).
@@ -2225,27 +2094,13 @@ try:
         _scnt[_h["season"]] = _scnt.get(_h["season"], 0) + 1
     print("IMC 히어로 시즌: " + " · ".join(f"{k} {v}종" for k, v in sorted(_scnt.items())))
 
-    # ★조용한 0 덮어쓰기 방지(2026-07-15). 소스 탭 읽기가 실패하면(이름 변경·권한·일시 오류) 집계가
-    #   0으로 나오는데 그대로 주입하면 라이브 실데이터가 지워진다 — 실제로 오피셜 IG 탭이
-    #   '(26.7~)'로 개명되며 posts 374→0·reach 11.6M→0으로 매일 CI가 덮어썼다.
-    #   0건이면 앱 HTML에 이미 있는 직전 값을 보존한다(다음 정상 실행 때 자동 복구).
+    # ★조용한 0 덮어쓰기 방지(2026-07-15). 소스 읽기가 실패하면(이름 변경·권한·일시 오류) 집계가
+    #   0으로 나오는데 그대로 주입하면 라이브 실데이터가 지워진다 — 아래 히어로 PMKT 가드가 그 역할.
     _mprev = re.search(r"const IMC_PERF = (\{.*?\});", html2, re.DOTALL)
     try:
         _prev = json.loads(_mprev.group(1)) if _mprev else {}
     except Exception:
         _prev = {}
-
-    for _ch, _agg in (("오피셜", agg_off), ("우먼", agg_wm)):
-        if _agg["posts"] == 0:
-            _old = ((_prev.get("ig") or {}).get(_ch)) or {}
-            if _old.get("posts"):
-                _agg.update(_old)
-                _HEALTH.append(f"성과 '{_ch} IG' 0건 → 기존값 보존({_old['posts']}건)")
-                print(f"[보존] '{_ch} IG' 읽기 0건 — 앱 기존값 유지({_old['posts']}건)")
-    if crm["count"] == 0 and (_prev.get("crm") or {}).get("count"):
-        crm = dict(_prev["crm"])
-        _HEALTH.append(f"CRM 성과 0건 → 기존값 보존({crm['count']}건)")
-        print(f"[보존] CRM 읽기 0건 — 앱 기존값 유지({crm['count']}건)")
 
     # ★hero PMKT 조용한 0 방지(2026-07-24) — PMKT기간/주차 읽기가 일시 실패하면(429/타임아웃) pdp_real·conv·
     #   마케팅기여·wow가 전 히어로 0이 된다. gmv는 매출탭 소스라 살아남아 '거래액은 정상인데 유입만 0'으로 보인다.
@@ -2267,18 +2122,13 @@ try:
             _HEALTH.append(f"히어로 PMKT 0건 → 기존값 보존({len(_prev_heroes)}종)")
             print(f"[보존] 히어로 PMKT 읽기 0 — 앱 기존값 유지({len(_prev_heroes)}종)")
 
-    # 마지막 입력일을 카드에 함께 싣는다 — 손입력 원천이 멈춘 걸 화면에서 바로 알 수 있게.
-    agg_off["last_input"] = _LAST_INPUT.get("오피셜 IG") or ""
-    agg_wm["last_input"] = _LAST_INPUT.get("우먼 IG") or ""
-    crm["last_input"] = _LAST_INPUT.get("CRM") or ""
-    perf = {"ig": {"오피셜": agg_off, "우먼": agg_wm}, "crm": crm, "budget": budget,
-            "highlights": highlights, "hero": hero_list,
+    perf = {"budget": budget, "hero": hero_list,
             # wks[].p 의 첫 값은 이 배열의 인덱스(경로명 반복 저장을 피하려고 인덱스로 넣는다)
             "path_names": _PATH_NAMES}
     perf_block = "const IMC_PERF = " + json.dumps(perf, ensure_ascii=False) + ";"
     html2, nperf = re.subn(r"const IMC_PERF = \{.*?\};", perf_block, html2, count=1, flags=re.DOTALL)
     assert nperf == 1, f"IMC_PERF 교체 실패 (matched {nperf})"
-    print(f"IMC_PERF 주입: 오피셜 {agg_off['posts']}·우먼 {agg_wm['posts']} · CRM {crm['count']} · 히어로PMKT {len(hero_list)}종")
+    print(f"IMC_PERF 주입: 히어로PMKT {len(hero_list)}종 · 예산 {len(budget['months'])}개월")
 except Exception as e:
     _HEALTH.append(f"IMC_PERF 주입 예외: {type(e).__name__}")
     print(f"[주의] IMC_PERF 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
