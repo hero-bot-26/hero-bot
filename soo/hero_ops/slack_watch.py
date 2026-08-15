@@ -507,28 +507,84 @@ def run(send: bool = False, days: int = 0, app_html: str | None = None) -> int:
     return 0
 
 
+SUMMARY_PROMPT = """당신은 무신사 스탠다드 전략팀의 IMC 운영 담당자입니다.
+아래는 슬랙 채널들에서 히어로 상품의 일정 관련으로 자동 수집된 메시지 원문입니다.
+이걸 담당자가 **읽자마자 판단할 수 있는 브리핑**으로 압축하세요.
+
+규칙:
+- 히어로 상품별로 묶고, 상품명을 굵게(`*라이트다운*`) 시작합니다.
+- 각 줄은 "무슨 일정이 어떻게 됐는지" 한 문장. **바뀐 건 `9/9 → 8/26` 처럼 변화를 명시**합니다.
+- 확정/변경/신규 일정을 우선하고, 단순 문의·잡담·진행 로그는 버립니다.
+- ★**원문에 없는 날짜·수량·상품명을 절대 만들지 마세요.** 애매하면 그 항목을 빼십시오.
+- 각 줄 끝에 출처를 `<링크|#채널>` 형식으로 답니다. 링크가 없으면 `#채널`만.
+- 전체 15줄 이내. 서론·맺음말·"요약하면" 같은 군더더기 금지. 슬랙 mrkdwn 로만.
+- 마지막에 `⚠️ 확인 필요:` 한 줄로, 서로 어긋나는 일정이나 미확정 사항이 있으면 짚어 주세요. 없으면 생략.
+
+원문(JSON):
+"""
+
+
+def llm_brief(cands: list[dict]) -> str | None:
+    """claude CLI 로 브리핑 생성. CLI·토큰이 없거나 실패하면 None → 규칙 기반으로 폴백.
+
+    ★Anthropic SDK 를 쓰지 않는다(CLAUDE.md 1-17) — Max 구독의 `claude -p` CLI 를 쓴다.
+      CI 에서는 `CLAUDE_CODE_OAUTH_TOKEN` 시크릿이 있어야 한다(`claude setup-token` 으로 발급).
+    ★프롬프트는 인자가 아니라 **stdin** 으로 넘긴다(Windows 명령줄 길이 한계).
+    """
+    import shutil
+    import subprocess
+    if not shutil.which("claude"):
+        print("[slack-watch] claude CLI 없음 — 규칙 기반 요약으로 대체")
+        return None
+    payload = [{"채널": c["ch"], "히어로": c["heroes"], "날짜": c["date"] or c["sched"],
+                "원글": c.get("parent", ""), "본문": c["text"][:600],
+                "링크": c.get("link", ""),
+                "문서": [t for _, t in (c.get("titled") or [])]} for c in cands]
+    try:
+        r = subprocess.run(["claude", "-p"],
+                           input=SUMMARY_PROMPT + json.dumps(payload, ensure_ascii=False, indent=1),
+                           capture_output=True, text=True, encoding="utf-8", timeout=300)
+    except Exception as e:
+        print(f"[slack-watch] 요약 호출 예외 — 규칙 기반으로 대체: {type(e).__name__}: {e}")
+        return None
+    if r.returncode != 0 or not (r.stdout or "").strip():
+        print(f"[slack-watch] 요약 실패(rc={r.returncode}) — 규칙 기반으로 대체: "
+              f"{(r.stderr or '')[:200]}")
+        return None
+    return r.stdout.strip()
+
+
+def rule_brief(cands: list[dict]) -> str:
+    """LLM 없이도 원문 나열보다는 낫게 — 히어로별로 묶어 '언제 무엇' 한 줄씩."""
+    _ACT = ["발매", "입고", "기획전", "캠페인", "쇼케이스", "촬영", "랭킹", "쿠폰",
+            "선발매", "예약", "PPL", "프로모션", "론칭", "런칭", "오픈"]
+    by = {}
+    for c in cands:
+        for h in (c["heroes"] or ["기타"]):
+            by.setdefault(h, []).append(c)
+    lines = []
+    for h, items in sorted(by.items(), key=lambda kv: -len(kv[1])):
+        lines.append(f"*{h}*")
+        for c in items[:4]:
+            acts = [a for a in _ACT if a in c["text"]][:3]
+            when = c["date"] or c["sched"]
+            src = f"<{c['link']}|#{c['ch']}>" if c.get("link") else f"#{c['ch']}"
+            lines.append(f"  · `{when}` {' / '.join(acts) or '일정 언급'} — {src}")
+        if len(items) > 4:
+            lines.append(f"  · … 외 {len(items) - 4}건")
+    return "\n".join(lines[:40])
+
+
 def _notify(cands: list[dict]) -> None:
     real = [c for c in cands if c["prio"] != "낮음"]
-    lines = [f"*슬랙 히어로 일정 후보 {len(real)}건* (참고 {len(cands) - len(real)}건 별도)",
-             "_시트에 자동 반영하지 않습니다 — 확인 후 반영해 주세요._", ""]
-    for c in real[:15]:
-        tag = "🔴" if c["prio"] == "높음" else "•"
-        head = c["text"][:110] + ("…" if len(c["text"]) > 110 else "")
-        who = ", ".join(c["heroes"][:3])
-        when = c["date"] or c["sched"]
-        link = f" <{c['link']}|보기>" if c.get("link") else ""
-        kind = " ↳답글" if c.get("parent") else ""
-        lines.append(f"{tag} *#{c['ch']}*{kind} · {who} · `{when}`{link}")
-        if c.get("parent"):
-            lines.append(f"    _원글: {c['parent']}_")
-        lines.append(f"    {head}")
-        if c.get("titled"):
-            # 제목이 풀린 건 이름으로 — URL 만 나열하면 어느 문서 얘긴지 안 보인다.
-            lines.append("    📄 " + " · ".join(f"<{u}|{t}>" for u, t in c["titled"][:3]))
-        elif c.get("links"):
-            lines.append("    🔗 " + " ".join(c["links"][:2]))
-    if len(real) > 15:
-        lines.append(f"\n… 외 {len(real) - 15}건 (원장 `{QUEUE_TAB}` 탭)")
+    if not real:
+        return
+    body = llm_brief(real) or rule_brief(real)
+    lines = [f"*슬랙 히어로 일정 브리핑* — 후보 {len(real)}건"
+             + (f" (참고 {len(cands) - len(real)}건 별도)" if len(cands) > len(real) else ""),
+             "_시트에 자동 반영하지 않습니다 — 확인 후 반영해 주세요._", "",
+             body, "",
+             f"_원문 전건은 원장 `{QUEUE_TAB}` 탭._"]
     try:
         from soo.hero_ops import notify
         notify.send("\n".join(lines))
