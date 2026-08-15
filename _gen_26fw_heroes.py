@@ -1191,6 +1191,24 @@ try:
     if _items:
         print(f"세일즈 캠페인 히어로 딱지 전환: {_n_shero}건 (나머지는 '전사' 유지)")
 
+    # 3.9) ★슬랙 승인분 — 슬랙 논의에서 담당자가 ✅ 한 일정을 IMC 에 얹는다(2026-08-15).
+    #   ★원천 시트는 여전히 진실소스다. 승인분은 type '슬랙승인' 딱지를 달아 화면에서 구분되고,
+    #     같은 일정이 원천에 들어오면 중복이라 스킵한다(날짜+제목 앞 6자 겹침) — 담당자가 원천을
+    #     고치면 그쪽이 이긴다. 이 가드가 없으면 소스가 둘이 되어 조용히 어긋난다.
+    #   ★읽기 실패해도 IMC 전체를 죽이지 않는다(승인분만 빠짐).
+    try:
+        from soo.hero_ops import slack_watch as _SW
+        _n_ack = 0
+        for _a in _SW.approved_items(sheets, TODAY, _items):
+            if _add("슬랙승인", "슬랙", _a["date"], _a["title"], _a["heroes"],
+                    src_ch=_a["ch"], src_link=_a["link"]):
+                _n_ack += 1
+        if _n_ack:
+            print(f"슬랙 승인분 IMC 주입: {_n_ack}건")
+    except Exception as _e:
+        _HEALTH.append(f"슬랙 승인분 주입 예외: {type(_e).__name__}")
+        print(f"[주의] 슬랙 승인분 주입 실패(나머지 IMC 는 정상): {type(_e).__name__}: {_e}")
+
     # 4) 윈도우 필터 + status 부여
     #    ⚠ 예전엔 비히어로 일정(source="일정")을 영구 드롭 → 봄 히어로 시즌 종료 후 5/6월 비히어로
     #    활동(여름상품·매장)이 통째로 사라져 '마케팅이 멈춘 듯' 보임. 이제 전량 유지하고

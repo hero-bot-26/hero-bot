@@ -724,3 +724,84 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ── 승인분 → IMC 항목 (생성기가 import) ──────────────────────────────────────
+# ★원천 시트가 여전히 진실소스다. 승인분은 type '슬랙승인' 딱지를 달고 **얹히는** 별도 레인이고,
+#   같은 일정이 원천에 들어오면 중복이므로 걸러낸다. 담당자가 원천을 고치면 그쪽이 이긴다.
+# ★이모지 단축코드는 한글도 쓴다(`:체크:`) — [a-z] 만 잡으면 제목에 그대로 남는다.
+_MARKUP_RE = re.compile(r"<[^>]*>|[*_`~]|:[0-9A-Za-z가-힣_+-]{1,20}:|&amp;|&gt;|&lt;")
+
+
+def _clean_title(t: str) -> str:
+    t = _MARKUP_RE.sub(" ", str(t or ""))
+    t = re.sub(r"^\s*\[답글\]\s*", "", t)
+    return " ".join(t.split())
+
+
+def resolve_date(expr: str, anchor: dt.date) -> str:
+    """'9/23'·'8월 26일' → ISO 날짜. 슬랙 표기엔 연도가 없어 **논의 시점에서 가장 가까운 해**로 읽는다.
+
+    ★"미래면 무조건 내년"으로 밀면 안 된다 — 8/15 에 언급된 `7/1`(45일 전)이 2027-07-01 로
+      1년 뒤에 꽂힌다. 일정 논의는 대개 논의 시점 ±6개월 안이므로 그 창 밖이면 버린다.
+    """
+    e = str(expr or "")
+    m = re.search(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일", e) or \
+        re.search(r"(?<!\d)(\d{1,2})\s*(?:/\s*|\.)(\d{1,2})(?!\d)", e)
+    if not m:
+        return ""
+    mo, da = int(m.group(1)), int(m.group(2))
+    if not (1 <= mo <= 12 and 1 <= da <= 31):
+        return ""
+    best = None
+    for y in (anchor.year - 1, anchor.year, anchor.year + 1):
+        try:
+            d = dt.date(y, mo, da)
+        except ValueError:
+            continue
+        if best is None or abs((d - anchor).days) < abs((best - anchor).days):
+            best = d
+    if best is None or abs((best - anchor).days) > 200:
+        return ""
+    return best.isoformat()
+
+
+def approved_items(sheets, today: dt.date, existing: list[dict] | None = None) -> list[dict]:
+    """승인상태='승인' 행 → IMC 항목. 날짜를 못 뽑거나 원천에 이미 있으면 버린다."""
+    if not sheets:
+        return []
+    try:
+        vals = sheets.spreadsheets().values().get(
+            spreadsheetId=ARCHIVE_SHEET, range=f"'{QUEUE_TAB}'!A2:M").execute().get("values", [])
+    except Exception as e:
+        print(f"[slack-watch] 승인분 읽기 실패: {type(e).__name__}: {e}")
+        return []
+
+    # 원천에 이미 있는 일정(같은 날짜 + 제목 6자 겹침)은 중복 — 승인분을 얹지 않는다.
+    have = {}
+    for x in (existing or []):
+        have.setdefault(str(x.get("date", "")), []).append(
+            re.sub(r"[^가-힣0-9A-Za-z]", "", str(x.get("title", ""))))
+
+    out, skip_nodate, skip_dup = [], 0, 0
+    for row in vals:
+        row = list(row) + [""] * (13 - len(row))
+        if str(row[12]).strip() != "승인":
+            continue
+        d = resolve_date(row[5], today)
+        if not d:
+            skip_nodate += 1
+            continue
+        title = _clean_title(row[6])[:60]
+        if not title:
+            continue
+        key = re.sub(r"[^가-힣0-9A-Za-z]", "", title)
+        if any(len(key) >= 6 and (key[:6] in h or h[:6] in key) for h in have.get(d, [])):
+            skip_dup += 1
+            continue
+        out.append({"date": d, "title": title, "heroes": str(row[4]),
+                    "ch": str(row[1]), "link": str(row[7])})
+    if out or skip_nodate or skip_dup:
+        print(f"[slack-watch] 승인분 → IMC {len(out)}건 "
+              f"(날짜 못 뽑아 제외 {skip_nodate} · 원천 중복 {skip_dup})")
+    return out
