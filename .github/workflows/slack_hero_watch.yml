@@ -1,0 +1,77 @@
+name: Slack hero watch
+
+# 슬랙에서만 도는 히어로 IMC·발매 일정 변경을 훑어 **제안 큐**로 DM 발송.
+#   ★자동 반영 안 한다 — IMC·발매의 진실소스는 시트다. 슬랙이 두 번째 소스가 되면
+#     담당자가 시트를 고쳐도 조용히 덮인다(2026-08-13 설계 결정).
+#   ★감시 대상 = 봇이 초대된 채널. 목록이 코드에 없으므로 채널을 늘리려면 초대만 하면 된다
+#     (2026-08-15 사용자 결정: "히어로라고 적힌 채널 말고도 히어로 말하는 데가 많다").
+#   하루 2회 — 업무 시작 전 / 업무 마무리.
+#
+# ★GitHub 네이티브 schedule 은 백로그로 3~6h 밀린다(랭킹봇에서 확인). 여기서는 정시성이
+#   중요하지 않아 schedule 로 둔다 — 아침분이 10시에 와도 무해하고, 커서 기반이라 놓치는 건 없다.
+on:
+  schedule:
+    - cron: "30 23 * * 0-4"   # 08:30 KST (월~금) — 전날 저녁~아침 논의분
+    - cron: "0 9 * * 0-4"     # 18:00 KST (월~금) — 업무 중 논의분
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "커서 무시하고 N일 소급(0=커서 사용)"
+        required: false
+        default: "0"
+      send:
+        description: "실제 발송(false면 드라이런)"
+        required: false
+        default: "true"
+
+concurrency:
+  group: slack-hero-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout hero_bot
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      # ★히어로 별칭의 진실소스는 앱의 HERO_LINEUP 하나다. 여기서 목록을 새로 만들면
+      #   생성기와 어긋나므로, 배포된 app.html 을 그대로 읽는다(못 읽으면 중단).
+      - name: Checkout hero-master-app (HERO_LINEUP 소스)
+        uses: actions/checkout@v4
+        with:
+          repository: hero-bot-26/hero-master-app
+          token: ${{ secrets.APP_REPO_PAT }}
+          path: hero-master-app
+
+      - name: 슬랙 히어로 일정 감시
+        env:
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          APP_REPO_PATH:            ${{ github.workspace }}/hero-master-app
+        run: >-
+          python -m soo.hero_ops.slack_watch
+          ${{ (github.event_name != 'workflow_dispatch' || inputs.send == 'true') && '--send' || '' }}
+          --days ${{ inputs.days || 0 }}
+
+      # ★실행이 아예 안 된 건 여기서 못 잡는다 — 그건 ops_watch(밖에서 보는 감시자)의 몫이다.
+      - name: 실패 알림 (슬랙 DM)
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 슬랙 히어로 감시 실패 ($(date -u +%Y-%m-%d)) — Actions 로그 확인.
+          단골 원인: 봇 스코프 변경, 앱 HERO_LINEUP 구조 변경, 구글 토큰 만료."
