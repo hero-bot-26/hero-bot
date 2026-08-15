@@ -381,7 +381,8 @@ def log_queue(sheets, rows: list[list]) -> None:
 
 
 # ── 본체 ─────────────────────────────────────────────────────────────────────
-def run(send: bool = False, days: int = 0, app_html: str | None = None) -> int:
+def run(send: bool = False, days: int = 0, app_html: str | None = None,
+        no_dedup: bool = False) -> int:
     tok = os.environ.get("SLACK_BOT_TOKEN", "").strip()
     if not tok:
         print("SLACK_BOT_TOKEN 없음 — 중단")
@@ -402,7 +403,8 @@ def run(send: bool = False, days: int = 0, app_html: str | None = None) -> int:
         print(f"[slack-watch] 시트 접근 실패 — 커서·dedup 없이 진행: {type(e).__name__}: {e}")
 
     cursors = load_cursors(sheets) if sheets else {}
-    seen = seen_keys(sheets) if sheets else set()
+    # --no-dedup: 이미 올린 건도 다시 담는다(브리핑 재생성·요약 경로 점검용).
+    seen = set() if no_dedup else (seen_keys(sheets) if sheets else set())
     chans = bot_channels(tok)
     print(f"[slack-watch] 감시 채널 {len(chans)}개 (봇 멤버십 기준)")
 
@@ -597,8 +599,10 @@ def main() -> int:
     ap.add_argument("--send", action="store_true", help="DM 발송 + 원장 기록(기본은 드라이런)")
     ap.add_argument("--days", type=int, default=0, help="커서 무시하고 N일 소급 수집")
     ap.add_argument("--app-html", default=None, help="app.html 경로(HERO_LINEUP 소스)")
+    ap.add_argument("--no-dedup", action="store_true",
+                    help="이미 큐에 올린 건도 다시 담는다(브리핑 재생성용)")
     a = ap.parse_args()
-    return run(send=a.send, days=a.days, app_html=a.app_html)
+    return run(send=a.send, days=a.days, app_html=a.app_html, no_dedup=a.no_dedup)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,10 @@ on:
         description: "실제 발송(false면 드라이런)"
         required: false
         default: "true"
+      no_dedup:
+        description: "이미 올린 건도 다시 담기(브리핑 재생성)"
+        required: false
+        default: "false"
 
 concurrency:
   group: slack-hero-watch
@@ -81,6 +85,7 @@ jobs:
         run: >-
           python -m soo.hero_ops.slack_watch
           ${{ (github.event_name != 'workflow_dispatch' || inputs.send == 'true') && '--send' || '' }}
+          ${{ inputs.no_dedup == 'true' && '--no-dedup' || '' }}
           --days ${{ inputs.days || 0 }}
 
       # ★실행이 아예 안 된 건 여기서 못 잡는다 — 그건 ops_watch(밖에서 보는 감시자)의 몫이다.
