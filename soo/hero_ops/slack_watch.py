@@ -13,10 +13,16 @@
    ★전사 검색은 금지다. '히어로'가 UI 히어로 배너·티몰 히어로 validation 같은 전혀 다른 뜻으로도
    쓰여 노이즈가 절반을 넘는다(2026-08-13 실측). 초대된 채널로 좁히는 게 그 필터 역할을 한다.
 
-3. **판정은 규칙 기반.** CI에 `claude` CLI 가 없어 LLM 분류를 못 쓴다(트렌드 봇 때 확인).
-   제안 큐라 오탐 비용이 낮으므로 느슨하게 거르고, 애매한 건 우선순위를 낮춰 **남긴다**.
+3. **후보 판정은 규칙 기반, 브리핑은 LLM.** 무엇을 후보로 담을지는 규칙으로 넓게 거르고(오탐
+   비용이 낮다), 그걸 사람이 읽을 문장으로 압축하는 건 `claude -p` 가 한다.
    ★거르되 드롭하지 않는다 — 비히어로 일정을 파이프라인에서 영구 드롭했다가 "5월부터 마케팅이
    멈췄나?"는 착시를 만든 전례가 있다.
+   ★한때 "CI에 claude CLI 가 없어 LLM 을 못 쓴다"고 단정했는데 **틀렸다** —
+   `claude setup-token` 으로 장기 토큰을 발급하면 CI 에서도 쓸 수 있다(2026-08-15).
+
+5. **승인은 슬랙 이모지 반응으로 받는다.** 브리핑 스레드에 건별 메시지를 달고 ✅/❌ 를 읽는다.
+   버튼·슬래시커맨드는 상시 서버가 필요해 이 구조로는 못 받는다. 대신 **실시간이 아니다** —
+   다음 실행 때 반영된다.
 
 4. **히어로 별칭은 앱의 `HERO_LINEUP` 을 그대로 읽는다.** 여기서 목록을 새로 만들면 진실소스가
    둘이 된다. 못 읽으면 추측하지 말고 **중단**한다.
@@ -50,7 +56,10 @@
     python -m soo.hero_ops.slack_watch --send     # DM 발송 + 원장 기록
     python -m soo.hero_ops.slack_watch --days 14  # 커서 무시하고 N일 소급
 
-필요 스코프: channels:history, channels:read, groups:history, groups:read (2026-08-15 부여됨).
+필요 스코프(2026-08-15 전부 부여됨):
+  channels:history · channels:read · channels:join · groups:history · groups:read  (채널 수집)
+  im:write · im:history · reactions:read                                            (DM 발송·승인 반응)
+CI 시크릿: SLACK_BOT_TOKEN · GOOGLE_* · CLAUDE_CODE_OAUTH_TOKEN(없으면 규칙 기반 요약으로 폴백).
 """
 from __future__ import annotations
 
@@ -74,7 +83,16 @@ CURSOR_TAB = "_슬랙커서"
 CURSOR_HEADER = ["채널ID", "채널명", "마지막ts", "갱신시각"]
 QUEUE_TAB = "_슬랙제안"
 QUEUE_HEADER = ["발견일", "채널", "ts", "우선순위", "히어로", "날짜표현", "요약", "링크",
-                "원글(스레드)", "첨부링크", "문서제목"]
+                "원글(스레드)", "첨부링크", "문서제목", "승인메시지ts", "승인상태"]
+ACK_TS_COL, ACK_STATE_COL = "L", "M"      # QUEUE_HEADER 상의 위치(1-based 12·13)
+
+# ★승인은 슬랙 이모지 반응으로 받는다(2026-08-15 사용자 결정: "굳이 스프레드시트를 통해야 해?").
+#   버튼·슬래시커맨드는 슬랙이 우리 쪽으로 요청을 쏘는 구조라 **상시 떠 있는 공개 HTTPS 서버**가
+#   필요하다. 하루 2회 도는 잡뿐인 지금 구조로는 못 받는다. 반응은 우리가 나중에 읽으러 가면
+#   되므로 서버가 필요 없다 — 대신 **실시간이 아니다**(다음 실행 때 반영).
+APPROVE_EMOJI = {"white_check_mark", "heavy_check_mark", "o", "ok_hand", "+1", "thumbsup"}
+REJECT_EMOJI = {"x", "negative_squared_cross_mark", "no_entry", "no_entry_sign", "-1", "thumbsdown"}
+MAX_ACK_ITEMS = 10          # 한 번에 승인 요청할 최대 건수(DM 이 너무 길어지지 않게)
 
 FIRST_RUN_DAYS = 7          # 커서가 없는 채널의 첫 수집 범위. 14일이면 첫 발송이 너무 시끄럽다.
 THREAD_LOOKBACK_DAYS = 30   # ★부모 소급 범위 — 이보다 오래된 글에 달린 답글은 못 잡는다(아래 주석)
@@ -402,6 +420,9 @@ def run(send: bool = False, days: int = 0, app_html: str | None = None,
     except Exception as e:
         print(f"[slack-watch] 시트 접근 실패 — 커서·dedup 없이 진행: {type(e).__name__}: {e}")
 
+    # 지난 실행에서 보낸 승인 요청의 이모지 반응을 먼저 걷는다(수집보다 앞 — 이번 브리핑에 결과를 싣는다).
+    acked = read_approvals(tok, sheets) if send else (0, 0)
+
     cursors = load_cursors(sheets) if sheets else {}
     # --no-dedup: 이미 올린 건도 다시 담는다(브리핑 재생성·요약 경로 점검용).
     seen = set() if no_dedup else (seen_keys(sheets) if sheets else set())
@@ -493,14 +514,18 @@ def run(send: bool = False, days: int = 0, app_html: str | None = None,
         return 0
 
     if cands:
-        log_queue(sheets, [[kst_now().strftime("%Y-%m-%d"), c["ch"], c["ts"], c["prio"],
-                            ", ".join(c["heroes"]), c["date"] or c["sched"],
-                            ("[답글] " if c.get("parent") else "") + c["text"][:300],
-                            c.get("link", ""), c.get("parent", ""),
-                            " ".join(c.get("links") or [])[:500],
-                            " · ".join(t for _, t in (c.get("titled") or []))[:300]]
-                           for c in cands]) if sheets else None
-        _notify(cands)
+        # ★발송이 먼저다 — 승인 요청 메시지의 ts 를 받아 원장에 같이 적어야, 다음 실행에서
+        #   "이 반응 = 이 항목"으로 되짚을 수 있다. 순서를 바꾸면 ts 칸이 영영 빈다.
+        _notify(cands, token=tok, acked=acked)
+        if sheets:
+            log_queue(sheets, [[kst_now().strftime("%Y-%m-%d"), c["ch"], c["ts"], c["prio"],
+                                ", ".join(c["heroes"]), c["date"] or c["sched"],
+                                ("[답글] " if c.get("parent") else "") + c["text"][:300],
+                                c.get("link", ""), c.get("parent", ""),
+                                " ".join(c.get("links") or [])[:500],
+                                " · ".join(t for _, t in (c.get("titled") or []))[:300],
+                                c.get("ack_ts", ""), ""]
+                               for c in cands])
     else:
         print("신규 후보 없음 — 발송 스킵")
 
@@ -577,19 +602,111 @@ def rule_brief(cands: list[dict]) -> str:
     return "\n".join(lines[:40])
 
 
-def _notify(cands: list[dict]) -> None:
+def dm_channel(token: str) -> str:
+    """본인 DM 채널 ID. 반응을 읽으려면 채널 ID 가 필요하다."""
+    try:
+        req = urllib.request.Request(
+            SLACK_API + "conversations.open",
+            data=json.dumps({"users": os.environ.get("NOTIFY_TARGET", "").strip()
+                                      or "U09BU1F85TR"}).encode(),
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json; charset=utf-8"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            b = json.load(r)
+        return (b.get("channel") or {}).get("id", "") if b.get("ok") else ""
+    except Exception:
+        return ""
+
+
+def read_approvals(token: str, sheets) -> tuple[int, int]:
+    """지난 실행에서 보낸 승인 요청 메시지의 이모지 반응을 읽어 원장에 기록. (승인, 기각) 건수.
+
+    ★대기 중인 건만 조회한다(승인상태가 빈칸). 전체를 매번 다시 묻지 않는다.
+    """
+    if not sheets:
+        return (0, 0)
+    ch = dm_channel(token)
+    if not ch:
+        print("[slack-watch] DM 채널을 못 열어 승인 확인 스킵")
+        return (0, 0)
+    try:
+        vals = sheets.spreadsheets().values().get(
+            spreadsheetId=ARCHIVE_SHEET, range=f"'{QUEUE_TAB}'!A2:M").execute().get("values", [])
+    except Exception as e:
+        print(f"[slack-watch] 원장 읽기 실패 — 승인 확인 스킵: {type(e).__name__}: {e}")
+        return (0, 0)
+
+    updates, ok_n, no_n = [], 0, 0
+    for i, row in enumerate(vals):
+        row = list(row) + [""] * (13 - len(row))
+        ack_ts, state = str(row[11]).strip(), str(row[12]).strip()
+        if not ack_ts or state:
+            continue                      # 요청 안 보냈거나 이미 처리됨
+        try:
+            r = _slack("reactions.get", token, channel=ch, timestamp=ack_ts, full="true")
+        except Exception:
+            continue
+        if not r.get("ok"):
+            continue
+        names = {x.get("name", "").split("::")[0]
+                 for x in ((r.get("message") or {}).get("reactions") or [])}
+        if names & APPROVE_EMOJI:
+            updates.append((i + 2, "승인")); ok_n += 1
+        elif names & REJECT_EMOJI:
+            updates.append((i + 2, "기각")); no_n += 1
+        time.sleep(0.4)
+
+    if updates:
+        try:
+            sheets.spreadsheets().values().batchUpdate(
+                spreadsheetId=ARCHIVE_SHEET,
+                body={"valueInputOption": "RAW",
+                      "data": [{"range": f"'{QUEUE_TAB}'!{ACK_STATE_COL}{r}", "values": [[v]]}
+                               for r, v in updates]}).execute()
+        except Exception as e:
+            print(f"[slack-watch] 승인상태 기록 실패: {type(e).__name__}: {e}")
+    if ok_n or no_n:
+        print(f"[slack-watch] 승인 반응 반영 — 승인 {ok_n} · 기각 {no_n}")
+    return (ok_n, no_n)
+
+
+def _notify(cands: list[dict], token: str = "", acked: tuple[int, int] = (0, 0)) -> None:
+    """브리핑(부모) + 승인 대상 개별 메시지(스레드). 각 항목의 ts 를 cand['ack_ts'] 에 남긴다."""
     real = [c for c in cands if c["prio"] != "낮음"]
     if not real:
         return
     body = llm_brief(real) or rule_brief(real)
-    lines = [f"*슬랙 히어로 일정 브리핑* — 후보 {len(real)}건"
-             + (f" (참고 {len(cands) - len(real)}건 별도)" if len(cands) > len(real) else ""),
-             "_시트에 자동 반영하지 않습니다 — 확인 후 반영해 주세요._", "",
-             body, "",
-             f"_원문 전건은 원장 `{QUEUE_TAB}` 탭._"]
+    head = [f"*슬랙 히어로 일정 브리핑* — 후보 {len(real)}건"
+            + (f" (참고 {len(cands) - len(real)}건 별도)" if len(cands) > len(real) else ""),
+            "_원천 시트에 자동 반영하지 않습니다._", ""]
+    if acked != (0, 0):
+        head.append(f"_지난번 반응 반영: 승인 {acked[0]} · 기각 {acked[1]}_\n")
+    tail = ["", f"👇 *아래 스레드의 각 건에 ✅(맞음) 또는 ❌(아님)를 눌러주세요.* "
+                f"다음 실행 때 반영됩니다.", f"_원문 전건은 원장 `{QUEUE_TAB}` 탭._"]
     try:
+        from soo import persona
         from soo.hero_ops import notify
-        notify.send("\n".join(lines))
+        tok = token or os.environ.get("SLACK_BOT_TOKEN", "").strip()
+        target = os.environ.get("NOTIFY_TARGET", "").strip() or notify.DEFAULT_TARGET
+        parent = persona.send_slack("\n".join(head + [body] + tail), bot_token=tok,
+                                    target=target, persona=persona.RANKING_BOT)
+        if not parent:
+            print("[slack-watch] 브리핑 발송 실패")
+            return
+        ch = dm_channel(tok)
+        for c in real[:MAX_ACK_ITEMS]:
+            when = c["date"] or c["sched"]
+            who = ", ".join(c["heroes"][:3])
+            src = f"<{c['link']}|#{c['ch']}>" if c.get("link") else f"#{c['ch']}"
+            txt = (f"*{who}* · `{when}` · {src}\n{c['text'][:180]}"
+                   + ("…" if len(c["text"]) > 180 else ""))
+            ts = persona.send_slack(txt, bot_token=tok, target=ch or target,
+                                    persona=persona.RANKING_BOT, thread_ts=parent)
+            if ts:
+                c["ack_ts"] = ts
+            time.sleep(0.4)
+        if len(real) > MAX_ACK_ITEMS:
+            print(f"[slack-watch] 승인 요청은 상위 {MAX_ACK_ITEMS}건만 — 나머지는 원장에서 확인")
     except Exception as e:
         print(f"[slack-watch] 발송 실패: {type(e).__name__}: {e}")
 
