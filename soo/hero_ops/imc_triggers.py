@@ -355,7 +355,14 @@ CAMPAIGN_SHEET = "13P65W4wjZBkDfoKQ1X1s9Uc2eG84vMH1etw2ewCNHdE"  # [통합] 26�
 #   (B광고번호 C구분 D담당자 E브랜드 F캠페인명 G시작일 K디자인요청) — 헤더 5행·데이터 6행도
 #   그대로라 기존 range(B6:L1013)를 손댈 필요가 없다. B열에 담당자 한글 약칭(혜리·정일)이
 #   들어오는 이 파일 특유의 습관까지 일치(아래 owner 폴백이 그걸 노린 코드).
+#   ★2026-08-18 **또 당했다** — 이번엔 삭제가 아니라 **딱지**였다. 담당자가
+#   `26년 스페셜이슈` → `26년 스페셜이슈(미사용)` 로 개명하자 400 이 나고, 그 예외가
+#   생성기의 IMC 주입 블록을 통째로 죽여 **캘린더가 8/12 부터 6일간 고착**됐다.
+#   (이 시트는 탭을 지우지 않고 `(사용X)`·`(미사용)` 딱지를 붙이는 관행이다 —
+#    `8월 SUMMARY (사용X)`, `9월 SUMMARY(사용X)`, `브랜드숍 관리 (사용X)` 가 이미 있다.)
+#   → 상수만 또 고치면 세 번째가 온다. **접두일치로 해석하고, 못 찾아도 예외 대신 빈 결과**.
 CAMPAIGN_TAB = "26년 스페셜이슈"
+_UNUSED_MARKS = ("미사용", "사용X", "사용 X", "미사용)")
 SEASON_YEAR = 2026                 # 시트 '26년'. "M/D(요일)" 날짜의 연도.
 AD_LEAD_DAYS = 20                  # 광고 신청 마감 = 캠페인 시작 D-20 (시트 메모 "D-20일 전 신청 필수")
 RECKON_DDAYS = {3: "마감 D-3", 1: "마감 D-1", 0: "마감 D-DAY"}   # 역산 마일스톤 카운트다운
@@ -377,11 +384,50 @@ def _kor_name(s) -> str:
     return s if re.fullmatch(r"[가-힣]{2,4}", s) else ""
 
 
+_CAMPAIGN_TAB_CACHE = {}
+
+
+def _resolve_campaign_tab(sheets) -> str | None:
+    """실제 탭 이름. 정확일치 → 접두일치(딱지 흡수) → 없으면 None(예외 안 던짐).
+
+    ★이름을 상수로 박아두면 개명 때마다 죽는다. 2026-08-07 삭제·개명, 08-18 '(미사용)' 딱지로
+      두 번 당했다. 접두일치면 `26년 스페셜이슈(미사용)` 도 그대로 읽힌다.
+    """
+    if "tab" in _CAMPAIGN_TAB_CACHE:
+        return _CAMPAIGN_TAB_CACHE["tab"]
+    tab = None
+    try:
+        meta = sheets.spreadsheets().get(spreadsheetId=CAMPAIGN_SHEET,
+                                         fields="sheets.properties.title").execute()
+        titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
+        if CAMPAIGN_TAB in titles:
+            tab = CAMPAIGN_TAB
+        else:
+            cands = sorted((t for t in titles if t.startswith(CAMPAIGN_TAB)), key=len)
+            if cands:
+                tab = cands[0]
+                print(f"[IMC-4] 캠페인 탭 개명 감지 — '{CAMPAIGN_TAB}' → '{tab}' 로 해석")
+            else:
+                print(f"[IMC-4] 캠페인 탭 '{CAMPAIGN_TAB}' 없음 — 이 소스만 스킵"
+                      f"(나머지 IMC 는 정상 생성)")
+        # 담당자가 '미사용' 딱지를 붙였으면 읽되 알린다 — 드롭하지 않고 가시화한다.
+        if tab and any(k in tab for k in _UNUSED_MARKS):
+            print(f"[IMC-4] ★원천 '{tab}' 에 미사용 딱지 — 담당자가 이 탭을 접었을 수 있다. "
+                  f"대체 원천 확인 필요")
+    except Exception as e:
+        print(f"[IMC-4] 탭 목록 조회 실패 — 이 소스만 스킵: {type(e).__name__}: {e}")
+    _CAMPAIGN_TAB_CACHE["tab"] = tab
+    return tab
+
+
 def load_campaigns(sheets) -> list[dict]:
     """특별기획전 → [{owner, gubun, name, brand, start, design_due}]. (구분·캠페인명·시작일 有)
     담당 = D열(담당자) 한글이름, 없으면 B열(광고번호칸에 약칭 들어오는 경우) 한글이름, 그래도 없으면 '캠페인담당'."""
+    tab = _resolve_campaign_tab(sheets)
+    if not tab:
+        return []                       # ★조용히 0건 — 호출부가 나머지 IMC 를 계속 만든다
     res = sheets.spreadsheets().values().get(
-        spreadsheetId=CAMPAIGN_SHEET, range=f"'{CAMPAIGN_TAB}'!B6:L1013",
+        spreadsheetId=CAMPAIGN_SHEET, range=f"'{tab}'!B6:L1013",
         valueRenderOption="FORMATTED_VALUE").execute()
     out = []
     for r in res.get("values", []):

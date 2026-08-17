@@ -751,10 +751,27 @@ try:
     if _rel_skip:
         print(f"발매 필터: HERO STY 외 {_rel_skip}건 제외")
     # (캠페인/오프라인/발매이슈/기획전은 기존 소스 유지)
-    for c in _IMCT.load_campaigns(sheets):
-        _add("캠페인", "캠페인", c["start"].isoformat(), c["name"], c["gubun"], c["owner"])
-    for g in _IMCT.load_offline_gates(sheets):
-        _add("오프라인", "오프라인", g["date"].isoformat(), g["label"], g["kind"], season_gate=g["season_gate"])
+    # ★★소스 하나가 죽어도 IMC 전체를 죽이지 않는다(2026-08-18 사고).
+    #   캠페인 트래커의 탭이 '(미사용)' 으로 개명되며 400 이 났는데, 그 예외가 이 블록 전체를
+    #   날려 **IMC 캘린더가 8/12 부터 6일간 통째로 고착**됐다(as_of 가 안 움직여 티도 안 났다).
+    #   원천이 여럿이면 **소스별로 감싸고, 실패한 것만 빠지게** 한다.
+    def _src_load(label, fn, emit):
+        try:
+            n = 0
+            for x in fn():
+                n += emit(x)
+            return n
+        except Exception as _e:
+            _HEALTH.append(f"IMC 원천 '{label}' 로드 실패({type(_e).__name__}) — 이 소스만 제외")
+            print(f"[주의] IMC 원천 '{label}' 실패 — 이 소스만 건너뜀: {type(_e).__name__}: {_e}")
+            return 0
+
+    _src_load("캠페인", lambda: _IMCT.load_campaigns(sheets),
+              lambda c: _add("캠페인", "캠페인", c["start"].isoformat(), c["name"],
+                             c["gubun"], c["owner"]))
+    _src_load("오프라인게이트", lambda: _IMCT.load_offline_gates(sheets),
+              lambda g: _add("오프라인", "오프라인", g["date"].isoformat(), g["label"],
+                             g["kind"], season_gate=g["season_gate"]))
     # 오프라인 전개 플랜 본문(히어로별 조닝 전개 + 브랜드협업/IP) — 게이트 외 실제 '전개' 내용
     for it in _IMCT.load_offline_rollout(sheets):
         _add("오프라인", "오프라인", it["date"].isoformat(), it["title"], it["sub"],
@@ -1267,6 +1284,22 @@ try:
 except Exception as e:
     _HEALTH.append(f"IMC 주입 예외: {type(e).__name__}")
     print(f"[주의] IMC 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
+
+# ★★IMC 고착 감시(2026-08-18 신설). 위 블록이 죽으면 앱의 직전 IMC 가 그대로 남는데,
+#   `as_of` 가 안 움직일 뿐 화면은 멀쩡해 보여 **6일이나 아무도 몰랐다**. 잡은 계속 SUCCESS 였다.
+#   주입 성공 여부와 무관하게 **결과물의 기준일**을 보고 늦었으면 경고한다(1-3: 성공 조건에 신선도).
+try:
+    _mchk = re.search(r"const IMC = \{\"as_of\": \"(\d{4}-\d{2}-\d{2})\"", html2)
+    if _mchk:
+        _gap = (TODAY - datetime.date.fromisoformat(_mchk.group(1))).days
+        print(f"[IMC] 기준일 {_mchk.group(1)} (오늘 -{_gap}일)")
+        if _gap >= 2:
+            _HEALTH.append(f"★IMC 캘린더가 {_gap}일째 고착(기준일 {_mchk.group(1)}) — "
+                           f"원천 탭 개명·권한 확인 필요")
+    else:
+        _HEALTH.append("IMC as_of 를 못 읽음 — 주입 포맷 확인 필요")
+except Exception as _e:
+    print(f"[주의] IMC 신선도 점검 실패: {type(_e).__name__}: {_e}")
 
 # ── IMC 성과 주입 → const IMC_PERF ──
 # ★2026-08-15: SNS/CRM 채널 성과(오피셜·우먼 IG, 시트16 CRM)와 하이라이트 수집을 **폐지**했다.
