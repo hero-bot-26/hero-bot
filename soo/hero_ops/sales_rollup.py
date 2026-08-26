@@ -562,6 +562,47 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
             "prep": {k: ((round(sp[k]) or None) if sp else None) for k in _CH},
         }
 
+    def _goal_of(base, period):
+        """이 STY의 해당 기간 목표(total). 없으면 0."""
+        t = sty_target.get(base)
+        if not t:
+            return 0
+        return (t["tq"].get(period) or {}).get("t") or 0
+
+    def _goaled(H_stys):
+        """달성율 분자용 like-for-like 집계.
+
+        returns (gq, ng)
+          gq = {기간:{t,o,f}} 목표가 붙은 STY만의 판매수량
+          ng = {기간: 목표는 없는데 실적이 있는 STY 수}  (앱 캐비앗 표시용)
+
+        ★2026-08-26 신설. 목표는 일부 STY 에만 붙는데(SUB·신규는 미설정) 실적은 히어로 전량이라,
+          그대로 나누면 달성율이 부푼다. 실측(8/25 생성본):
+            커브드팬츠  목표 27,926 / 전량 31,742 = 113.7%  →  목표 있는 6종 29,012 = 103.9%
+            빅토리아 울 목표  2,860 / 전량  1,823 =  63.7%  →  목표 있는 종만    746 =  26.1%
+            힛탠다드    목표      3 / 전량     19 =  633%   →  실적 19장이 전부 목표 미설정 = 0%
+          커브드 103.9% 는 26FW 대시보드 시트 총계행(104%)과 붙는다 — 두 산출물이 맞는지의 기준.
+          대시보드 시트가 2026-08-12 에 총계행을 [전체]/[MAIN] 두 줄로 가른 것과 같은 규칙이다.
+        ★목표 유무는 **기간별로** 본다. 시즌(YTD) 기준으로 잡으면 그 기간 목표가 0인 STY 의 판매가
+          분자에만 들어가 같은 방식으로 다시 부푼다.
+        ★GMV·판매수량 자체는 종전대로 전량을 싣는다 — 좁히는 건 달성율 분자뿐(원본 드롭 금지)."""
+        gq, ng = {}, {}
+        for period in PERIODS:
+            acc = {"t": 0.0, "o": 0.0, "f": 0.0}
+            miss = 0
+            for base, S in H_stys.items():
+                if _goal_of(base, period):
+                    cur = S["periods"][period]["cur"]
+                    acc["t"] += cur["total"]["qty"]
+                    acc["o"] += cur["online"]["qty"]
+                    acc["f"] += cur["offline"]["qty"]
+                elif S["periods"][period]["cur"]["total"]["qty"]:
+                    miss += 1
+            gq[period] = {k: round(v) for k, v in acc.items()}
+            if miss:
+                ng[period] = miss
+        return gq, ng
+
     def _stock(d):
         if not d.get("qty"):
             return None
@@ -624,6 +665,16 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
     for _b, _m in smeta.items():
         sty_by_hero[_m.get("hero")].append(_b)
 
+    def _goal_fields(hero, H):
+        """목표가 설정된 히어로에만 gq/ng 를 싣는다(목표 없으면 앱이 달성율 자체를 '-' 로 둔다)."""
+        if hero not in hero_target or not _tgt(hero_target[hero]):
+            return {}
+        gq, ng = _goaled(H["stys"])
+        out = {"gq": gq}
+        if ng:
+            out["ng"] = ng
+        return out
+
     out_heroes = []
     order = sorted(heroes, key=lambda h: -_ytd_gmv(heroes[h]["periods"]))
     for hero in order:
@@ -663,6 +714,8 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
             "season": force_season or (blk_season if hero in order_heroes else hero_season.get(hero, blk_season)),
             "periods": _per_full(H["periods"]),
             "target": _tgt(hero_target[hero]) if hero in hero_target else None,
+            # gq/ng = 달성율 like-for-like 분자 + 목표 미설정 STY 수 (_goaled 주석 참조)
+            **_goal_fields(hero, H),
             "stock": _stock(hero_stock[hero]) if hero in hero_stock else None,
             "inbound": _inb(hero_in[hero]) if hero in hero_in else None,
             **({"inbound_from": inb_from} if inb_from else {}),
