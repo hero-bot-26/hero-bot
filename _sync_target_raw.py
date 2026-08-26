@@ -75,6 +75,21 @@ def xlsx_daily(drive) -> tuple[dict, tuple]:
     if not colmeta:
         raise ValueError("xlsx 품번×채널 열을 못 찾음 — 레이아웃 변경 의심")
 
+    # ★★2026-08-26 사고: 같은 (품번,채널)이 **여러 열 블록**으로 들어온다(원 물량 + 리오더 추가 물량).
+    #   여기서 열마다 `out[key][d] = v` 로 **덮어써서 뒤 블록만 남았고**, 뒤 블록은 10~12월에만
+    #   값이 있어 **라이트다운 8월 목표 6,075 가 통째로 0** 이 됐다(대시보드 달성율 공란).
+    #   앱이 쓰는 `target_26fw.parse_26fw_targets` 는 처음부터 `+=` 로 누적해 정상이었다
+    #   → 같은 xlsx 를 읽는 두 파서가 갈렸다. 일자별로 **합산**이 정답(사용자 확정).
+    from collections import defaultdict as _dd
+    _grp = _dd(list)
+    for c, k in colmeta.items():
+        _grp[k].append(c)
+    _dups = {k: v for k, v in _grp.items() if len(v) > 1}
+    if _dups:
+        print(f"[중복열] 같은 (품번,채널)이 여러 열 — 일자별 합산 {len(_dups)}조합:")
+        for k, cs in sorted(_dups.items())[:12]:
+            print(f"    {k[0]} {k[1]}: 열 {cs}")
+
     out, dates = {}, []
     year_from = None
     for r in range(r_daily, ws.max_row + 1):
@@ -88,7 +103,9 @@ def xlsx_daily(drive) -> tuple[dict, tuple]:
             continue
         dates.append(d)
         for c, key in colmeta.items():
-            out.setdefault(key, {})[d] = T._num(ws.cell(r, c).value) or 0
+            _o = out.setdefault(key, {})
+            # ★덮어쓰기 금지 — 같은 (품번,채널)의 여러 열 블록을 일자별로 더한다(위 주석 참조).
+            _o[d] = _o.get(d, 0) + (T._num(ws.cell(r, c).value) or 0)
     return out, (min(dates), max(dates))
 
 
