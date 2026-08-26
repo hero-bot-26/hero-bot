@@ -2444,14 +2444,34 @@ try:
                 #   (주간 실적을 시즌 누계 목표로 나누면 아무 뜻도 없는 수가 된다).
                 #   목표 없으면 None → 화면 미표시(0으로 채우지 않는다).
                 _gt = _fw_goal_qty.get(name) or {}
+                # ★★2026-08-26 like-for-like. 목표는 일부 STY 에만 붙는데(SUB·신규 미설정) 분자는
+                #   히어로 전량이라 달성율이 부풀고 있었다. 실측(8/26 기준):
+                #     커브드팬츠 누계 51,527/46,464 = 110.9% → 목표 있는 STY 48,604 = 104.6%
+                #     빅토리아 울 64.9% → 29.8% · 힛탠다드 550% → 0%(실적 22장이 전부 목표 미설정)
+                #   104.6% 는 26FW 대시보드 시트·앱 대시보드 화면과 같은 값이다(세 산출물 정합).
+                #   ※ qty(전량)는 그대로 싣는다 — 좁히는 건 달성율 분자(gqty)뿐.
+                _styp = (globals().get("hero_sty_fw", {}) or {}).get(name, {})
+
+                def _sty_goal(_b, _p):
+                    return ((((globals().get("FW_TARGETS") or {}).get(_b) or {}).get("tq") or {})
+                            .get(_p) or {}).get("t") or 0
+
                 _goal = {}
                 for _p in _PERIODS:
                     _t = _gt.get(_p) or 0
-                    _a = (_pp.get(_p.lower()) or {}).get("qty") or 0
-                    _goal[_p.lower()] = {"target": _t or None, "qty": _a,
-                                         "pct": (_a / _t) if _t else None}
+                    _a = (_pp.get(_p.lower()) or {}).get("qty") or 0          # 전량(표시용)
+                    _ga, _nog = 0, 0
+                    for _b, _pers in _styp.items():
+                        _q = (_pers.get(_p) or {}).get("qty") or 0
+                        if _sty_goal(_b, _p):
+                            _ga += _q
+                        elif _q:
+                            _nog += 1
+                    _goal[_p.lower()] = {"target": _t or None, "qty": _a, "gqty": _ga,
+                                         "ng": _nog or None,
+                                         "pct": (_ga / _t) if _t else None}
                 _gq = _gt.get("YTD") or 0
-                _aq = (_pp.get("ytd") or {}).get("qty") or 0
+                _aq = (_goal.get("ytd") or {}).get("gqty") or 0
                 sales = {"gmv": _g, "periods": _pp, "stys": _st,
                          "goal": _goal,
                          # ↓ 구 필드(=YTD)는 하위호환용으로 남긴다. 새 코드는 goal[기간]을 쓸 것.
