@@ -1,0 +1,87 @@
+name: Launch report (발매 시간별 판매현황)
+
+# 2026-08-26 발매 2종(라이트다운 11:00 · 메시 플리스 후디 17:00)의 시간별 판매현황을
+# 08-27 09:30 회의 직전에 슬랙 DM + 구글시트로 전달한다. 일회성 리포트다.
+#
+# ★두 번 보내는 이유
+#   운영 DB 미러(musinsa_cdc_merge_hourly)가 매시 :10 시작 → :19~:20 커밋하며
+#   **직전 정시까지만** 반영한다. 09:00 에 실행하면 08:00 까지밖에 못 본다.
+#   그래서 1차(09:00 전후, 08시까지) · 2차(09:25 전후, 09시까지)로 나눴다.
+#
+# ★cron 을 슬롯마다 여러 개 거는 이유
+#   GitHub schedule 은 이 레포에서 수 시간 밀린 전례가 있다(hourly.yml 주석 참조).
+#   슬롯 구간 안에 여러 번 깨우고, 실제 발송은 launch_report.py 가
+#   슬롯 판정 + `_발송로그` 탭 멱등으로 **슬롯당 1회**만 하도록 잡는다.
+#   슬롯 밖(크게 밀린 경우)에서 깨면 발송하지 않고 종료한다.
+#
+# ★자동 만료 — EXPIRE_AFTER(2026-08-27) 가 지나면 스크립트가 조용히 끝낸다.
+#   워크플로를 지우는 걸 잊어도 매일 DM 이 오지 않는다.
+on:
+  schedule:
+    # 1차 슬롯 — KST 08:40 · 08:50 · 09:00 · 09:10 (UTC-9)
+    - cron: "40,50 23 * * *"
+    - cron: "0,10 0 * * *"
+    # 2차 슬롯 — KST 09:25 · 09:32 · 09:40 (미러 :20 커밋을 지나서)
+    - cron: "25,32,40 0 * * *"
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "슬롯 강제 (1차/2차/수동)"
+        required: false
+        default: "수동"
+      dry_run:
+        description: "발송·적재 없이 출력만 (true/false)"
+        required: false
+        default: "false"
+      force:
+        description: "이미 보낸 슬롯도 재발송 (true/false)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: launch-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: 발매 시간별 판매현황 발송
+        env:
+          LAUNCH_REPORT_CI:         "1"
+          DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_PAT:           ${{ secrets.DATABRICKS_PAT }}
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARGS="$ARGS --slot ${{ github.event.inputs.slot }}"
+            if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+            if [ "${{ github.event.inputs.force }}"   = "true" ]; then ARGS="$ARGS --force"; fi
+          fi
+          python -m soo.hero_ops.launch_report $ARGS
+
+      # 리포트가 실패하면 회의 전에 알아야 한다 — 조용히 넘어가면 9시에 아무것도 안 온다.
+      - name: 실패 알림
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 발매 시간별 판매현황 리포트 실패 — 09:30 회의 전 수동 확인 필요.
+          Actions 로그 확인. 단골 원인: DATABRICKS_PAT 만료, 시트 권한, GOOGLE_SA_JSON."
