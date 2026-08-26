@@ -30,6 +30,10 @@ WINDOW = (dt.date(2026, 1, 1), dt.date(2027, 12, 31))
 
 NOT_DONE = {"미완료", "누락", "-", "N/A", "#N/A", "미정"}
 
+# 히어로 후보 판정 — L열 `히어로 핵심 상품`. '핵심상품'도 같은 열에 오지만 대상 아님.
+HERO_COL = "히어로 핵심 상품"
+HERO_MARK = "히어로"
+
 # 앱 14단계 → (진행 컬럼, 타겟 컬럼). 타겟 없는 단계는 None.
 #   9 'PO 작성'(PLM 'PO발송')은 작업의뢰에 대응 컬럼이 없어 미매핑(정직하게 비움).
 #   11 사후원가·12 판매가는 원천이 금액 컬럼뿐이라 날짜 없음.
@@ -187,6 +191,53 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
         # actual·target 모두 없으면 '' (앱 기본값 '베이스라인 대기' 유지)
 
     return stages, dates
+
+
+def load_27ss_heroes(sheets, sheet_id: str | None = None) -> dict:
+    """작업의뢰 기획시트 → 27SS 히어로 후보 {신품번: {heroName, category, track, colors, ownerMD, ownerDesigner}}.
+
+    ★대상 = `히어로 핵심 상품` 열이 정확히 '히어로' 인 행(‘핵심상품’은 제외 — 사용자 확정 2026-08-26).
+      앱 `PLM_DATA`(27SS STY 입력 화면의 후보 목록)를 이걸로 만든다. 전엔 앱에 28개가 손으로
+      박혀 있어 MD가 기획시트에서 히어로를 늘려도 앱엔 영영 안 붙었다.
+    ★헤더는 **첫 매치**로 인덱싱한다 — '아이템'이 두 번 나오는데(H=Coat/Outer… , V=한 글자 코드)
+      마지막 매치를 쓰면 category 가 'C' 같은 코드로 깨진다.
+    ★컬러는 SKU 행들의 '컬러 국문'을 순서대로 유니크 수집. 아직 SKU 전개 전인 STY 는 빈 리스트가
+      정상이다(원천에 없는 걸 만들지 않는다).
+    """
+    vals = sheets.spreadsheets().values().get(
+        spreadsheetId=(sheet_id or DEFAULT_SHEET_ID), range=RANGE).execute().get("values", [])
+    if not vals:
+        raise ValueError("작업의뢰 기획시트가 비어 있음")
+    hdr = [c.replace(chr(10), " ").strip() for c in vals[0]]
+    H: dict[str, int] = {}
+    for i, h in enumerate(hdr):
+        if h and h not in H:
+            H[h] = i
+    need = [KEY_COL, HERO_COL, "아이템", TRACK_COL, "상품명", "컬러 국문", "MD", "DS"]
+    missing = [c for c in need if c not in H]
+    if missing:
+        raise ValueError(f"작업의뢰 헤더 불일치 — 없는 컬럼: {missing}")
+
+    out: dict[str, dict] = {}
+    for r in vals[1:]:
+        def get(c):
+            i = H.get(c)
+            return str(r[i]).strip() if i is not None and len(r) > i else ""
+        if get(HERO_COL) != HERO_MARK:
+            continue
+        sty = get(KEY_COL)
+        if not sty:
+            continue
+        e = out.setdefault(sty, {"heroName": "", "category": "", "track": "",
+                                 "colors": [], "ownerMD": "", "ownerDesigner": ""})
+        for field, colname in (("heroName", "상품명"), ("category", "아이템"),
+                               ("track", TRACK_COL), ("ownerMD", "MD"), ("ownerDesigner", "DS")):
+            if not e[field]:
+                e[field] = get(colname)
+        c = get("컬러 국문")
+        if c and c not in e["colors"]:
+            e["colors"].append(c)
+    return out
 
 
 def load_27ss_sched(sheets, sheet_id: str | None = None,

@@ -36,7 +36,9 @@ DEFAULTS = {
     "plm_27ss": {      # 27SS 기획 관리판 (#.상세일정) — 홈 카드 SEASON_27SS_PROGRESS
         "id": "10guWc_5t06nu9QryPymTIl2oogQfV4qOEO81iXSgenI", "tab": "#.상세일정", "range": "", "expected": []},
     "plm_27ss_req": {  # ★ MS_27SS_작업의뢰 '기획시트' — 27SS 보드 단계 진척·타겟일(STY_SCHED_27SS)
-        "id": "1NshiEIK3o8Kczi5Zg746cz2I3-Q-lq0eGNOe0YTuibI", "tab": "기획시트", "range": "",
+        # ★2026-08-26 파일 교체 — 담당자가 새 파일("★ MS_27SS_작업의뢰(링크변경)")로 갈아탔는데
+        #   여기가 옛 파일을 물고 있어 27SS 히어로가 35개에서 멈춰 있었다(신본 85개).
+        "id": "1IvQHP-93wxK_WMBEevVcnwyEa-QM529VoB544ojpxD0", "tab": "기획시트", "range": "",
         "expected": ["신품번", "판매 시즌", "컬러 확정", "원단 확정", "PO 발행 (작지투입)",
                      "테크팩 확정 (APP)", "입고 완료", "MD입고 목표일", "APP 목표"]},
 }

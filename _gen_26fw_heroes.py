@@ -87,6 +87,8 @@ def _src(key):
 ITEM_KO = {"Down": "다운", "Sweater": "니트", "Fleece": "플리스", "Pants": "팬츠",
            "Shirt": "셔츠", "T-Shirts": "티셔츠", "Acc": "액세서리", "Outer": "아우터"}
 STYLE_RE = re.compile(r"^M[A-Z0-9]{8}$")
+# 27SS 히어로 후보 블록 교체용 패턴 — 이스케이프를 한 곳에만 둔다(주입 스크립트가 깨지는 것 방지)
+PLM_DATA_PAT = "const PLM_DATA = " + chr(92) + "{.*?" + chr(92) + "n" + chr(92) + "};"
 # 단계 n → PLM 마일스톤 (StageCell stages dict 키)
 STAGE_PLM = {3: 3, 4: 4, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, 11: 11, 12: 12, 13: 13}
 
@@ -2260,8 +2262,24 @@ except Exception as e:
 # STY별 stages/dates(14칸)에 '기준 YYYY-MM-DD'를 심어 26FW와 같은 원리로 D+ 지연을 띄운다.
 # 스펙·안전규칙 = hero-master-app/docs/27ss-schedule-targets.md
 try:
-    from soo.hero_ops.sched_27ss import load_27ss_sched
-    # 대상 = 앱 PLM_DATA(27SS 후보) 키와 교집합. PLM_DATA 자체는 아직 앱 상수라 여기서 읽어 씀.
+    from soo.hero_ops.sched_27ss import load_27ss_sched, load_27ss_heroes
+    # ★★2026-08-26 27SS 히어로 후보(PLM_DATA)를 **기획시트에서 만든다**(사용자 요청).
+    #   전엕 앱에 28개가 손으로 박혀 있어, MD가 기획시트 `히어로 핵심 상품` 열에 '히어로'를
+    #   더 표시해도 앱 'STY 입력하기' 후보엔 영영 안 붙었다(원천 85 vs 앱 28).
+    #   → 사람이 이미 유지하는 상태(L열 표시)를 설정으로 쓴다. 코드에 목록을 박지 않는다.
+    #   0건이면 주입하지 않고 기존값을 유지한다(조용한 0 덮어쓰기 방지).
+    try:
+        _h27 = load_27ss_heroes(sheets, _src("plm_27ss_req"))
+    except Exception as _eh27:
+        _h27 = {}
+        print(f"[주의] 27SS 히어로 후보 로드 실패 — 기존 PLM_DATA 유지: {type(_eh27).__name__}: {_eh27}")
+    if _h27:
+        _pblk = "const PLM_DATA = " + json.dumps(_h27, ensure_ascii=False, indent=2) + ";"
+        html2, _npd = re.subn(PLM_DATA_PAT, _pblk, html2, count=1, flags=re.DOTALL)
+        assert _npd == 1, f"PLM_DATA 교체 실패 (matched {_npd})"
+        _nc27 = sum(1 for v in _h27.values() if not v["colors"])
+        print(f"27SS 히어로 후보 주입: {len(_h27)}종 (컴러 미확정 {_nc27}종 — SKU 전개 전)")
+    # 대상 = PLM_DATA(27SS 후보) 키와 교집합.
     _m27 = re.search(r"const PLM_DATA = (\{.*?\n\});", html2, re.DOTALL)
     _cand = set(json.loads(_m27.group(1)).keys()) if _m27 else None
     sched27, warns27 = load_27ss_sched(sheets, _src("plm_27ss_req"), today=TODAY, only=_cand)
