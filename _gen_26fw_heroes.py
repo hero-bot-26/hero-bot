@@ -2425,9 +2425,28 @@ try:
                 # STY 드릴다운(26FW 스타일만) — 프론트가 DASHBOARD(26SS) stys를 안 쓰게.
                 #   ★HERO SUB는 대부분 발매 전이라 매출행이 없다 → 매핑된 STY 전건을 싣고
                 #     실적 없는 건 pending으로 표시(그전엔 리스트에 아예 안 떠 'MAIN만 잡힌다'로 보였다).
+                # ★2026-08-26 STY 행에도 목표비 달성율(사용자 요청). **MAIN(HERO)만** —
+                #   SUB 는 목표 자체가 안 잡혀 있어 붙이면 전부 0%/공란이 되어 노이즈다.
+                #   목표 원천은 히어로 카드와 같은 FW_TARGETS(xlsx 정본) → 합계와 어긋나지 않는다.
+                def _sty_goal_block(_b, _grade, _pers):
+                    if str(_grade or "") != "HERO":
+                        return None
+                    _tq = ((globals().get("FW_TARGETS") or {}).get(_b) or {}).get("tq") or {}
+                    _out = {}
+                    for _p in _PERIODS:
+                        _t = (_tq.get(_p) or {}).get("t") or 0
+                        if not _t:
+                            continue
+                        _q = (_pers.get(_p) or {}).get("qty", 0) or 0
+                        _out[_p.lower()] = {"target": round(_t), "pct": _q / _t}
+                    return _out or None
+
                 _st = []
                 for _b, _pers in (globals().get("hero_sty_fw", {}) or {}).get(name, {}).items():
-                    _st.append({"style": _b, "grade": (_fw_styles.get(_b) or {}).get("grade"),
+                    _gr = (_fw_styles.get(_b) or {}).get("grade")
+                    _gb = _sty_goal_block(_b, _gr, _pers)
+                    _st.append({"style": _b, "grade": _gr,
+                                **({"goal": _gb} if _gb else {}),
                                 "periods": {p.lower(): {"gmv": (_pers.get(p) or {}).get("gmv", 0),
                                                         "qty": (_pers.get(p) or {}).get("qty", 0)}
                                             for p in _PERIODS}})
