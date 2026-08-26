@@ -59,7 +59,9 @@ jobs:
 
       - name: 발매 시간별 판매현황 발송
         env:
-          LAUNCH_REPORT_CI:         "1"
+          # 스케줄 실행에만 가드(슬롯 밖 발송 금지 · 만료)를 건다.
+          # workflow_dispatch 는 사람이 의도한 실행이라 언제든 돌아야 한다.
+          LAUNCH_REPORT_CI:         ${{ github.event_name == 'schedule' && '1' || '0' }}
           DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_PAT:           ${{ secrets.DATABRICKS_PAT }}
           GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
