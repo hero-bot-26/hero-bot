@@ -82,6 +82,12 @@ jobs:
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
           APP_REPO_PATH:            ${{ github.workspace }}/hero-master-app
+          # ★2026-08-26 추가: 생성기의 헬스·원천정체 경고는 전부 `if os.environ.get("SLACK_BOT_TOKEN")`
+          #   로 감싸여 있는데 이 스텝에만 토큰이 안 들어가 **발송이 통째로 스킵**되고 있었다
+          #   (로그엔 `SLACK_BOT_TOKEN 없음 — 알림 스킵`만 남는다).
+          #   그 결과 PLM 마일스톤 원천이 8/11 이후 15일째 정체인데도 아무 알림이 없었다
+          #   — 8/1에 이 정체를 잡으려고 신선도 감시를 만들어 놓고 경보선이 끊겨 있던 셈.
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
         run: python _gen_26fw_heroes.py --sheet
 
       - name: Commit & push (변경 있을 때만)
