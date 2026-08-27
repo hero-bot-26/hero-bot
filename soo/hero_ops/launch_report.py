@@ -353,11 +353,20 @@ def main() -> int:
     if ci and f"{now:%Y-%m-%d}" > EXPIRE_AFTER:
         print(f"만료({EXPIRE_AFTER} 이후) — 종료. 워크플로를 지워도 된다.")
         return 0
+
+    sheets = None
     if ci and slot == "수동":
-        # GitHub schedule 이 크게 밀려 슬롯 밖에서 깨어난 경우다. 밀린 실행이 여러 개면
-        # 중복 발송이 되므로 여기서 끝낸다(수동 확인은 workflow_dispatch 로 --slot 지정).
-        print("슬롯 범위 밖 실행(스케줄 지연) — 발송하지 않고 종료")
-        return 0
+        # GitHub schedule 이 슬롯 밖으로 밀려 깨어난 경우다.
+        # ★그냥 끝내면 크게 밀린 날 아침에 아무것도 못 받는다 — 그날 아직 한 번도
+        #   못 보냈으면 '지연분'으로 살려 보낸다. 이미 보냈으면 중복이므로 끝낸다.
+        sheets = _sheets()
+        sent_today = [k for k in ("1차", "2차", "지연분")
+                      if already_sent(sheets, f"{now:%Y-%m-%d}/{k}")]
+        if sent_today:
+            print(f"슬롯 밖 실행(스케줄 지연) — 오늘 이미 발송({', '.join(sent_today)}) 종료")
+            return 0
+        slot, key = "지연분", f"{now:%Y-%m-%d}/지연분"
+        print(f"슬롯 밖이지만 오늘 미발송 — '{slot}' 으로 발송한다")
 
     asof = data_asof()
     data = collect()
@@ -368,7 +377,8 @@ def main() -> int:
         print(msg)
         return 0
 
-    sheets = _sheets()
+    if sheets is None:
+        sheets = _sheets()
     if slot != "수동" and not a.force and already_sent(sheets, key):
         print(f"이미 발송됨({key}) — 스킵")
         return 0
