@@ -38,7 +38,10 @@ DASH_SID = "1-A04_TwKZJNPkFg27USkKAScZRu6CAhbgVeXk9c09nA"   # 26FW 히어로 실
 RAW_TAB = "히어로목표(거래량)"
 R_CHANNEL, R_STYLE, R_DAILY_FROM, R_DAILY_TO = 2, 3, 14, 378
 C_DATE = 2                       # B열 = 일자(시리얼)
-MAX_COL_LETTER = "GV"            # 품목 탭 SUMPRODUCT 가 훑는 마지막 열
+MAX_COL_LETTER = "HH"            # 품목 탭 SUMPRODUCT 가 훑는 마지막 열
+# ★2026-09-01: GV → HH. 미배치로 건너뛰던 품번 열을 그리드 끝에 붙이고 여유 열을 더 확보하면서
+#   품목 탭 15개의 SUMPRODUCT 범위를 $GV$ → $HH$ 로 넓혔다(도구 `_dash_add_goal_cols.py`).
+#   이 상수가 시트 범위보다 좁으면 새 열을 못 읽어 **조용히 '미배치'로 건너뛴다** — 같이 고칠 것.
 
 
 def col_name(idx0: int) -> str:

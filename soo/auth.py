@@ -121,13 +121,23 @@ def get_credentials(
     return creds
 
 
-def _install_http_retry(num_retries: int = 6) -> None:
+def _install_http_retry(num_retries: int = 6, dns_tries: int = 5,
+                        dns_max_sleep: float = 60.0) -> None:
     """Sheets 429(분당 60읽기 초과)·5xx 일시 오류를 지수 백오프로 자동 재시도.
 
     ★2026-07-27: daily CI가 429 연쇄로 발매/DASHBOARD/PMKT 소스를 통째로 놓쳐
     IMC 발매 107건이 0으로 덮인 사고. googleapiclient는 execute(num_retries=N)을
     줘야만 재시도(429·5xx 대상)하므로 기본값을 주입해 모든 호출에 적용한다.
     (분당 쿼터라 수십 초 대기면 대개 회복 — 실패 시 기존 예외 경로 그대로.)
+
+    ★2026-09-01: 사내망(VDI)에서 DNS 가 통째로 빠지면
+    `httplib2.error.ServerNotFoundError: Unable to find the server at
+    sheets.googleapis.com` 로 죽는다. googleapiclient 의 내부 재시도는 이걸 잡긴
+    하지만 백오프 창이 ~1분이라 그보다 긴 끊김은 못 버틴다(실제로 밟음).
+    → **이름 해석 실패만** 바깥에서 한 겹 더 재시도한다(최대 ~2분).
+      DNS 실패는 요청이 **아예 나가지 않은** 상태라 재시도해도 쓰기가 중복되지
+      않는다. 연결 리셋(WinError 10054)처럼 '나갔는지 모르는' 예외는 여기서
+      다시 던지지 않는다 — 배치 쓰기가 두 번 적용될 수 있어서다.
     """
     try:
         from googleapiclient import http as _ghttp
@@ -135,10 +145,35 @@ def _install_http_retry(num_retries: int = 6) -> None:
         return
     if getattr(_ghttp.HttpRequest, "_soo_retry_installed", False):
         return
+
+    import random
+    import socket
+    import sys
+    import time
+    try:
+        from httplib2.error import ServerNotFoundError
+    except ImportError:  # httplib2 구버전
+        from httplib2 import ServerNotFoundError
+
+    _NAME_ERRORS = (ServerNotFoundError, socket.gaierror)
     _orig_execute = _ghttp.HttpRequest.execute
 
     def _execute(self, http=None, num_retries=num_retries):
-        return _orig_execute(self, http=http, num_retries=num_retries)
+        last = None
+        for attempt in range(dns_tries):
+            try:
+                return _orig_execute(self, http=http, num_retries=num_retries)
+            except _NAME_ERRORS as exc:
+                last = exc
+                if attempt == dns_tries - 1:
+                    break
+                delay = min(dns_max_sleep, 3.0 * (2 ** attempt)) + random.uniform(0, 1.0)
+                sys.stderr.write(
+                    f"[retry] DNS 해석 실패({type(exc).__name__}) — "
+                    f"{delay:.0f}s 후 재시도 {attempt + 1}/{dns_tries - 1}\n")
+                sys.stderr.flush()
+                time.sleep(delay)
+        raise last
 
     _ghttp.HttpRequest.execute = _execute
     _ghttp.HttpRequest._soo_retry_installed = True
