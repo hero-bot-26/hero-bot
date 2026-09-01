@@ -832,8 +832,12 @@ def approved_items(sheets, today: dt.date, existing: list[dict] | None = None) -
     if not sheets:
         return []
     try:
+        # ★범위는 헤더 길이에서 만든다 — 'A2:M' 로 박아 두면 N열(제목요약)을 추가해도 안 읽힌다.
+        #   실제로 밟음(2026-09-01): 제목을 원장에 다 채웠는데 캘린더엔 원문이 그대로 떴다.
+        last = chr(ord("A") + len(QUEUE_HEADER) - 1)
         vals = sheets.spreadsheets().values().get(
-            spreadsheetId=ARCHIVE_SHEET, range=f"'{QUEUE_TAB}'!A2:M").execute().get("values", [])
+            spreadsheetId=ARCHIVE_SHEET,
+            range=f"'{QUEUE_TAB}'!A2:{last}").execute().get("values", [])
     except Exception as e:
         print(f"[slack-watch] 승인분 읽기 실패: {type(e).__name__}: {e}")
         return []
@@ -869,7 +873,9 @@ def approved_items(sheets, today: dt.date, existing: list[dict] | None = None) -
             skip_far += 1        # 목록번호·배수가 날짜로 둔갑한 것 — 일정 논의는 이만큼 안 떨어진다
             continue
         # 제목 = 수집 때 만들어 둔 한 줄 요약(N열). 없으면 원문 앞 60자로 폴백.
-        title = _clean_title(row[13])[:60] or _clean_title(row[6])[:60]
+        #   ★N열엔 _clean_title 을 태우지 않는다 — 마크업 제거가 물결표를 지워 '8/13~8/23' 이
+        #     '8/13 8/23'(두 날짜인지 범위인지 모를 문자열)이 된다. 이미 정제된 값이다.
+        title = " ".join(str(row[13]).split())[:60] or _clean_title(row[6])[:60]
         if not title:
             continue
         seen_msg.add(msg)
