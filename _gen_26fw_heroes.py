@@ -1211,16 +1211,19 @@ try:
         print(f"세일즈 캠페인 히어로 딱지 전환: {_n_shero}건 (나머지는 '전사' 유지)")
 
     # 3.9) ★슬랙 승인분 — 슬랙 논의에서 담당자가 ✅ 한 일정을 IMC 에 얹는다(2026-08-15).
-    #   ★원천 시트는 여전히 진실소스다. 승인분은 type '슬랙승인' 딱지를 달아 화면에서 구분되고,
-    #     같은 일정이 원천에 들어오면 중복이라 스킵한다(날짜+제목 앞 6자 겹침) — 담당자가 원천을
-    #     고치면 그쪽이 이긴다. 이 가드가 없으면 소스가 둘이 되어 조용히 어긋난다.
+    #   ★원천 시트는 여전히 진실소스다. 같은 일정이 원천에 들어오면 중복이라 스킵한다(날짜+제목
+    #     앞 6자 겹침) — 담당자가 원천을 고치면 그쪽이 이긴다. 이 가드가 없으면 소스가 둘이 되어
+    #     조용히 어긋난다.
+    #   ★타입은 **기존 것**(발매·기획전·오프라인·캠페인)을 쓴다 — 별도 '슬랙승인' 타입·배지를
+    #     만들지 않는다(사용자 지시 2026-09-01: "지금 형태에서 캘린더 안에 정보 반영만").
+    #     출처(src_ch/src_link)는 화면엔 안 띄우되 데이터엔 남긴다 — 원천에 옮겨 적을 때 되짚어야 한다.
     #   ★읽기 실패해도 IMC 전체를 죽이지 않는다(승인분만 빠짐).
     try:
         from soo.hero_ops import slack_watch as _SW
         _n_ack = 0
         for _a in _SW.approved_items(sheets, TODAY, _items):
-            if _add("슬랙승인", "슬랙", _a["date"], _a["title"], _a["heroes"],
-                    src_ch=_a["ch"], src_link=_a["link"]):
+            if _add(_a["type"], _a["type"], _a["date"], _a["title"], _a["heroes"],
+                    source="슬랙", src_ch=_a["ch"], src_link=_a["link"]):
                 _n_ack += 1
         if _n_ack:
             print(f"슬랙 승인분 IMC 주입: {_n_ack}건")
@@ -1242,7 +1245,7 @@ try:
     # ★발매 0건 가드(2026-07-27). 발매 소스(무탠 아이템마스터)와 폴백(발매스케줄)이 둘 다 실패하면
     #   (2026-07-27 09:02 CI: Sheets 429 연쇄) 발매 이벤트 0건이 조용히 주입돼 IMC 발매가 통째로 사라진다.
     #   IG/CRM/히어로PMKT 가드와 동일 철학 — 0건이면 앱 HTML의 직전 발매 항목을 보존(다음 정상 실행 때 자동 갱신).
-    if not any(x["type"] == "발매" for x in _items):
+    if not any(x["type"] == "발매" and x.get("source") != "슬랙" for x in _items):
         try:
             _mimc = re.search(r"const IMC = (\{.*?\});", html2, re.DOTALL)
             _prev_rel = [x for x in (json.loads(_mimc.group(1)).get("items") or []) if x.get("type") == "발매"] if _mimc else []

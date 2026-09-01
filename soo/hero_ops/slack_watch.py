@@ -827,6 +827,29 @@ def resolve_date(expr: str, anchor: dt.date) -> str:
     return best.isoformat()
 
 
+# 승인분이 캘린더에서 쓸 **기존** IMC 타입. 별도 '슬랙승인' 타입을 만들지 않는다
+#   (사용자 지시 2026-09-01: "슬랙 승인 따로 그런 거 넣지 마, 지금 형태에서 정보만 반영").
+#   ★기능 타입인 '입고알람'(입고보드 전용 알람 피드)에는 넣지 않는다 — 화면 분류가 아니라 알람이다.
+_TYPE_RULES = [
+    ("발매",   ("발매", "선발매", "예약발매", "론칭", "출시")),
+    ("기획전", ("기획전", "쿠폰", "특가", "할인", "세일", "프로모션")),
+    ("오프라인", ("매장", "오프라인", "출고", "전개", "물류", "입고", "적치")),
+]
+
+
+def imc_type(title: str) -> str:
+    """제목에서 기존 IMC 타입을 고른다. 못 고르면 '캠페인'(마케팅 활동 기본값).
+
+    ★분류 근거가 원천에 없어(슬랙 대화다) 문자열 추론이 불가피하다 — 다만 이건 **화면 분류**일 뿐,
+      수치를 만들지 않는다. 잘못 걸려도 칩 색이 달라질 뿐 집계에는 안 들어간다.
+    """
+    t = str(title or "")
+    for ty, kws in _TYPE_RULES:
+        if any(k in t for k in kws):
+            return ty
+    return "캠페인"
+
+
 def approved_items(sheets, today: dt.date, existing: list[dict] | None = None) -> list[dict]:
     """승인상태='승인' 행 → IMC 항목. 날짜를 못 뽑거나 원천에 이미 있으면 버린다."""
     if not sheets:
@@ -884,6 +907,7 @@ def approved_items(sheets, today: dt.date, existing: list[dict] | None = None) -
             skip_dup += 1
             continue
         out.append({"date": d, "title": title, "heroes": str(row[4]),
+                    "type": imc_type(title),
                     "ch": str(row[1]), "link": str(row[7])})
     if out or skip_nodate or skip_far or skip_self or skip_dup:
         print(f"[slack-watch] 승인분 → IMC {len(out)}건 (날짜 못 뽑아 제외 {skip_nodate} · "
