@@ -1231,6 +1231,20 @@ try:
         _HEALTH.append(f"슬랙 승인분 주입 예외: {type(_e).__name__}")
         print(f"[주의] 슬랙 승인분 주입 실패(나머지 IMC 는 정상): {type(_e).__name__}: {_e}")
 
+    # ★3) 태깅이 끝난 뒤에 얹힌 항목(승인분)에도 hero_related 를 매긴다. 두 가지가 걸린다 —
+    #   ① 앱 `imcHeroItems()` 가 `hero_related || 전사` 로 거르므로 **키가 없으면 화면에서 통째로 사라진다**
+    #      (데이터엔 있는데 캘린더엔 안 보인다. 2026-09-01 실측).
+    #   ② 아래 집계가 KeyError 로 죽어 IMC 는 들어가되 **HERO_LINEUP·별칭 주입이 통째로 스킵**된다
+    #      — 잡은 SUCCESS 라 조용히 어제 값으로 고착한다.
+    _n_late = 0
+    for x in _items:
+        if "hero_related" not in x:
+            x["hero_related"] = _hero_related(x)
+            _n_late += 1
+    if _n_late:
+        print(f"뒤늦게 얹힌 항목 hero_related 태깅: {_n_late}건 "
+              f"(히어로관련 {sum(1 for x in _items if x.get('source') == '슬랙' and x['hero_related'])})")
+
     # 4) 윈도우 필터 + status 부여
     #    ⚠ 예전엔 비히어로 일정(source="일정")을 영구 드롭 → 봄 히어로 시즌 종료 후 5/6월 비히어로
     #    활동(여름상품·매장)이 통째로 사라져 '마케팅이 멈춘 듯' 보임. 이제 전량 유지하고
@@ -1264,7 +1278,7 @@ try:
     html2, nimc = re.subn(r"const IMC = \{.*?\};", lambda _m: imc_block, html2, count=1, flags=re.DOTALL)
     assert nimc == 1, f"IMC 교체 실패 (matched {nimc})"
     _np = sum(1 for x in _items if x["status"] == "past")
-    _nh = sum(1 for x in _items if x["hero_related"])
+    _nh = sum(1 for x in _items if x.get("hero_related"))
     print(f"IMC 주입: {len(_items)}건 (과거 {_np}/미래 {len(_items) - _np} · 히어로관련 {_nh}/{len(_items)} · 운영히어로 {len(_cur_heroes)}종: {_cur_heroes})")
 
     _excl = {k: v for k, v in _ALIAS_EXCLUDE.items() if k in _hero_alias}
