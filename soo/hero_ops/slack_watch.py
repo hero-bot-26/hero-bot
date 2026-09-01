@@ -83,8 +83,14 @@ CURSOR_TAB = "_슬랙커서"
 CURSOR_HEADER = ["채널ID", "채널명", "마지막ts", "갱신시각"]
 QUEUE_TAB = "_슬랙제안"
 QUEUE_HEADER = ["발견일", "채널", "ts", "우선순위", "히어로", "날짜표현", "요약", "링크",
-                "원글(스레드)", "첨부링크", "문서제목", "승인메시지ts", "승인상태"]
-ACK_TS_COL, ACK_STATE_COL = "L", "M"      # QUEUE_HEADER 상의 위치(1-based 12·13)
+                "원글(스레드)", "첨부링크", "문서제목", "승인메시지ts", "승인상태", "제목요약"]
+ACK_TS_COL, ACK_STATE_COL, TITLE_COL = "L", "M", "N"   # 1-based 12·13·14
+#   ★N열(제목요약) = 승인분이 IMC 에 뜰 때 쓰는 제목. **수집 시점에 만들어 원장에 박아 둔다**
+#     (생성기에서 만들지 않는다 — daily 갱신 잡에는 claude CLI 가 없고, 매일 다시 만들면 같은
+#     일정의 캘린더 제목이 날마다 바뀐다). 못 만들면 빈칸 → 소비 쪽이 원문 앞 60자로 폴백한다.
+
+APPROVED_MAX_DAYS = 120   # 수집일 ↔ 해석된 날짜 거리 상한. 목록번호('1.5')·배수('3.2')가 날짜로
+                          # 둔갑하면 반년 밖으로 튄다(2026-09-01 실측 5건: 3.2·1.7·1.5·1.8·3.5).
 
 # ★승인은 슬랙 이모지 반응으로 받는다(2026-08-15 사용자 결정: "굳이 스프레드시트를 통해야 해?").
 #   버튼·슬래시커맨드는 슬랙이 우리 쪽으로 요청을 쏘는 구조라 **상시 떠 있는 공개 HTTPS 서버**가
@@ -517,6 +523,7 @@ def run(send: bool = False, days: int = 0, app_html: str | None = None,
         # ★발송이 먼저다 — 승인 요청 메시지의 ts 를 받아 원장에 같이 적어야, 다음 실행에서
         #   "이 반응 = 이 항목"으로 되짚을 수 있다. 순서를 바꾸면 ts 칸이 영영 빈다.
         _notify(cands, token=tok, acked=acked)
+        titles = title_lines(cands)          # 실패해도 {} — 소비 쪽이 원문으로 폴백한다
         if sheets:
             log_queue(sheets, [[kst_now().strftime("%Y-%m-%d"), c["ch"], c["ts"], c["prio"],
                                 ", ".join(c["heroes"]), c["date"] or c["sched"],
@@ -524,7 +531,7 @@ def run(send: bool = False, days: int = 0, app_html: str | None = None,
                                 c.get("link", ""), c.get("parent", ""),
                                 " ".join(c.get("links") or [])[:500],
                                 " · ".join(t for _, t in (c.get("titled") or []))[:300],
-                                c.get("ack_ts", ""), ""]
+                                c.get("ack_ts", ""), "", titles.get(c["ts"], "")]
                                for c in cands])
     else:
         print("신규 후보 없음 — 발송 스킵")
@@ -579,6 +586,60 @@ def llm_brief(cands: list[dict]) -> str | None:
               f"{(r.stderr or '')[:200]}")
         return None
     return r.stdout.strip()
+
+
+TITLE_PROMPT = """아래는 슬랙에서 수집한 히어로 상품 일정 관련 메시지들입니다.
+각 항목을 **캘린더에 그대로 띄울 한 줄 제목**으로 압축하세요.
+
+규칙:
+- 20~40자. "무엇이 언제 어떻게" 만 남기고 인사말·존칭·수신자·군더더기는 버립니다.
+- 날짜가 바뀐 건이면 `9/9 → 8/26` 처럼 변화를 제목에 넣습니다.
+- ★원문에 없는 날짜·수량·상품명을 절대 만들지 마세요. 애매하면 원문 표현을 그대로 짧게 씁니다.
+- 이모지·마크다운·따옴표 금지. 순수 텍스트 한 줄.
+
+출력은 **JSON 객체 하나만**. 키=입력의 id, 값=제목 문자열. 다른 말 금지.
+
+입력(JSON):
+"""
+
+
+def title_lines(cands: list[dict]) -> dict:
+    """{ts: 한 줄 제목}. claude CLI·토큰이 없거나 실패하면 {} → 소비 쪽이 원문으로 폴백한다.
+
+    ★수집 시점에 한 번만 만든다. 생성기(daily 갱신)에는 claude CLI 가 없고, 매일 다시 만들면
+      같은 일정의 캘린더 제목이 날마다 바뀐다.
+    """
+    if not cands:
+        return {}
+    import shutil
+    import subprocess
+    exe = shutil.which("claude")
+    if not exe:
+        print("[slack-watch] claude CLI 없음 — 제목요약 스킵(원문 폴백)")
+        return {}
+    payload = [{"id": c["ts"], "히어로": ", ".join(c["heroes"][:3]),
+                "날짜": c.get("date") or c.get("sched") or "",
+                "원문": c["text"][:400]} for c in cands]
+    try:
+        r = subprocess.run([exe, "-p"], input=TITLE_PROMPT + json.dumps(payload, ensure_ascii=False),
+                           capture_output=True, text=True, encoding="utf-8", timeout=300)
+    except Exception as e:
+        print(f"[slack-watch] 제목요약 예외 — 원문 폴백: {type(e).__name__}: {e}")
+        return {}
+    if r.returncode != 0:
+        print(f"[slack-watch] 제목요약 실패(rc={r.returncode}) — 원문 폴백")
+        return {}
+    m = re.search(r"\{.*\}", r.stdout or "", re.DOTALL)
+    if not m:
+        print("[slack-watch] 제목요약 파싱 실패 — 원문 폴백")
+        return {}
+    try:
+        out = {str(k): " ".join(str(v).split())[:60] for k, v in json.loads(m.group(0)).items()}
+    except Exception:
+        print("[slack-watch] 제목요약 JSON 오류 — 원문 폴백")
+        return {}
+    print(f"[slack-watch] 제목요약 {len(out)}/{len(cands)}건")
+    return out
 
 
 def rule_brief(cands: list[dict]) -> str:
@@ -783,25 +844,42 @@ def approved_items(sheets, today: dt.date, existing: list[dict] | None = None) -
         have.setdefault(str(x.get("date", "")), []).append(
             re.sub(r"[^가-힣0-9A-Za-z]", "", str(x.get("title", ""))))
 
-    out, skip_nodate, skip_dup = [], 0, 0
+    out, skip_nodate, skip_far, skip_self, skip_dup = [], 0, 0, 0, 0
+    seen_msg = set()
     for row in vals:
-        row = list(row) + [""] * (13 - len(row))
+        row = list(row) + [""] * (14 - len(row))
         if str(row[12]).strip() != "승인":
             continue
-        d = resolve_date(row[5], today)
+        # ★같은 슬랙 메시지가 여러 번 수집돼 있다(--no-dedup 실행분). 원천 중복 가드는 원천만 보므로
+        #   승인분끼리는 안 막힌다 — 같은 일정이 캘린더에 2·3중으로 뜬다(2026-09-01 실측 136행→87건).
+        msg = (str(row[1]), str(row[2]))
+        if msg in seen_msg:
+            skip_self += 1
+            continue
+        # ★앵커는 오늘이 아니라 **수집일**이다. 오늘로 잡으면 8월에 논의된 '1/5'가 내년으로 밀린다.
+        try:
+            anchor = dt.date.fromisoformat(str(row[0]).strip())
+        except Exception:
+            anchor = today
+        d = resolve_date(row[5], anchor)
         if not d:
             skip_nodate += 1
             continue
-        title = _clean_title(row[6])[:60]
+        if abs((dt.date.fromisoformat(d) - anchor).days) > APPROVED_MAX_DAYS:
+            skip_far += 1        # 목록번호·배수가 날짜로 둔갑한 것 — 일정 논의는 이만큼 안 떨어진다
+            continue
+        # 제목 = 수집 때 만들어 둔 한 줄 요약(N열). 없으면 원문 앞 60자로 폴백.
+        title = _clean_title(row[13])[:60] or _clean_title(row[6])[:60]
         if not title:
             continue
+        seen_msg.add(msg)
         key = re.sub(r"[^가-힣0-9A-Za-z]", "", title)
         if any(len(key) >= 6 and (key[:6] in h or h[:6] in key) for h in have.get(d, [])):
             skip_dup += 1
             continue
         out.append({"date": d, "title": title, "heroes": str(row[4]),
                     "ch": str(row[1]), "link": str(row[7])})
-    if out or skip_nodate or skip_dup:
-        print(f"[slack-watch] 승인분 → IMC {len(out)}건 "
-              f"(날짜 못 뽑아 제외 {skip_nodate} · 원천 중복 {skip_dup})")
+    if out or skip_nodate or skip_far or skip_self or skip_dup:
+        print(f"[slack-watch] 승인분 → IMC {len(out)}건 (날짜 못 뽑아 제외 {skip_nodate} · "
+              f"날짜 오탐 {skip_far} · 같은 메시지 중복 {skip_self} · 원천 중복 {skip_dup})")
     return out
