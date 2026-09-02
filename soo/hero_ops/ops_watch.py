@@ -6,6 +6,7 @@
   ② 히어로 마스터 앱    — daily CI + 상류 DBX 실적 잡 + app.html 배포
   ③ 입고               — 마스터앱에서 분리한 `/inbound` 보드의 원천(입고확정 = DBX `입고일자별`)
   ④ 26FW 히어로 대시보드 — DBX 잡 971710339901758 + 데이터시트 신선도
+  ⑤ 부문 대시보드      — 정적 3탭(실적·오프라인·매장별)이 며칠째 고착인지
 
 ★설계 원칙 (CLAUDE.md 1-3 "잡이 SUCCESS라고 데이터가 들어온 게 아니다")
   - 워크플로/잡 **실패**만 보지 않는다. **실행 자체가 없었던 것**(외부 cron 사망·빌링 차단)과
@@ -410,6 +411,69 @@ def check_app_deploy(now: dt.datetime, gate: bool) -> list[Finding]:
     return []
 
 
+# ── ⑥ 부문 대시보드 정적탭 신선도 ────────────────────────────────────────────
+DEPT_DASH_SHEET = "1fLvLu742PtnkuAzWISWzpUo03slgxrSaL1g_TIQ1RT4"   # [브랜드부문] 2026 부문 대시보드
+# 정적탭 기준일 앵커(직렬 날짜) — 탭마다 자리가 다르다.
+DEPT_STATIC = {"실적_정적": "C1", "오프라인_정적": "C2", "매장별_정적": "A1"}
+
+
+def _serial_to_date(v) -> dt.date | None:
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return None
+    if not (40000 < n < 60000):
+        return None
+    return dt.date(1899, 12, 30) + dt.timedelta(days=n)
+
+
+def check_dept_dashboard(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
+    """부문 대시보드 정적 3탭이 며칠째 그대로인지 — 잡이 게이트에 막혀 안 도는 것을 밖에서 본다.
+
+    근거: 2026-09-01 상류 「[데이터] 브랜드부문 대시보드」의 `(raw) 무탠 팀별 실적` 이 8/30 이후
+          멈추자 갱신 잡이 09:00~18:30 **15회 전부 신선도 게이트에 막혀** 정적탭이 8/30 에 고착됐다.
+          잡은 매번 exit 0 이라 실패 알림이 안 나가고, 감시 4종에도 없어 **이틀간 아무도 몰랐다.**
+          → 잡의 성패가 아니라 **화면의 기준일**을 본다(CLAUDE.md 1-3 '밖에서 봐라').
+
+    판정 = 정적탭 기준일 vs 전일.
+      · 2일 이상 뒤처짐        → 심각 (원천이 이틀째 안 온 것)
+      · 1일 뒤처짐 + 18시 이후 → 경고 (그날 안에 못 따라잡았다)
+    """
+    if gate and now.hour < 15:
+        return []
+    want = now.date() - dt.timedelta(days=1)
+    try:
+        res = sheets.spreadsheets().values().batchGet(
+            spreadsheetId=DEPT_DASH_SHEET,
+            ranges=[f"'{t}'!{c}" for t, c in DEPT_STATIC.items()],
+            valueRenderOption="UNFORMATTED_VALUE").execute()
+    except Exception as e:
+        print(f"[dept] 정적탭 기준일 조회 실패 — 판단 보류: {type(e).__name__}: {e}")
+        return []
+    stale = []
+    for tab, r in zip(DEPT_STATIC, res.get("valueRanges", [])):
+        v = (r.get("values") or [[None]])[0]
+        d = _serial_to_date(v[0] if v else None)
+        if d is None:
+            print(f"[dept] {tab} 기준일을 못 읽음 — 판단 보류")
+            continue
+        lag = (want - d).days
+        if lag >= 1:
+            stale.append((tab, d, lag))
+    if not stale:
+        return []
+    worst = max(s[2] for s in stale)
+    if worst < 2 and now.hour < 18:
+        return []
+    detail = " · ".join(f"{t} {d:%m/%d}({lag}일)" for t, d, lag in stale)
+    lvl = "심각" if worst >= 2 else "경고"
+    return [Finding(
+        "DEPT_STATIC_STALE", "부문대시보드",
+        f"정적탭이 전일({want:%m/%d}) 기준이 아니다 — {detail}.\n"
+        f"  갱신 잡은 원천이 다 도착해야 돌아서 **에러 없이 조용히 안 돈다**. "
+        f"상류 「[데이터] 브랜드부문 대시보드」의 raw 적재부터 확인할 것.", lvl)]
+
+
 # ── dedup 원장 ───────────────────────────────────────────────────────────────
 def _ensure_watch_tab(sheets) -> bool:
     try:
@@ -482,6 +546,7 @@ def run(dry_run: bool = False, force: bool = False, gate: bool = True) -> int:
         steps += [
             ("랭킹 산출물", lambda: check_ranking_output(sheets, now, gate)),
             ("시트 신선도", lambda: check_sheet_freshness(sheets, now, gate)),
+            ("부문 대시보드", lambda: check_dept_dashboard(sheets, now, gate)),
         ]
     for name, fn in steps:
         try:
