@@ -82,7 +82,11 @@ ORDER_TAB = "MD투입"
 ORDER_HEADER_ROW = 7            # 데이터는 R8부터
 ORDER_SEASON = "2026FW"         # AI(타겟시즌) 필터 — 같은 STY가 타 시즌으로도 발주돼 있다
 # 헤더 텍스트(공백·개행 제거 후 비교) → 쓰임. 열 위치는 매번 헤더에서 찾는다.
-ORDER_COLS = {"sty": "최종품번", "season": "타겟시즌",
+# ★2026-09-03: "최종품번"은 STY 가 아니라 **옵션코드(품번-컬러)** 다. 8/19 원천이 바뀌면서
+#   `MMFPC3A15` → `MMFPC3D81-BK` 꼴이 되어 대시보드 STY 와 교집합 0 → 입고가 매일 통째로 실패했다.
+#   → ①STY 열은 **후보 라벨을 순서대로** 찾고(품번 우선, 최종품번 폴백) ②값은 `-` 앞을 잘라
+#     항상 STY 로 정규화한다(sales_rollup._base 와 같은 규칙). 원천이 어느 쪽으로 돌아가도 맞는다.
+ORDER_COLS = {"sty": ("품번", "최종품번", "대표품번"), "season": "타겟시즌",
               "date": "현/실입고일", "qty": "예상입고량",
               "real_date": "실입고일", "real_qty": "실입고량"}
 
@@ -430,6 +434,14 @@ def load_prein(sheets) -> dict[str, float]:
     return out
 
 
+def _sty_key(v) -> str:
+    """오더시트 품번 칸 → STY. 옵션코드(`품번-컬러`)면 `-` 앞을 취한다.
+
+    ★히어로 STY 자체엔 `-` 가 없다(대시보드 B열 9자리). sales_rollup._base 와 같은 규칙.
+    """
+    return str(v).strip().split("-")[0]
+
+
 def load_inbound(sheets, sty2hero, weeks, basis="hybrid", as_of=None, shift_overdue=False):
     """MD투입 타겟시즌 2026FW 행 → {히어로: 주차별 입고수량}. TOTAL 포함.
 
@@ -446,10 +458,14 @@ def load_inbound(sheets, sty2hero, weeks, basis="hybrid", as_of=None, shift_over
     labels = [re.sub(r"\s+", "", str(c)) for c in (hdr[0] if hdr else [])]
     idx = {}
     for key, name in ORDER_COLS.items():
-        if name not in labels:
-            raise RuntimeError(f"{ORDER_TAB} R{ORDER_HEADER_ROW}에서 '{name}' 열을 못 찾았습니다 "
-                               f"— 오더시트 구조 변경. 주입 중단.")
-        idx[key] = labels.index(name)
+        cands = (name,) if isinstance(name, str) else tuple(name)
+        hit = next((c for c in cands if c in labels), None)
+        if hit is None:
+            raise RuntimeError(f"{ORDER_TAB} R{ORDER_HEADER_ROW}에서 '{'/'.join(cands)}' 열을 "
+                               f"못 찾았습니다 — 오더시트 구조 변경. 주입 중단.")
+        idx[key] = labels.index(hit)
+        if key == "sty":
+            print(f"  · STY 열 = '{hit}' ({_col_letter(idx[key] + 1)})")
 
     order = list(ORDER_COLS)
     res = sheets.spreadsheets().values().batchGet(
@@ -467,7 +483,9 @@ def load_inbound(sheets, sty2hero, weeks, basis="hybrid", as_of=None, shift_over
     n = max(len(v) for v in col.values())
     per = {h: [0.0] * len(weeks) for h in HERO_LABELS}
     stat = {"rows": 0, "before": {}, "prein": {}, "after": {}, "nodate": {}, "total": {},
-            "actual": {}, "plan": {}, "overdue": {}}
+            "actual": {}, "plan": {}, "overdue": {},
+            # 진단용 — 0건일 때 "시즌이 없나 / 키가 안 맞나"를 로그만 보고 가른다
+            "season_rows": 0, "sample": []}
     w_start, w_end = weeks[0][0], weeks[-1][1]
     as_of = as_of or dt.date.today()
     now_wi = next((wi for wi, (_, b) in enumerate(weeks) if b >= as_of), None)
@@ -475,8 +493,12 @@ def load_inbound(sheets, sty2hero, weeks, basis="hybrid", as_of=None, shift_over
     for i in range(n):
         if str(val("season", i)).strip() != ORDER_SEASON:
             continue
-        hero = sty2hero.get(str(val("sty", i)).strip())
+        stat["season_rows"] += 1
+        key = _sty_key(val("sty", i))
+        hero = sty2hero.get(key)
         if hero is None:
+            if key and len(stat["sample"]) < 8 and key not in stat["sample"]:
+                stat["sample"].append(key)
             continue
         stat["rows"] += 1
 
@@ -764,7 +786,13 @@ def main() -> int:
             as_of = dt.date.fromisoformat(args.as_of) if args.as_of else dt.date.today()
             inbound, stat = load_inbound(sheets, sty2hero, weeks, args.basis, as_of, args.shift_overdue)
             if not inbound:
-                raise RuntimeError(f"{ORDER_TAB}에서 {ORDER_SEASON} 입고를 하나도 못 읽었습니다 — 입고 주입 중단.")
+                raise RuntimeError(
+                    f"{ORDER_TAB}에서 {ORDER_SEASON} 입고를 하나도 못 읽었습니다 — 입고 주입 중단.\n"
+                    f"  · {ORDER_SEASON} 행 {stat['season_rows']}건 · STY 매칭 0건 "
+                    f"(대상 STY {len(sty2hero)}개)\n"
+                    f"  · 원천 STY 예시: {', '.join(stat['sample']) or '(비어 있음)'}\n"
+                    f"  · 대시보드 STY 예시: {', '.join(list(sty2hero)[:5])}\n"
+                    f"  → 둘의 형식이 다르면 오더시트 품번 열이 바뀐 것이다.")
             carry = load_prein(sheets)                    # 1/1 예측재고 (대시보드 HU)
             opening = {}                                  # 기입고물량 = 재고 + 6/1~그리드직전 입고
             for h in HERO_LABELS:
