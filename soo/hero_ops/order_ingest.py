@@ -68,7 +68,7 @@ def load_color_maps(sheets):
     for c, k in COLOR_KO.items():
         code2kor.setdefault(c, k)
         kor2code.setdefault(k, c)
-    for r in _vals(sheets, "'컬러구분'!A1:G2129")[2:]:    # 1~2행=헤더
+    for r in _vals(sheets, "'컬러구분'!A1:G")[2:]:        # 1~2행=헤더 (상한 없이 — 위와 같은 이유)
         code = _g(r, 2).upper()
         kor = _g(r, 4).replace(" ", "")
         if code and kor:
@@ -85,7 +85,9 @@ def parse_orders(sheets, code2kor, kor2code, season=None):
     season=None 이면 전 시즌 누적(구 동작 호환). base = _base(최종품번)."""
     color_prep = defaultdict(float)
     style_prep = defaultdict(lambda: {"t": 0.0, "o": 0.0, "f": 0.0})
-    for r in _vals(sheets, "'MD투입'!A8:AO26529"):
+    # ★2026-09-03: 상한 26529 하드코딩 때문에 원천이 28,312행으로 자라자 뒤쪽 1,790행이
+    #   조용히 빠지고 있었다(히어로 STY 발주수량의 4.9%·146,200장). 무한범위로 고정.
+    for r in _vals(sheets, "'MD투입'!A8:AO"):
         base = _base(_g(r, 0))
         if not base:
             continue
