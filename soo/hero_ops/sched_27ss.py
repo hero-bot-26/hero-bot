@@ -141,11 +141,19 @@ def load_mdp_baseline(sheets, sheet_id: str | None = None,
 
 
 def build_sty_dates(row: dict, today: dt.date, sty: str,
-                    warns: list[str], baseline: dict[int, dt.date] | None = None) -> tuple[list[str], list[str]]:
+                    warns: list[str], baseline: dict[int, dt.date] | None = None,
+                    plm_actual: dict[int, str] | None = None,
+                    src_stat: dict[str, int] | None = None) -> tuple[list[str], list[str]]:
     """작업의뢰 1행(STY) → (stages[14], dates[14]).
 
     0~4(MDP~GO-DROP)와 5(1차수량)는 원천에 없어 앱 기본값을 유지하도록 ''를 돌려준다.
     (호출부/앱이 ''는 '건드리지 않음'으로 취급.)
+
+    ★2026-09-04 (사용자 확정) **완료 판정 = PLM 실적일 · 지연 판정 = 기획시트 타겟일.**
+      두 원천이 답하는 질문이 다르다 — 기획시트는 "언제까지 해야 하나(목표)",
+      PLM 은 "실제로 언제 했나(실적)". 그래서 actual 만 PLM 으로 갈아끼우고 target 은 그대로 둔다.
+      PLM 에 없는 단계는 기획시트 진행 컬럼으로 폴백한다(있는 값을 버리지 않기 위함).
+      26FW 보드와 같은 판정 구조가 되어 화면 일관성도 맞는다.
     """
     stages = [""] * 14
     dates = [""] * 14
@@ -156,9 +164,17 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
     ceilings = {10: in_goal, 13: rel_goal}
 
     baseline = baseline or {}
-    for n in sorted(set(STAGE_COLS) | set(baseline)):
+    for n in sorted(set(STAGE_COLS) | set(baseline) | set(plm_actual or {})):
         done_col, target_col = STAGE_COLS.get(n, (None, None))
-        actual = _norm_date(row.get(done_col, "")) if done_col else None
+        # ★실적은 PLM 우선, 없으면 기획시트 진행 컬럼(폴백)
+        actual = _norm_date((plm_actual or {}).get(n, ""))
+        if actual:
+            if src_stat is not None:
+                src_stat["plm"] = src_stat.get("plm", 0) + 1
+        elif done_col:
+            actual = _norm_date(row.get(done_col, ""))
+            if actual and src_stat is not None:
+                src_stat["sheet"] = src_stat.get("sheet", 0) + 1
         if target_col == "MD입고 목표일":
             target = in_goal
         elif target_col:
@@ -242,7 +258,8 @@ def load_27ss_heroes(sheets, sheet_id: str | None = None) -> dict:
 
 def load_27ss_sched(sheets, sheet_id: str | None = None,
                     today: dt.date | None = None,
-                    only: set[str] | None = None) -> tuple[dict, list[str]]:
+                    only: set[str] | None = None,
+                    plm_actuals: dict[str, dict[int, str]] | None = None) -> tuple[dict, list[str]]:
     """작업의뢰 시트 → {신품번: {'stages': [...], 'dates': [...], 'track': '간절기'}}, warnings.
 
     only 를 주면 그 신품번만(앱 PLM_DATA 후보와 교집합). 실패는 호출부가 가드 —
@@ -263,6 +280,7 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
 
     warns: list[str] = []
     base_by_track = load_mdp_baseline(sheets, warns=warns)
+    _src_stat: dict[str, int] = {}
     out: dict[str, dict] = {}
     for r in vals[1:]:
         get = lambda c: (r[H[c]].strip() if c in H and len(r) > H[c] else "")   # noqa: E731
@@ -275,9 +293,14 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
             continue
         row = {c: get(c) for c in H}
         _bl = base_by_track.get(TRACK_TO_MDP.get(track, ""), {})
-        stages, dates = build_sty_dates(row, today, sty, warns, baseline=_bl)
+        stages, dates = build_sty_dates(row, today, sty, warns, baseline=_bl,
+                                        plm_actual=(plm_actuals or {}).get(sty),
+                                        src_stat=_src_stat)
         if not any(stages):
             continue                                     # 쓸 값이 하나도 없으면 주입 안 함
         out[sty] = {"stages": stages, "dates": dates, "track": track,
                     "strat": get(STRAT_COL)}
+    if _src_stat:
+        print(f"  · 27SS 완료 판정 출처 — PLM {_src_stat.get('plm', 0)}칸 "
+              f"· 기획시트 폴백 {_src_stat.get('sheet', 0)}칸")
     return out, warns

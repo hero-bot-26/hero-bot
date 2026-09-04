@@ -2406,7 +2406,19 @@ try:
     # 대상 = PLM_DATA(27SS 후보) 키와 교집합.
     _m27 = re.search(r"const PLM_DATA = (\{.*?\n\});", html2, re.DOTALL)
     _cand = set(json.loads(_m27.group(1)).keys()) if _m27 else None
-    sched27, warns27 = load_27ss_sched(sheets, _src("plm_27ss_req"), today=TODAY, only=_cand)
+    # ★2026-09-04 (사용자 확정) 27SS 완료 판정은 **PLM 실적일**, 지연 판정은 **기획시트 타겟일**.
+    #   대상 = 27SS 히어로 후보(_cand, 앱 STY 등록분)만 — PLM 전체 906종을 다 밀지 않는다.
+    _plm27 = {}
+    for _r in plm.values():
+        if _cand and _r.style_no not in _cand:
+            continue
+        _st = {n: c.actual for n, c in (_r.stages or {}).items() if c and c.actual}
+        if _st:
+            _plm27[_r.style_no] = _st
+    print(f"  · 27SS PLM 실적일: {len(_plm27)}종 "
+          f"(후보 {len(_cand) if _cand else 0}종 중) · 단계칸 {sum(len(v) for v in _plm27.values())}")
+    sched27, warns27 = load_27ss_sched(sheets, _src("plm_27ss_req"), today=TODAY, only=_cand,
+                                       plm_actuals=_plm27)
     if not sched27:
         raise ValueError("스케줄 0건 — 조용한 0 덮어쓰기 방지로 기존값 유지")
     try:                                   # 27SS 작업의뢰도 같은 감시(멈추면 단계 진척이 굳는다)
