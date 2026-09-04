@@ -21,3 +21,7 @@ databricks/_nb_workspace_pre_mktyoy.py
 databricks/_nb_workspace_post_mktyoy.py
 _nb_pmkt_tmp.py
 _pmkt_run_id.txt
+
+# 슬랙 메시지 백업(_slack_msg.py delete --apply) — 실적 원문이 담기므로
+# public 레포에 절대 올리지 않는다
+_slack_deleted_*.json
