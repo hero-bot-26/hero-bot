@@ -1435,7 +1435,11 @@ try:
         _HEALTH.append("예산 Hero 행 못 찾음")
 
     # 시트 읽기 헬퍼(_raw/_g2/_hdr_idx) — 아래 '히어로 마케팅 목표' 로드 등에서 사용.
-    # ★히어로별 PMKT 성과는 더 이상 캠페인 트래커가 아니라 Databricks 'PMKT주차'/'PMKT경로'(team.sales.pdp_path_daily_summary_v 기반)에서 로드(하단 hero_perf 블록).
+    # ★히어로별 PMKT 성과는 더 이상 캠페인 트래커가 아니라 Databricks 탭에서 로드한다(하단 hero_perf 블록).
+    #   쓰는 탭 = 'PMKT주차' · 'PMKT기간' · 'PMKT경로기간' · 'PMKT경로주차' · 'PMKT경로상세'
+    #   (team.sales.pdp_path_daily_summary_v 기반).
+    #   ★구 'PMKT경로' 탭은 2026-09-04 삭제 — 라이브 노트북이 2026-06-22 부터 안 쓰고 생성기도 안 읽는
+    #   죽은 탭이었다(신선도 감사마다 '73일 지연'으로 잡혀 노이즈가 됐다). 백업은 홈 폴더.
     def _raw(tab, sid, last_col="BZ", max_row=400):
         try:
             return sheets.spreadsheets().values().get(
