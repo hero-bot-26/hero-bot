@@ -7,7 +7,8 @@ from collections import defaultdict, Counter
 import sys
 from soo.auth import get_credentials, build_services
 from soo.hero_ops.plm_ingest import (
-    parse_milestone_dbx, parse_milestone_dbx_from_drive, parse_milestone_dbx_from_sheet)
+    parse_milestone_dbx, parse_milestone_dbx_from_drive, parse_milestone_dbx_from_sheet,
+    parse_milestone_sheet_auto)
 
 TODAY = datetime.date.today()
 LOCAL_PLM = next((Path(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--local=")), None)
@@ -136,15 +137,38 @@ for r in res.get("values", []):
         "style": style, "cls": c(1), "team": c(6), "item": c(7), "season": c(9), "name": c(12),
     })
 
+# 보충 원천 감시용 — ★반드시 파싱보다 **앞**에서 선언한다(뒤에 두면 파싱 결과를 덮어쓴다)
+_plm_extra_recs, _plm_id_extra_seen, _plm_primary_recs = [], False, []
+
 # ── PLM (공유드라이브 최신본 자동읽기; --local=경로 로 로컬 파일 사용) ──
 if LOCAL_PLM:
     recs = parse_milestone_dbx(LOCAL_PLM)
     print(f"PLM 소스(로컬, 데이터브릭스버전 탭): {LOCAL_PLM}")
 elif USE_SHEET:
-    # ★2026-09-04 소스키화 — 27SS 를 담는 새 시트로 갈아탈 때 코드 배포 없이 레지스트리 행만 바꾼다.
+    # ★2026-09-04 소스키화 + 보충 원천 병합.
+    #   주(plm_milestone)  = DBX 경유본. 26FW 만 담지만 **담당자 4열 + WMS 실입고**가 있다.
+    #   보충(…_extra)      = PLM 원본 붙여넣기. 27SS 를 담지만 담당자 공란·입고는 예상(E:)뿐.
+    #   → 겹치는 스타일은 **주가 이긴다**. 보충은 주에 없는 스타일만 더한다(현재 27SS).
+    #   ★단독 전환하면 안 된다: 실측(9/4) 담당자 1,519→0 · 입고 완료 896건→0 으로 퇴보한다.
     _plm_id, _plm_tab = _src("plm_milestone"), _src_tab("plm_milestone", "데이터")
-    recs = parse_milestone_dbx_from_sheet(sheets, sheet_id=_plm_id, tab=_plm_tab)
-    print(f"PLM 소스(구글시트, 데이터브릭스 자동출력): {len(recs)} 스타일 · {_plm_id[:12]}…/{_plm_tab}")
+    recs = parse_milestone_sheet_auto(sheets, _plm_id, _plm_tab)
+    # ★신선도 지문은 **주 원천만으로** 계산해야 한다 — 병합본으로 재면 주가 멈춰도
+    #   보충이 바뀐 날 '신선함'으로 찍혀 감시가 통째로 무력화된다(실제로 한 번 만들었다 잡음).
+    _plm_primary_recs = list(recs)
+    print(f"PLM 소스(주): {len(recs)} 스타일 · {_plm_id[:12]}…/{_plm_tab}")
+    _x_id, _x_tab = _src("plm_milestone_extra"), _src_tab("plm_milestone_extra", "시트1")
+    if _x_id:
+        try:
+            _extra = parse_milestone_sheet_auto(sheets, _x_id, _x_tab)
+            _plm_extra_recs, _plm_id_extra_seen = _extra, True
+            _have = {r.style_no for r in recs}
+            _add = [r for r in _extra if r.style_no not in _have]
+            recs = recs + _add
+            print(f"PLM 소스(보충): {len(_extra)} 스타일 중 **{len(_add)}종 추가** "
+                  f"· {_x_id[:12]}…/{_x_tab} (겹친 {len(_extra) - len(_add)}종은 주 유지)")
+        except Exception as _ex:
+            # 보충이 실패해도 주 원천만으로 계속 간다(조용한 0 덮어쓰기 방지)
+            print(f"[주의] PLM 보충 원천 실패 — 주 원천만 사용: {type(_ex).__name__}: {_ex}")
     _plm_seasons = Counter(r.season for r in recs if getattr(r, "season", ""))
     if _plm_seasons:
         print("  · 시즌 분포: " + ", ".join(f"{k} {v}" for k, v in sorted(_plm_seasons.items())))
@@ -168,7 +192,7 @@ try:
     _fp_plm = _fw.fingerprint(sorted(
         f"{r.style_no}|{r.plm_status}|" + "|".join(
             f"{n}:{(r.stages.get(n).actual if r.stages.get(n) else '')}" for n in sorted(r.stages))
-        for r in recs))
+        for r in (_plm_primary_recs or recs)))
     _st = _fw.track(sheets, _FW_SHEET, "plm_milestone", _fp_plm, TODAY, stale_days=10,
                     note="PLM 마일스톤(데이터브릭스 적재)")
     print(f"[신선도] PLM 마일스톤 — 마지막 변경 {_st['last_changed']} ({_st['days']}일 전)"
@@ -176,6 +200,22 @@ try:
     if _st["stale"]:
         _FRESH_WATCH.append(f"PLM 마일스톤이 {_st['days']}일째 그대로 (마지막 변경 {_st['last_changed']}) "
                             f"— PLM→Databricks 적재 확인 필요")
+    # ★보충 원천(PLM 원본 붙여넣기)은 **사람이 수동으로 갈아끼우는 시트**라 방치되면 조용히 굳는다.
+    #   주 원천과 별도 지문으로 감시한다(주는 매일 자동, 보충은 수동 → 임계를 따로 본다).
+    if _plm_id_extra_seen:
+        _fp_x = _fw.fingerprint(sorted(
+            f"{r.style_no}|{r.plm_status}|" + "|".join(
+                f"{n}:{(r.stages.get(n).actual or r.stages.get(n).est or '') if r.stages.get(n) else ''}"
+                for n in sorted(r.stages))
+            for r in _plm_extra_recs))
+        _stx = _fw.track(sheets, _FW_SHEET, "plm_milestone_extra", _fp_x, TODAY, stale_days=14,
+                         note="PLM 원본 붙여넣기(수동 갱신 — 27SS 보충)")
+        print(f"[신선도] PLM 보충(수동) — 마지막 변경 {_stx['last_changed']} ({_stx['days']}일 전)"
+              + (" ★정체" if _stx["stale"] else ""))
+        if _stx["stale"]:
+            _FRESH_WATCH.append(
+                f"PLM 보충 시트가 {_stx['days']}일째 그대로 (마지막 변경 {_stx['last_changed']}) "
+                f"— PLM 에서 다시 내려받아 붙여넣기 필요(27SS 단계가 굳는다)")
 except Exception as _efw:
     print(f"[신선도] PLM 감시 스킵: {type(_efw).__name__}: {_efw}")
 

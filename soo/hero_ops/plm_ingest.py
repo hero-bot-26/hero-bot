@@ -224,6 +224,127 @@ def parse_milestone_dbx_from_sheet(sheets, sheet_id: str = DBX_SHEET_ID,
     return _dbx_records([str(c) for c in vals[0]], vals[1:])
 
 
+# ════════════════════════════════════════════════════════════════════
+# 원본 PLM 포맷을 구글시트에서 직접 (★2026-09-04)
+#   사용자가 PLM 에서 받은 마일스톤 보고서를 **가공 없이** 붙여넣은 시트용.
+#   DBX 경유본과 다른 점:
+#     ① 헤더가 2줄(R1 앞부분 + R2 나머지), 데이터는 R3~
+#     ② 단계 셀이 `완료P:2026-04-22A:2026-04-14` 패킹 문자열 (DBX는 실적일 단일)
+#     ③ 컬럼명이 원본 그대로(`스타일 생성`·`스타일 코드`) — DBX는 정규화됨(`스타일생성`·`style_no`)
+#   ★위치가 아니라 **라벨로 찾는다**. 원본 열이 밀려도 따라간다(못 찾으면 COL 위치로 폴백+로그).
+# ════════════════════════════════════════════════════════════════════
+
+# 우리 내부 이름 → 원본 시트에서 볼 수 있는 라벨(공백·점 제거 후 비교). 앞쪽이 우선.
+_RAW_LABELS: dict[str, tuple[str, ...]] = {
+    "season": ("시즌",), "brand_line": ("브랜드+라인", "브랜드라인"),
+    "cat_l": ("대복종",), "cat_m": ("중복종",), "cat_s": ("소복종",),
+    "wbs_holder": ("WBS홀더",), "sched_status": ("스케줄상태",),
+    "스타일생성": ("스타일생성",), "품평": ("품평",), "컬러확정": ("컬러확정",),
+    "원단확정": ("원단확정",), "PO전송": ("PO전송",), "PO발송": ("PO발송",),
+    "QC_APP": ("QCAPP",), "사후원가": ("사후원가확정",), "판매가": ("판매가확정",),
+    "입고": ("입고",),
+    "md_nm": ("기획MD팀", "md_nm"), "design_team": ("디자인팀", "ds_nm"),
+    "sourcing_team": ("소싱팀", "sc_nm"),
+    "carryover": ("캐리오버",), "plm_status": ("스타일상태",),
+    "style_no": ("스타일코드", "style_no"),
+}
+
+
+def _norm_label(v) -> str:
+    return re.sub(r"[\s.]+", "", str(v or ""))
+
+
+def _raw_index(head_rows: list[list]) -> tuple[dict[str, int], list[str]]:
+    """헤더 2줄 → {내부이름: 열인덱스}. 라벨 우선, 못 찾으면 COL 위치 폴백."""
+    width = max((len(r) for r in head_rows), default=0)
+    labels = []
+    for i in range(width):
+        # 아래 줄(R2)이 진짜 헤더, 비어 있으면 위 줄(R1)
+        v = ""
+        for r in reversed(head_rows):
+            v = _norm_label(r[i]) if i < len(r) else ""
+            if v:
+                break
+        labels.append(v)
+    idx, fell_back = {}, []
+    for key, cands in _RAW_LABELS.items():
+        hit = next((labels.index(c) for c in map(_norm_label, cands) if c in labels), None)
+        if hit is None:
+            hit = _NAME_TO_IDX.get(key)
+            if hit is not None:
+                fell_back.append(f"{key}→{hit}")
+        if hit is not None:
+            idx[key] = hit
+    return idx, fell_back
+
+
+def parse_milestone_report_from_sheet(sheets, sheet_id: str, tab: str) -> list[StyleMilestone]:
+    """원본 PLM 포맷 구글시트 → StyleMilestone 리스트. 스타일코드 없는 행(미생성)은 제외."""
+    vals = sheets.spreadsheets().values().get(
+        spreadsheetId=sheet_id, range=f"'{tab}'!A1:BZ",
+        valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+    if len(vals) < 3:
+        raise ValueError(f"'{tab}' 에 데이터 없음(헤더 2줄 + 데이터 형식이어야 함) — 시트 확인")
+    idx, fell_back = _raw_index(vals[:2])
+    if fell_back:
+        print(f"  [PLM 원본] 라벨로 못 찾아 위치 폴백: {', '.join(fell_back)}")
+    missing = [k for k in ("style_no", "season", "스타일생성") if k not in idx]
+    if missing:
+        raise ValueError(f"'{tab}' 헤더에서 필수 컬럼을 못 찾음: {missing} — 시트 구조 확인")
+
+    def g(row, key):
+        i = idx.get(key)
+        if i is None or i >= len(row):
+            return None
+        v = row[i]
+        return None if v is None or str(v).strip() == "" else v
+
+    out: list[StyleMilestone] = []
+    for row in vals[2:]:
+        code = g(row, "style_no")
+        if not code:
+            continue                       # 스타일 미생성 행
+        holder = str(g(row, "wbs_holder") or "")
+        carry = g(row, "carryover")
+        # 전체 WBS 추정완료일 = 스케줄상태의 E: → 입고(13) est (DBX 경로와 동일 규칙)
+        m_est = re.search(r"E:(\d{4}-\d{2}-\d{2})", str(g(row, "sched_status") or ""))
+        rec = StyleMilestone(
+            style_no=str(code).strip(),
+            name=holder.rsplit(",", 1)[0].strip() if "," in holder else holder.strip(),
+            season=g(row, "season"),
+            brand_line=g(row, "brand_line"),
+            category="/".join(str(g(row, c)) for c in ("cat_l", "cat_m", "cat_s") if g(row, c)),
+            carryover=(str(carry).strip().lower() == "true") if carry is not None else None,
+            plm_status=g(row, "plm_status"),
+            md_nm=g(row, "md_nm"), ds_nm=g(row, "design_team"), sc_nm=g(row, "sourcing_team"),
+        )
+        for mcol, stage_n in MILESTONE_TO_STAGE.items():
+            cell = parse_cell(g(row, mcol))
+            if cell:
+                if stage_n == 13 and m_est and not cell.est:
+                    cell.est = m_est.group(1)
+                rec.stages[stage_n] = cell
+        out.append(rec)
+    return out
+
+
+def parse_milestone_sheet_auto(sheets, sheet_id: str, tab: str) -> list[StyleMilestone]:
+    """시트 한 장을 읽어 **형식을 스스로 판별**한다.
+
+    · 1행에 `style_no` 가 있으면 = DBX 경유본(정규화·실적일 단일)
+    · 아니면 = PLM 원본 붙여넣기(헤더 2줄·`P:/A:` 패킹)
+    원천을 갈아탈 때 코드를 안 고쳐도 되게 하기 위함. 판별 결과는 로그로 남긴다.
+    """
+    head = sheets.spreadsheets().values().get(
+        spreadsheetId=sheet_id, range=f"'{tab}'!A1:BZ2").execute().get("values", [])
+    first = [_norm_label(c) for c in (head[0] if head else [])]
+    if "style_no" in first:
+        print("  [PLM] 형식=DBX 경유본(정규화 헤더)")
+        return parse_milestone_dbx_from_sheet(sheets, sheet_id=sheet_id, tab=tab)
+    print("  [PLM] 형식=PLM 원본 붙여넣기(헤더 2줄·P:/A: 패킹)")
+    return parse_milestone_report_from_sheet(sheets, sheet_id, tab)
+
+
 def find_latest_milestone_file(drive, folder_id: str = MASTER_APP_FOLDER_ID,
                                name_hint: str = MILESTONE_NAME_HINT) -> dict | None:
     """폴더에서 이름에 name_hint 포함된 최신(수정시각) 파일 메타 반환."""

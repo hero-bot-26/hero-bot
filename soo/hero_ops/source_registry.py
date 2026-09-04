@@ -39,6 +39,13 @@ DEFAULTS = {
         #     용도가 달라 plm_ingest.DBX_SHEET_ID 에 고정돼 있다(아래 _gen 주석 참조).
         "id": "1_tZDl-heZyWT4VQYIAT3ZHFeMoQlK2FSOpEMyZjqvm0", "tab": "데이터", "range": "",
         "expected": ["시즌", "style_no", "style_status", "스타일생성", "컬러확정", "입고"]},
+    "plm_milestone_extra": {  # ★ PLM 원본 붙여넣기 시트 — 주 원천에 **없는 시즌**을 보충(현재 27SS)
+        # ★2026-09-04 신설. 주 원천(DBX 경유본)은 26FW 만 담고 있어 27SS 단계가 통째로 비어 있었다.
+        #   ⚠보충일 뿐 대체가 아니다 — 이 시트엔 **담당자 4열이 전부 비어 있고 입고 실적(A:)이 0건**
+        #   (PLM 은 WMS 입고를 모른다). 겹치는 스타일은 **주 원천이 이긴다**.
+        #   비우면(id 공란) 보충 없이 종전 동작.
+        "id": "1Cv-upIFHYIkUom__1bf9VGdNJ-CblZ0ZvvK1CJv2zx4", "tab": "시트1", "range": "",
+        "expected": ["시즌", "스타일 코드", "스타일 생성", "컬러 확정"]},
     "plm_27ss": {      # 27SS 기획 관리판 (#.상세일정) — 홈 카드 SEASON_27SS_PROGRESS
         "id": "10guWc_5t06nu9QryPymTIl2oogQfV4qOEO81iXSgenI", "tab": "#.상세일정", "range": "", "expected": []},
     "plm_27ss_req": {  # ★ MS_27SS_작업의뢰 '기획시트' — 27SS 보드 단계 진척·타겟일(STY_SCHED_27SS)
