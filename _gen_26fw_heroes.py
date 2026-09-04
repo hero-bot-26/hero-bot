@@ -489,6 +489,31 @@ try:
     _FRESH_SALES = not (_BAD_TABS & _SALES_TAB_SET)      # 매출(대시보드·홈 26FW)
     _FRESH_PMKT = not (_BAD_TABS - _SALES_TAB_SET - _PDPD_TAB_SET)   # PMKT·퍼널·경로
     _FRESH_PDPD = not (_BAD_TABS & _PDPD_TAB_SET)        # PDP 일별 트렌드 차트 전용
+    # ★★2026-09-04 '예상된 지연'은 경고로 세지 않는다.
+    #   PDP일별은 노트북에서 제일 무거워 **D+1 저녁에야** 적재된다(8/30~9/4 로그 전부 같은 패턴:
+    #   아침 런 '원천지연 2일'+경고 → 같은 날 저녁 런 '1일'·경고 없음). 그래서 아침 런은 **매일**
+    #   이 경고를 띄웠고, 그 상수 노이즈에 9/3~9/4 진짜 고장(IMC_PERF 주입 실패)이 이틀 묻혔다.
+    #   화면 영향은 성과탭 트렌드 차트 하나뿐이므로, **하루만 밀렸고 아직 적재 시각 전**이면
+    #   로그만 남긴다. ①이틀 이상 밀렸거나 ②적재 시각이 지났는데도 안 들어왔으면 그건 진짜 고장이다.
+    _PDPD_DUE_KST_H = 17          # 이 시각(KST) 이후에도 안 들어오면 경고로 올린다
+
+    def _pdpd_expected_lag(bad_list):
+        """PDP일별 지연이 예상 범위 안인가 — 하루만 밀렸고 아직 적재 시각 전."""
+        _now_kst = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
+        if _now_kst.hour >= _PDPD_DUE_KST_H:
+            return False
+        for _b in bad_list:
+            if not _b.startswith("PDP일별"):
+                continue
+            _m = re.search(r"(\d{8})\(기대 (\d{8})\)", _b)
+            if not _m:
+                return False          # 형식이 바뀌었으면 판단 보류 = 경고로 남긴다
+            _got = datetime.datetime.strptime(_m.group(1), "%Y%m%d").date()
+            _want = datetime.datetime.strptime(_m.group(2), "%Y%m%d").date()
+            return (_want - _got).days == 1
+        return False
+
+    _PDPD_EXPECTED = (not _FRESH_PDPD) and _pdpd_expected_lag(_SALES_BAD)
     if not _SALES_FRESH:
         # ★그룹별로 실제 보류된 것만 적는다 — 셋을 분리한 뒤에도 문구가 '실적·PMKT 스킵'으로 고정돼 있으면
         #   PDP일별 하나 늦은 날에도 실적이 멈춘 것처럼 읽혀(앱 헬스 배너 포함) 오진을 부른다.
@@ -496,8 +521,14 @@ try:
                                  ("PDP트렌드", _FRESH_PDPD)) if not ok] or ["없음"]
         print(f"[신선도] 실적시트 기준일 불일치 {len(_SALES_BAD)}건 — 보류: {'/'.join(_held)}(직전값 유지): "
               + " · ".join(_SALES_BAD[:6]))
-        _STALE_MSGS.append(f"실적시트 기준일 불일치 → {'/'.join(_held)} 갱신 보류(직전값 유지): "
-                           + " · ".join(_SALES_BAD[:4]))
+        # ★경고로 셀 것만 추린다 — 예상된 PDP 지연은 위 print 로만 남기고 헬스체크에서 뺀다.
+        _warn = [n for n in _held if not (n == "PDP트렌드" and _PDPD_EXPECTED)]
+        if _PDPD_EXPECTED:
+            print(f"[신선도] ↑ PDP일별은 예상된 지연(D+1 저녁 적재) — 경고에서 제외. "
+                  f"KST {_PDPD_DUE_KST_H}시 이후에도 안 들어오면 경고로 올린다")
+        if _warn:
+            _STALE_MSGS.append(f"실적시트 기준일 불일치 → {'/'.join(_warn)} 갱신 보류(직전값 유지): "
+                               + " · ".join(_SALES_BAD[:4]))
     # 홈 실적 = 시트39 확정 26SS 매핑(uid+신품번, 사용자 검증 524.5억=525.4). 성과 탭과 동일 히어로 정의.
     _map26 = json.load(open(ROOT / "hero_goods_26ss.json", encoding="utf-8"))
     _dash_s2h = _map26["style_to_hero"]
