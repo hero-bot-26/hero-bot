@@ -431,7 +431,7 @@ if not po_qty or not prep26:
         print(f"[주의] PO수량 직전값 보존 실패: {type(_epo).__name__}: {_epo}")
 clean = [{k: v for k, v in h.items() if not k.startswith("_")} for h in heroes]
 new_block = "const HEROES = " + json.dumps(clean, ensure_ascii=False, indent=2) + ";"
-html2, n = re.subn(r"const HEROES = \[.*?\n\];", new_block, html, count=1, flags=re.DOTALL)
+html2, n = re.subn(r"const HEROES = \[.*?\n\];", lambda _m: new_block, html, count=1, flags=re.DOTALL)
 assert n == 1, f"HEROES 배열 교체 실패 (matched {n})"
 html2, nt = re.subn(r"const APP_TODAY = '[^']*';",
                     f"const APP_TODAY = '{TODAY.isoformat()}';", html2, count=1)
@@ -579,7 +579,7 @@ try:
         print(f"[주의] DASHBOARD 26FW 블록 스킵 — 26SS만 유지: {type(_efw).__name__}: {_efw}")
     if _FRESH_SALES:
         dash_block = "const DASHBOARD = " + json.dumps(dash, ensure_ascii=False) + ";"
-        html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", dash_block, html2, count=1, flags=re.DOTALL)
+        html2, nd = re.subn(r"const DASHBOARD = \{.*?\};", lambda _m: dash_block, html2, count=1, flags=re.DOTALL)
         assert nd == 1, f"DASHBOARD 교체 실패 (matched {nd})"
         print(f"DASHBOARD: 히어로 {len(dash['heroes'])}개 주입 (매핑 {dash['_stats']['mapped']}/{dash['_stats']['rows']})")
     else:
@@ -1300,7 +1300,7 @@ try:
     if _nex != 1:
         print(f"[주의] HERO_IMC_EXCLUDE 교체 실패(matched {_nex}) — 앱 기본값 유지")
     _alias_block = "const HERO_IMC_ALIASES = " + json.dumps(_hero_alias, ensure_ascii=False) + ";"
-    html2, _na = re.subn(r"const HERO_IMC_ALIASES = \{.*?\};", _alias_block, html2, count=1, flags=re.DOTALL)
+    html2, _na = re.subn(r"const HERO_IMC_ALIASES = \{.*?\};", lambda _m: _alias_block, html2, count=1, flags=re.DOTALL)
     if _na != 1:
         _HEALTH.append("HERO_IMC_ALIASES 교체 실패(앱 플레이스홀더 확인)")
     else:
@@ -2208,8 +2208,27 @@ try:
     perf = {"budget": budget, "hero": hero_list,
             # wks[].p 의 첫 값은 이 배열의 인덱스(경로명 반복 저장을 피하려고 인덱스로 넣는다)
             "path_names": _PATH_NAMES}
+    # ★제어문자 탐지 — 손입력·UTM 값에 \x00 같은 제어문자가 섞이면 json 이 \uXXXX 로 이스케이프하고,
+    #   그걸 re.sub 치환문자열로 넘기면 "bad escape \u" 로 주입이 통째로 죽었다
+    #   (2026-09-03~04 IMC_PERF 2일 미갱신 — 라이트다운 media 의 깨진 utm 값 1개 때문).
+    #   치환은 lambda 로 바꿔 막았지만, 원천을 고칠 수 있게 어디인지 로그에 남긴다.
+    def _ctlscan(o, path=""):
+        _ok = (10, 9, 13)
+        if isinstance(o, str):
+            bad = sorted({hex(ord(c)) for c in o if ord(c) < 32 and ord(c) not in _ok})
+            if bad:
+                yield path, bad, o[:60]
+        elif isinstance(o, dict):
+            for k, v in o.items():
+                yield from _ctlscan(str(k), path + ".<key>" + str(k)[:20])
+                yield from _ctlscan(v, path + "." + str(k)[:24])
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                yield from _ctlscan(v, path + "[" + str(i) + "]")
+    for _cp, _cb, _cs in list(_ctlscan(perf, "IMC_PERF"))[:8]:
+        print("[주의] IMC_PERF 제어문자 " + ",".join(_cb) + " @ " + _cp + " — " + repr(_cs))
     perf_block = "const IMC_PERF = " + json.dumps(perf, ensure_ascii=False) + ";"
-    html2, nperf = re.subn(r"const IMC_PERF = \{.*?\};", perf_block, html2, count=1, flags=re.DOTALL)
+    html2, nperf = re.subn(r"const IMC_PERF = \{.*?\};", lambda _m: perf_block, html2, count=1, flags=re.DOTALL)
     assert nperf == 1, f"IMC_PERF 교체 실패 (matched {nperf})"
     print(f"IMC_PERF 주입: 히어로PMKT {len(hero_list)}종 · 예산 {len(budget['months'])}개월")
 except Exception as e:
@@ -2282,7 +2301,7 @@ try:
             prog.append({"stage": stage, "label": label, "tracks": tracks})
     if prog:
         blk = "const SEASON_27SS_PROGRESS = " + json.dumps(prog, ensure_ascii=False, indent=2) + ";"
-        html2, n27 = re.subn(r"const SEASON_27SS_PROGRESS = \[.*?\n\];", blk, html2, count=1, flags=re.DOTALL)
+        html2, n27 = re.subn(r"const SEASON_27SS_PROGRESS = \[.*?\n\];", lambda _m: blk, html2, count=1, flags=re.DOTALL)
         assert n27 == 1, f"SEASON_27SS_PROGRESS 교체 실패 (matched {n27})"
         print(f"27SS 진척: {len(prog)}단계 주입 (트랙 {sum(len(p['tracks']) for p in prog)})")
 except Exception as e:
@@ -2305,7 +2324,7 @@ try:
         print(f"[주의] 27SS 히어로 후보 로드 실패 — 기존 PLM_DATA 유지: {type(_eh27).__name__}: {_eh27}")
     if _h27:
         _pblk = "const PLM_DATA = " + json.dumps(_h27, ensure_ascii=False, indent=2) + ";"
-        html2, _npd = re.subn(PLM_DATA_PAT, _pblk, html2, count=1, flags=re.DOTALL)
+        html2, _npd = re.subn(PLM_DATA_PAT, lambda _m: _pblk, html2, count=1, flags=re.DOTALL)
         assert _npd == 1, f"PLM_DATA 교체 실패 (matched {_npd})"
         _nc27 = sum(1 for v in _h27.values() if not v["colors"])
         print(f"27SS 히어로 후보 주입: {len(_h27)}종 (컴러 미확정 {_nc27}종 — SKU 전개 전)")
@@ -2339,7 +2358,7 @@ try:
     except Exception as _e27f:
         print(f"[신선도] 27SS 감시 스킵: {type(_e27f).__name__}: {_e27f}")
     blk = "const STY_SCHED_27SS = " + json.dumps(sched27, ensure_ascii=False, indent=2) + ";"
-    html2, ns27 = re.subn(r"const STY_SCHED_27SS = \{.*?\n\};", blk, html2, count=1, flags=re.DOTALL)
+    html2, ns27 = re.subn(r"const STY_SCHED_27SS = \{.*?\n\};", lambda _m: blk, html2, count=1, flags=re.DOTALL)
 
     # ── 27SS PO 수량(오더시트 MD투입 타겟시즌=2027SS) ─────────────────────────
     #   ★27SS 보드는 stage8.poQuantities가 통째로 비어 있어 수량 뷰의 'PO 전송'이 항상 '—'였다.
@@ -2351,7 +2370,7 @@ try:
                      for k, v in _po27.items() if v["po"]["t"]}
         if _po27_blk:
             _b27 = "const PO_QTY_27SS = " + json.dumps(_po27_blk, ensure_ascii=False, indent=2) + ";"
-            html2, _n27p = re.subn(r"const PO_QTY_27SS = \{.*?\n\};", _b27, html2, count=1, flags=re.DOTALL)
+            html2, _n27p = re.subn(r"const PO_QTY_27SS = \{.*?\n\};", lambda _m: _b27, html2, count=1, flags=re.DOTALL)
             print(f"27SS PO수량 주입: {len(_po27_blk)} 스타일 · 계획 {sum(v['t'] for v in _po27_blk.values()):,}"
                   f" · PLM 발행 {sum(v['plm'] for v in _po27_blk.values()):,} (교체 {_n27p})")
     except Exception as _ep27:
