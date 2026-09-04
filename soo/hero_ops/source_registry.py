@@ -33,6 +33,12 @@ DEFAULTS = {
         "id": "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g", "tab": "HERO STY", "range": "", "expected": []},
     "target_26fw": {   # 26FW 히어로 일자별 목표(.xlsx, `일자별 목표 셋팅` 탭) — 달성율·소진율 소스
         "id": "1CB10ouLsOZplJuPoSOkkAXhvzwgtR0zD", "tab": "일자별 목표 셋팅", "range": "", "expected": []},
+    "plm_milestone": { # ★ PLM 마일스톤 실적일 (DBX 잡 출력 시트의 `데이터` 탭) — 26FW 단계 진척
+        # ★2026-09-04 레지스트리화. 27SS 를 담는 새 시트로 갈아탈 때 **코드 배포 없이** 행만 바꾸면 된다.
+        #   ※ 같은 책의 `HERO_STY` 탭(MSTRD 미러)과 `_소스신선도` 탭은 **여기서 안 옮긴다** —
+        #     용도가 달라 plm_ingest.DBX_SHEET_ID 에 고정돼 있다(아래 _gen 주석 참조).
+        "id": "1_tZDl-heZyWT4VQYIAT3ZHFeMoQlK2FSOpEMyZjqvm0", "tab": "데이터", "range": "",
+        "expected": ["시즌", "style_no", "style_status", "스타일생성", "컬러확정", "입고"]},
     "plm_27ss": {      # 27SS 기획 관리판 (#.상세일정) — 홈 카드 SEASON_27SS_PROGRESS
         "id": "10guWc_5t06nu9QryPymTIl2oogQfV4qOEO81iXSgenI", "tab": "#.상세일정", "range": "", "expected": []},
     "plm_27ss_req": {  # ★ MS_27SS_작업의뢰 '기획시트' — 27SS 보드 단계 진척·타겟일(STY_SCHED_27SS)

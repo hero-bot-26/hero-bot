@@ -84,6 +84,10 @@ def _src(key):
     """소스키 → 현재 유효 스프레드시트 ID(레지스트리 우선, 없으면 DEFAULTS)."""
     return _SRCREG.source_id(key, _REG)
 
+def _src_tab(key, fallback=""):
+    """소스키 → 탭 이름(레지스트리 우선). 비면 fallback."""
+    return _SRCREG.resolve(key, _REG).get("tab") or fallback
+
 ITEM_KO = {"Down": "다운", "Sweater": "니트", "Fleece": "플리스", "Pants": "팬츠",
            "Shirt": "셔츠", "T-Shirts": "티셔츠", "Acc": "액세서리", "Outer": "아우터"}
 STYLE_RE = re.compile(r"^M[A-Z0-9]{8}$")
@@ -105,6 +109,8 @@ ORDER = [3, 4, 6, 7, 8, 9, 10, 11, 12, 13]  # 실작업 단계(0~2,5 하드코�
 # --sheet 모드: SA가 닿는 PLM 시트의 HERO_STY 탭(★MSTRD HERO STY를 IMPORTRANGE 미러)에서 읽기.
 #   (외부 SA는 ★MSTRD 직접 접근 불가 — org 외부공유 차단. 로컬은 기존대로 ★MSTRD 직접.)
 if USE_SHEET:
+    # ★이 책의 `HERO_STY` 탭은 ★MSTRD 를 IMPORTRANGE 로 미러한 것 = PLM 마일스톤과 **다른 원천**이다.
+    #   PLM 시트를 갈아타도 여기는 따라가면 안 된다(새 책엔 HERO_STY 탭이 없다) → 소스키를 쓰지 않는다.
     from soo.hero_ops.plm_ingest import DBX_SHEET_ID
     _hero_book, _hero_range = DBX_SHEET_ID, "HERO_STY!A7:M400"
 else:
@@ -135,8 +141,13 @@ if LOCAL_PLM:
     recs = parse_milestone_dbx(LOCAL_PLM)
     print(f"PLM 소스(로컬, 데이터브릭스버전 탭): {LOCAL_PLM}")
 elif USE_SHEET:
-    recs = parse_milestone_dbx_from_sheet(sheets)
-    print(f"PLM 소스(구글시트, 데이터브릭스 자동출력): {len(recs)} 스타일")
+    # ★2026-09-04 소스키화 — 27SS 를 담는 새 시트로 갈아탈 때 코드 배포 없이 레지스트리 행만 바꾼다.
+    _plm_id, _plm_tab = _src("plm_milestone"), _src_tab("plm_milestone", "데이터")
+    recs = parse_milestone_dbx_from_sheet(sheets, sheet_id=_plm_id, tab=_plm_tab)
+    print(f"PLM 소스(구글시트, 데이터브릭스 자동출력): {len(recs)} 스타일 · {_plm_id[:12]}…/{_plm_tab}")
+    _plm_seasons = Counter(r.season for r in recs if getattr(r, "season", ""))
+    if _plm_seasons:
+        print("  · 시즌 분포: " + ", ".join(f"{k} {v}" for k, v in sorted(_plm_seasons.items())))
 else:
     meta, recs = parse_milestone_dbx_from_drive(drive)
     print(f"PLM 소스(드라이브, 데이터브릭스버전 탭): {meta['name']} (수정 {meta['modifiedTime']})")
@@ -151,6 +162,8 @@ plm = {rec.style_no: rec for rec in recs}
 _FRESH_WATCH = []
 try:
     from soo.hero_ops import freshness_watch as _fw
+    # ★`_소스신선도` 는 우리 **원장 탭**이라 원천이 바뀌어도 위치를 고정한다
+    #   (옮기면 지문 이력이 끊겨 '며칠째 그대로'를 못 센다). plm_27ss_req 감시도 같은 책을 쓴다.
     from soo.hero_ops.plm_ingest import DBX_SHEET_ID as _FW_SHEET
     _fp_plm = _fw.fingerprint(sorted(
         f"{r.style_no}|{r.plm_status}|" + "|".join(
