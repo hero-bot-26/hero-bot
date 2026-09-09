@@ -74,9 +74,19 @@ def fetch_asn(styles: list[str], lookback: int = LOOKBACK_DAYS) -> list[list]:
 WITH asn AS (
   -- 그레인 = ASN번호 × 품번-컬러. ★PO라인(EBELP)은 사이즈마다 갈리므로 GROUP BY 에 넣으면
   --   같은 SKU 가 5~10행으로 쪼개진다(실측: 넣었을 때 6,550행 → 뺐을 때 1,000행대).
+  -- ★무컬러 상품(벨트·양말 등 ACC)은 바코드 10~11자리가 컬러가 아니라 **사이즈**다
+  --   (`ME0BE0Z6159028` = 품번 + 사이즈59 + 028). 그대로 품번-사이즈를 SKU 로 쓰면
+  --   WMS(STL_NO=품번, 사이즈는 GDS_OPT)와 영영 안 맞아 '확정대기'로 굳는다 — 실제로 밟았다
+  --   (8/11 ME0BE0Z61 통보 1,810 / 화면 확정 0인데 WMS 엔 품번 단위로 1,810 이 정확히 들어와 있었다).
+  --   ★SKU 를 품번으로 접어서 맞추려던 시도는 전부 실패했다(실측으로 폐기) —
+  --     ①컬러 마스터에 없는 코드로 판정 → `LG`·`SW`·`AH`·`KH`·`BR` 이 마스터에 빠져 라이트다운이 접힘
+  --     ②WMS 적재형태로 판정 → 의류도 품번 단위 적재 이력이 섞여 커브드팬츠가 접힘
+  --     ③코드에 숫자면 사이즈로 판정 → 양말은 WMS 도 `MEASC0Z03-77` 로 사이즈째 적재해서 깨짐
+  --   결론: **접지 않는다.** SKU 는 항상 품번-코드로 두고 WMS 를 두 키(품번-코드 / 품번)로 본다.
   SELECT DELVNO,
          concat(substr(ZZ_BARCODE,1,9),'-',substr(ZZ_BARCODE,10,2)) sku,
-         substr(ZZ_BARCODE,1,9) style, substr(ZZ_BARCODE,10,2) color,
+         substr(ZZ_BARCODE,1,9) style,
+         substr(ZZ_BARCODE,10,2) color,
          EINDT,
          max(EBELN)   po_no,
          count(DISTINCT EBELN) po_cnt,
@@ -102,24 +112,49 @@ color AS (
   WHERE nullif(trim(color_cd),'') IS NOT NULL GROUP BY 1
 ),
 wms AS (
+  -- STL_NO 는 상품군에 따라 `품번-컬러`·`품번-사이즈`·`품번` 이 섞여 있다. 그대로 두고 두 번 본다.
   SELECT STL_NO sku, ACT_DATE, sum(ACT_QTY) qty
   FROM pbo.moms.ui_grreport_detail
   WHERE ORD_STATUS NOT IN ('출고취소','입고취소','입고대기') AND ORD_TYPE = '일반' AND SPR_NM = 'MUSINSA'
     AND ACT_DATE >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {int(lookback) + 7}), 'yyyyMMdd')
     AND split_part(STL_NO, '-', 1) IN ({in_styles})
   GROUP BY 1, 2
+),
+sk AS (  -- ① 품번-코드 정확 매칭. ★(sku, 납품일) 단위 — ASN(DELVNO)별로 잡으면 같은 실입고를
+         --   여러 ASN 이 각각 전량 가져가 과대계상된다(실측: 통보 60 인데 확정 320).
+  SELECT a.sku, a.EINDT, sum(w.qty) qty,
+         concat_ws(',', sort_array(collect_set(w.ACT_DATE))) dts
+  FROM (SELECT DISTINCT sku, EINDT FROM asn) a
+  JOIN wms w
+    ON w.sku = a.sku
+   AND abs(datediff(to_date(w.ACT_DATE,'yyyyMMdd'), to_date(a.EINDT,'yyyyMMdd'))) <= 3
+  GROUP BY 1,2
+),
+st AS (  -- ② 품번 단위 적재분(벨트 등 — WMS 가 STL_NO=품번 으로만 넣는 상품).
+  SELECT a.style, a.EINDT, sum(w.qty) qty,
+         concat_ws(',', sort_array(collect_set(w.ACT_DATE))) dts
+  FROM (SELECT DISTINCT style, EINDT FROM asn) a
+  JOIN wms w
+    ON w.sku = a.style
+   AND abs(datediff(to_date(w.ACT_DATE,'yyyyMMdd'), to_date(a.EINDT,'yyyyMMdd'))) <= 3
+  GROUP BY 1,2
+),
+tot AS (  -- 같은 (sku, 납품일) 의 통보 총량 — 실입고를 통보량 비례로 안분해 합계를 보존한다
+  SELECT sku, style, EINDT, sum(qty) tq FROM asn GROUP BY 1,2,3
 )
-SELECT a.DELVNO, a.po_no, a.po_cnt, a.sku, a.style, a.color, max(c.color_nm) color_nm, a.name, a.EINDT,
+SELECT a.DELVNO, a.po_no, a.po_cnt, a.sku, a.style, a.color, c.color_nm, a.name, a.EINDT,
        a.qty, a.po_qty, a.remain, a.supplier, a.warehouse, a.sts, a.ins_at, a.upd_at,
-       coalesce(sum(w.qty), 0) recv_qty,
-       concat_ws(',', sort_array(collect_set(w.ACT_DATE))) recv_dates
+       -- ★통보량으로 캡한다. 조인 창(±3일)에 인접 차수의 실입고가 겹쳐 들어와 캡이 없으면
+       --   합계가 110% 까지 부푼다(실측). 차수별 정확한 귀속은 입고 보드(FIFO 배분)가 하는 일이고,
+       --   이 탭이 답할 질문은 "이 통보분이 WMS 에 잡혔나"라서 캡이 목적에 맞다.
+       least(CAST(round(coalesce(sk.qty, st.qty, 0) * a.qty / nullif(t.tq, 0)) AS BIGINT),
+             CAST(a.qty AS BIGINT)) recv_qty,
+       coalesce(sk.dts, st.dts, '') recv_dates
 FROM asn a
 LEFT JOIN color c ON c.color_cd = a.color
-LEFT JOIN wms w
-       ON w.sku = a.sku
-      AND abs(datediff(to_date(w.ACT_DATE,'yyyyMMdd'), to_date(a.EINDT,'yyyyMMdd'))) <= 3
-GROUP BY a.DELVNO, a.po_no, a.po_cnt, a.sku, a.style, a.color, a.name, a.EINDT,
-         a.qty, a.po_qty, a.remain, a.supplier, a.warehouse, a.sts, a.ins_at, a.upd_at
+LEFT JOIN tot t ON t.sku = a.sku AND t.EINDT = a.EINDT
+LEFT JOIN sk ON sk.sku = a.sku AND sk.EINDT = a.EINDT
+LEFT JOIN st ON st.style = a.style AND st.EINDT = a.EINDT AND sk.sku IS NULL
 ORDER BY a.EINDT DESC, a.ins_at DESC, a.sku
 """
     rows = dbx_sql(sql, wait=600)
