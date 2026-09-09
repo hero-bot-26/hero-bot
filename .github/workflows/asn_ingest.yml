@@ -59,6 +59,18 @@ jobs:
           if [ "${{ github.event.inputs.dry_run }}" != "true" ]; then ARGS="$ARGS --apply"; fi
           python -m soo.hero_ops.asn_ingest $ARGS
 
+      # 신규 ASN 슬랙 알림 — 수집이 성공했을 때만. 원장(`알람발송로그`)으로 건 단위 dedup 하므로
+      # 새 통보가 없으면 조용하다. ★triggers.TEST_ONLY 가 True 인 동안은 본인 DM 으로만 나간다.
+      - name: 신규 ASN 슬랙 알림
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        continue-on-error: true      # 알림 실패가 수집을 실패로 만들지 않게
+        env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+        run: python -m soo.hero_ops.asn_notify --send
+
       # 조용히 죽으면 화면의 ASN 이 옛 상태로 고착된다 — 실패는 알린다.
       - name: 실패 알림
         if: failure()
