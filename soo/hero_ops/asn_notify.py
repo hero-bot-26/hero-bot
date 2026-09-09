@@ -188,8 +188,8 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
     """
     total = sum(i["qty"] for g in groups for i in g["items"])
     if kind == "day":
-        lines = [f"*금일 입하 예정이에요* · {len(groups)}건 · {total:,}장",
-                 "_오늘 물류센터에 들어올 예정으로 통보된 건입니다._",
+        lines = [f"*금일 물류 실물 입고 예정이에요* · {len(groups)}건 · {total:,}장",
+                 "_오늘 물류센터에 실물이 들어올 예정으로 통보된 건입니다._",
                  ""]
     elif kind == "recv":
         rtotal = sum(i["recv"] for g in groups for i in g["items"])
@@ -229,12 +229,12 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
                 (f"{i['color']} {i['color_nm']} " if i.get("color_nm") else f"{i['color']} ")
                 + f"{i['recv']:,}/{i['qty']:,}" for i in items)
             pct = f"{100 * rsub / sub:.0f}%" if sub else "—"
-            lines.append(f"입하 {_fmt_date(g['eindt'])} · 확정 {rsub:,} / 통보 {sub:,} ({pct}) · {colors}")
+            lines.append(f"물류 실물 입고 {_fmt_date(g['eindt'])} · 확정 {rsub:,} / 통보 {sub:,} ({pct}) · {colors}")
         else:
             colors = " · ".join(
                 f"{i['color']} {i['color_nm']} {i['qty']:,}" if i.get("color_nm") else f"{i['color']} {i['qty']:,}"
                 for i in items)
-            lines.append(f"입하 {_fmt_date(g['eindt'])} 예정 · {colors}"
+            lines.append(f"물류 실물 입고 {_fmt_date(g['eindt'])} 예정 · {colors}"
                          + (f"  (계 {sub:,})" if len(items) > 1 else ""))
         own = g["owners"]
         who = " · ".join(x for x in [
