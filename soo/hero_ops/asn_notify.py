@@ -195,8 +195,8 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
     """
     total = sum(i["qty"] for g in groups for i in g["items"])
     if kind == "day":
-        lines = [f"*금일 실물 물류 입고 예정이에요* · {len(groups)}건 · {total:,}장",
-                 "_오늘 물류센터에 실물이 들어올 예정으로 ASN 등록완료된 건입니다._",
+        lines = [f"*금일 물류센터에 들어올 예정이에요* · {len(groups)}건 · {total:,}장",
+                 "_오늘 물류센터에 들어올 예정으로 ASN 통보된 건입니다. 입고처리 빨리 되야하는 STY은 챙겨주세요._",
                  ""]
     elif kind == "recv":
         rtotal = sum(i["recv"] for g in groups for i in g["items"])
@@ -226,19 +226,13 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
                 m["color_nm"] = m["color_nm"] or i.get("color_nm", "")
             cs = sorted(merged.values(), key=lambda x: -x["qty"])
             n_asn = len(g.get("asns") or [])
-            # ★컬러가 8개까지 가는 품번이 있어 한 줄 나열은 안 읽힌다 → 코드블록 표로.
-            #   실물입고 열은 넣지 않는다 — 이 알림이 나가는 시점엔 WMS 적재가 D-1 이라 전부 0 이다.
-            lines.append("```")
-            lines.append(_w("컬러", 18) + "수량")
-            for c in cs:
-                nm = (f"{c['color']} {c['color_nm']}" if c["color_nm"] else c["color"])
-                lines.append(_w(nm, 18) + f"{c['qty']:,}")
-            if len(cs) > 1:
-                lines.append("-" * 26)
-                lines.append(_w("계", 18) + f"{sub:,}")
-            lines.append("```")
-            if n_asn > 1:
-                lines.append(f"_{n_asn}차에 나눠 ASN 등록된 건입니다._")
+            # ★슬랙은 한 줄 나열로 가볍게 간다(사용자 지시) — 컬러별 ASN 대비 물류입고 대조표는
+            #   앱 [ASN 등록] 탭에 있다. 슬랙에 표를 넣으면 품번마다 표가 붙어 안 읽힌다.
+            colors = " · ".join(
+                f"{c['color']} {c['color_nm']} {c['qty']:,}" if c["color_nm"] else f"{c['color']} {c['qty']:,}"
+                for c in cs)
+            lines.append(colors + (f"  (계 {sub:,})" if len(cs) > 1 else "")
+                         + (f"  · {n_asn}차 통보" if n_asn > 1 else ""))
         elif kind == "recv":
             rsub = sum(i["recv"] for i in items)
             colors = " · ".join(
