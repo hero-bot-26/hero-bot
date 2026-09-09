@@ -171,6 +171,13 @@ def record_sent_bulk(sheets, as_of: datetime.date, keys: list[str], labels: str)
         insertDataOption="INSERT_ROWS", body={"values": [[d, k, labels, d] for k in keys]}).execute()
 
 
+def _w(t: str, n: int) -> str:
+    """슬랙 코드블록 표 정렬 — 한글은 2칸으로 센다."""
+    t = str(t)
+    ln = sum(2 if ord(c) > 0x1100 else 1 for c in t)
+    return t + " " * max(0, n - ln)
+
+
 def _fmt_date(ymd: str) -> str:
     return f"{int(ymd[4:6])}/{int(ymd[6:8])}" if len(ymd) == 8 else ymd
 
@@ -188,17 +195,17 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
     """
     total = sum(i["qty"] for g in groups for i in g["items"])
     if kind == "day":
-        lines = [f"*금일 물류 실물 입고 예정이에요* · {len(groups)}건 · {total:,}장",
-                 "_오늘 물류센터에 실물이 들어올 예정으로 통보된 건입니다._",
+        lines = [f"*금일 실물 물류 입고 예정이에요* · {len(groups)}건 · {total:,}장",
+                 "_오늘 물류센터에 실물이 들어올 예정으로 ASN 등록완료된 건입니다._",
                  ""]
     elif kind == "recv":
         rtotal = sum(i["recv"] for g in groups for i in g["items"])
-        lines = [f"*입고 확정 시작됐어요!* · {len(groups)}건 · 확정 {rtotal:,}장 / 통보 {total:,}장",
-                 "_물류센터 검수를 거쳐 WMS 에 입고가 잡히기 시작했습니다._",
+        lines = [f"*실물 물류 입고 시작됐어요!* · {len(groups)}건 · 입고 {rtotal:,}장 / ASN 등록완료 {total:,}장",
+                 "_물류센터 검수를 거쳐 실물 물류 입고가 잡히기 시작했습니다._",
                  ""]
     else:
         lines = [f"*ASN 등록됐어요!* · {len(groups)}건 · {total:,}장",
-                 "_업체가 물류센터로 보냈다고 통보한 건입니다. WMS 입고확정 전 단계예요._",
+                 "_업체가 물류센터로 보내겠다고 ASN 등록완료한 건입니다. 실물 물류 입고 전 단계예요._",
                  ""]
     shown, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
     for g in shown:
@@ -211,30 +218,39 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
         lines.append("")
         # 2줄 = 납품일 + 컬러별 수량(코드 + 한글 컬러명)
         if kind == "day":
+            # 같은 컬러가 여러 차수에 걸치면 더한다.
             merged: dict[str, dict] = {}
             for i in items:
                 m = merged.setdefault(i["color"], {"color": i["color"], "color_nm": i.get("color_nm", ""), "qty": 0})
                 m["qty"] += i["qty"]
                 m["color_nm"] = m["color_nm"] or i.get("color_nm", "")
             cs = sorted(merged.values(), key=lambda x: -x["qty"])
-            colors = " · ".join(
-                f"{c['color']} {c['color_nm']} {c['qty']:,}" if c["color_nm"] else f"{c['color']} {c['qty']:,}"
-                for c in cs)
             n_asn = len(g.get("asns") or [])
-            lines.append(colors + (f"  (계 {sub:,})" if len(cs) > 1 else "")
-                         + (f"  · {n_asn}차 통보" if n_asn > 1 else ""))
+            # ★컬러가 8개까지 가는 품번이 있어 한 줄 나열은 안 읽힌다 → 코드블록 표로.
+            #   실물입고 열은 넣지 않는다 — 이 알림이 나가는 시점엔 WMS 적재가 D-1 이라 전부 0 이다.
+            lines.append("```")
+            lines.append(_w("컬러", 18) + "수량")
+            for c in cs:
+                nm = (f"{c['color']} {c['color_nm']}" if c["color_nm"] else c["color"])
+                lines.append(_w(nm, 18) + f"{c['qty']:,}")
+            if len(cs) > 1:
+                lines.append("-" * 26)
+                lines.append(_w("계", 18) + f"{sub:,}")
+            lines.append("```")
+            if n_asn > 1:
+                lines.append(f"_{n_asn}차에 나눠 ASN 등록된 건입니다._")
         elif kind == "recv":
             rsub = sum(i["recv"] for i in items)
             colors = " · ".join(
                 (f"{i['color']} {i['color_nm']} " if i.get("color_nm") else f"{i['color']} ")
                 + f"{i['recv']:,}/{i['qty']:,}" for i in items)
             pct = f"{100 * rsub / sub:.0f}%" if sub else "—"
-            lines.append(f"물류 실물 입고 {_fmt_date(g['eindt'])} · 확정 {rsub:,} / 통보 {sub:,} ({pct}) · {colors}")
+            lines.append(f"실물 물류 입고 {_fmt_date(g['eindt'])} · 입고 {rsub:,} / ASN {sub:,} ({pct}) · {colors}")
         else:
             colors = " · ".join(
                 f"{i['color']} {i['color_nm']} {i['qty']:,}" if i.get("color_nm") else f"{i['color']} {i['qty']:,}"
                 for i in items)
-            lines.append(f"물류 실물 입고 {_fmt_date(g['eindt'])} 예정 · {colors}"
+            lines.append(f"실물 물류 입고 {_fmt_date(g['eindt'])} 예정 · {colors}"
                          + (f"  (계 {sub:,})" if len(items) > 1 else ""))
         own = g["owners"]
         who = " · ".join(x for x in [
