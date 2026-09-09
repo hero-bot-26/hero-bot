@@ -46,6 +46,14 @@ ALARM_LOG_TAB = "알람발송로그"
 KEY_PREFIX = "asn:"            # ① ASN 등록 알림
 KEY_PREFIX_RECV = "asnrecv:"   # ② 입고확정 시작 알림 — 확정이 처음 잡힌 그때 1회만
 KEY_PREFIX_DAY = "asnday:"     # ③ 금일 입하 예정 브리핑 — 날짜당 1회
+
+# ★실담당자 발송 스위치 — 이 모듈 전용.
+#   `triggers.TEST_ONLY` 를 끄면 IMC 단계 알림 등 **다른 발송까지 같이 풀린다**. 그래서 분리했다.
+#   True  = 담당 MD·디자이너·소싱에게 각자 담당 건만 발송(사용자 결정 2026-09-09)
+#   False = 전부 본인 DM 으로(테스트)
+ASN_LIVE = True
+# 담당자 Slack ID 가 없는 건은 여기로 모아 보낸다(누락을 조용히 삼키지 않기 위해).
+FALLBACK_SLACK_ID = T.TEST_DM_SLACK_ID
 APP_URL = "https://hero-master-app.vercel.app/inbound"
 
 # 알림에 올릴 최소 수량 — 샘플·소량 보충까지 다 울리면 알림이 무뎌진다.
@@ -232,8 +240,8 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
         lines.append(f"_외 {len(rest)}개 STY · {rq:,}장 — 앱에서 전체 보기_")
         lines.append("")
     lines.append(f"<{APP_URL}|앱에서 보기 — 입하 통보 탭>")
-    if T.TEST_ONLY:
-        lines.append("_※ 테스트 모드 — 실운영 전환 시 위 담당자에게 직접 발송됩니다._")
+    if not ASN_LIVE:
+        lines.append("_※ 테스트 모드 — 실운영 전환 시 담당자에게 직접 발송됩니다._")
     return "\n".join(lines)
 
 
@@ -259,15 +267,11 @@ def _recipients(groups):
     return want, {nm: T.OWNER_SLACK_IDS.get(nm) for nm in sorted(want)}
 
 
-def _send(msg, ids, tok) -> bool:
+def _send_one(msg: str, target: str, tok: str) -> bool:
     from soo import persona
-    targets = [T.TEST_DM_SLACK_ID] if T.TEST_ONLY else sorted({v for v in ids.values() if v})
-    ok = False
-    for tgt in targets:
-        ts = persona.send_slack(msg, bot_token=tok, target=tgt, persona=persona.RANKING_BOT)
-        print(f"    발송 {tgt}: {'OK' if ts else '실패'}")
-        ok = ok or bool(ts)
-    return ok
+    ts = persona.send_slack(msg, bot_token=tok, target=target, persona=persona.RANKING_BOT)
+    print(f"    발송 {target}: {'OK' if ts else '실패'}")
+    return bool(ts)
 
 
 def main() -> int:
@@ -345,18 +349,54 @@ def main() -> int:
         if not items:
             continue
         groups = _group(items, owners)
-        msg = build_message(groups, as_of, kind)
         want, ids = _recipients(groups)
-        print(f"  [{label}] 그룹 {len(groups)} · 의도 수신자 {len(want)}명 "
-              f"(Slack ID 있음 {sum(1 for v in ids.values() if v)})")
+
+        # ★수신자별로 '자기 담당 건만' 담아 보낸다 — 한 통에 전 품목을 담으면 남의 상품까지 보게 된다.
+        by_person: dict[str, list] = {}
+        orphan = []
+        for g in groups:
+            own = g["owners"]
+            names = [n for n in (own.get("md"), own.get("ds"), own.get("sc")) if n]
+            sids = {n: T.OWNER_SLACK_IDS.get(n) for n in names}
+            if not any(sids.values()):
+                orphan.append(g)
+                continue
+            for n, sid in sids.items():
+                if sid:
+                    by_person.setdefault(sid, []).append(g)
+        print(f"  [{label}] 그룹 {len(groups)} · 수신자 {len(by_person)}명"
+              + (f" · 담당자 미매핑 {len(orphan)}그룹" if orphan else ""))
+        for sid, gs in sorted(by_person.items()):
+            who = next((n for n, v in T.OWNER_SLACK_IDS.items() if v == sid), sid)
+            print(f"      {who} ({sid}) ← {len(gs)}건")
+
         if not args.send:
-            print("-" * 60); print(msg); print("-" * 60)
+            # 미리보기는 가장 많이 받는 사람 기준으로 한 통만 찍는다(전부 찍으면 로그가 길다).
+            if by_person:
+                top = max(by_person.items(), key=lambda kv: len(kv[1]))
+                who = next((n for n, v in T.OWNER_SLACK_IDS.items() if v == top[0]), top[0])
+                print("-" * 60)
+                print(f"[미리보기] {who} 에게 가는 {len(top[1])}건")
+                print(build_message(top[1], as_of, kind))
+                print("-" * 60)
             continue
-        if not _send(msg, ids, tok):
+
+        ok_any = False
+        for sid, gs in sorted(by_person.items()):
+            tgt = sid if ASN_LIVE else T.TEST_DM_SLACK_ID
+            if _send_one(build_message(gs, as_of, kind), tgt, tok):
+                ok_any = True
+        if orphan:
+            # 담당자를 못 찾은 건은 조용히 버리지 않고 전략팀으로 보낸다.
+            tail = "_※ 담당자 Slack ID 미매핑 — `담당자매핑` 탭에 채우면 자동으로 붙습니다._"
+            msg = build_message(orphan, as_of, kind) + chr(10) + tail
+            if _send_one(msg, FALLBACK_SLACK_ID, tok):
+                ok_any = True
+        if not ok_any:
             print(f"  [{label}] 전 수신자 실패 — 원장에 기록하지 않는다(다음 실행에서 재시도)")
             rc = 1
             continue
-        labels = ("TEST→본인DM · " if T.TEST_ONLY else "") + label + " · 의도: " + (", ".join(sorted(want)) or "미매핑")
+        labels = ("LIVE · " if ASN_LIVE else "TEST→본인DM · ") + label + " · 수신: " + (", ".join(sorted(want)) or "미매핑")
         # ③은 날짜 하나가 키다(건별로 남기면 다음 날 같은 건이 또 통과한다).
         keys = ([f"{prefix}{tkey}"] if kind == "day"
                 else [f"{prefix}{r['asn']}:{r['sku']}" for r in items])
