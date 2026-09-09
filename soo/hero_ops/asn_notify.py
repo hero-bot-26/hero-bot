@@ -54,7 +54,8 @@ KEY_PREFIX_DAY = "asnday:"     # ③ 금일 입하 예정 브리핑 — 날짜�
 ASN_LIVE = True
 # 담당자 Slack ID 가 없는 건은 여기로 모아 보낸다(누락을 조용히 삼키지 않기 위해).
 FALLBACK_SLACK_ID = T.TEST_DM_SLACK_ID
-APP_URL = "https://hero-master-app.vercel.app/inbound"
+# ★`?tab=asn` — 이게 없으면 링크를 눌러도 진입 화면(수량·입고 한눈에)이 뜬다.
+APP_URL = "https://hero-master-app.vercel.app/inbound?tab=asn"
 
 # 알림에 올릴 최소 수량 — 샘플·소량 보충까지 다 울리면 알림이 무뎌진다.
 MIN_QTY = 100
@@ -257,7 +258,7 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
         rq = sum(i["qty"] for g in rest for i in g["items"])
         lines.append(f"_외 {len(rest)}개 STY · {rq:,}장 — 앱에서 전체 보기_")
         lines.append("")
-    lines.append(f"<{APP_URL}|앱에서 보기 — 입하 통보 탭>")
+    lines.append(f"자세한 내용은 대시보드에서 → <{APP_URL}|컬러별 ASN 등록 · 물류 입고 보기>")
     if not ASN_LIVE:
         lines.append("_※ 테스트 모드 — 실운영 전환 시 담당자에게 직접 발송됩니다._")
     return "\n".join(lines)
