@@ -287,12 +287,26 @@ def _group(rows, owners, merge_asn: bool = False):
     return sorted(gmap.values(), key=lambda g: -sum(i["qty"] for i in g["items"]))
 
 
+def _names(v) -> list[str]:
+    """담당자 칸을 사람 목록으로. ★PLM 에 `김지성, 최민아` 처럼 **한 칸에 둘**이 들어오는 경우가 있어
+    그대로 이름으로 쓰면 영원히 미매핑이 된다(실측 5품번)."""
+    import re
+    return [x.strip() for x in re.split(r"[,/·]|\s{2,}", str(v or "")) if x.strip()]
+
+
+def _owner_names(own: dict) -> list[str]:
+    out = []
+    for k in ("md", "ds", "sc"):
+        for nm in _names(own.get(k)):
+            if nm not in out:
+                out.append(nm)
+    return out
+
+
 def _recipients(groups):
     want: set[str] = set()
     for g in groups:
-        for nm in (g["owners"].get("md"), g["owners"].get("ds"), g["owners"].get("sc")):
-            if nm:
-                want.add(nm)
+        want.update(_owner_names(g["owners"]))
     return want, {nm: T.OWNER_SLACK_IDS.get(nm) for nm in sorted(want)}
 
 
@@ -384,8 +398,7 @@ def main() -> int:
         by_person: dict[str, list] = {}
         orphan = []
         for g in groups:
-            own = g["owners"]
-            names = [n for n in (own.get("md"), own.get("ds"), own.get("sc")) if n]
+            names = _owner_names(g["owners"])
             sids = {n: T.OWNER_SLACK_IDS.get(n) for n in names}
             if not any(sids.values()):
                 orphan.append(g)
