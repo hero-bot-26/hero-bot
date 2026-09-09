@@ -43,7 +43,8 @@ from soo.hero_ops.asn_ingest import APP_SHEET_ID, TAB as ASN_TAB
 HERO = Path(__file__).resolve().parents[2]
 PLM_TAB = "데이터"                 # style_no ↔ md_nm/ds_nm/sc_nm
 ALARM_LOG_TAB = "알람발송로그"
-KEY_PREFIX = "asn:"
+KEY_PREFIX = "asn:"            # ① ASN 등록 알림
+KEY_PREFIX_RECV = "asnrecv:"   # ② 입고확정 시작 알림 — 확정이 처음 잡힌 그때 1회만
 APP_URL = "https://hero-master-app.vercel.app/inbound"
 
 # 알림에 올릴 최소 수량 — 샘플·소량 보충까지 다 울리면 알림이 무뎌진다.
@@ -55,9 +56,21 @@ SINCE_DAYS = 2
 MAX_GROUPS = 12
 
 
+def _last_col() -> str:
+    """`_ASN` 탭의 마지막 열 문자 — 수집기 HEADER 길이에서 유도(열이 늘어도 안 밀린다)."""
+    from soo.hero_ops.asn_ingest import HEADER
+    n = len(HEADER)
+    s = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
 def load_asn_rows(sheets) -> list[dict]:
     vals = sheets.spreadsheets().values().get(
-        spreadsheetId=APP_SHEET_ID, range=f"'{ASN_TAB}'!A2:S",
+        # ★범위는 헤더 길이에서 유도한다 — 열이 늘 때 여기를 안 고쳐 recv_dates 가 통째로 잘렸다.
+        spreadsheetId=APP_SHEET_ID, range=f"'{ASN_TAB}'!A2:{_last_col()}",
         valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
     if len(vals) < 2:
         return []
@@ -85,8 +98,17 @@ def load_asn_rows(sheets) -> list[dict]:
             "supplier": str(g("supplier")).strip(),
             "warehouse": str(g("warehouse")).strip(),
             "ins_at": str(g("ins_at")).strip(),
+            "recv": int(_num(g("recv_qty"))),
+            "recv_dates": str(g("recv_dates")).strip(),
         })
     return out
+
+
+def _num(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def load_owners(sheets) -> dict[str, dict]:
@@ -127,7 +149,7 @@ def load_sent_keys(sheets) -> set[str]:
         # 원장을 못 읽으면 중복 발송 위험이 있으므로 멈춘다(조용히 다 보내는 게 최악).
         raise RuntimeError(f"발송 원장을 읽지 못했다 — 중복 발송 방지 불가: {e}") from e
     return {str(r[1]).strip() for r in res.get("values", [])
-            if len(r) >= 2 and str(r[1]).strip().startswith(KEY_PREFIX)}
+            if len(r) >= 2 and str(r[1]).strip().startswith(("asn:", "asnrecv:"))}
 
 
 def record_sent_bulk(sheets, as_of: datetime.date, keys: list[str], labels: str) -> None:
@@ -149,13 +171,22 @@ def _short_wh(w: str) -> str:
     return re.sub(r"^무신사\s*물류센터_?", "", w or "") or "물류센터"
 
 
-def build_message(groups: list[dict], as_of: datetime.date) -> str:
-    """STY 단위로 묶은 메시지. 컬러는 한 줄에 몰아 쓴다(행이 길면 안 읽힌다)."""
-    n_sku = sum(len(g["items"]) for g in groups)
+def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -> str:
+    """STY 단위로 묶은 메시지. 컬러는 한 줄에 몰아 쓴다(행이 길면 안 읽힌다).
+
+    kind='asn'  → "ASN 등록됐어요!"   (업체가 보내겠다고 통보)
+    kind='recv' → "입고 확정 시작됐어요!" (WMS 에 입고확정이 처음 잡힘 — ★그때 1회만)
+    """
     total = sum(i["qty"] for g in groups for i in g["items"])
-    lines = [f"*ASN 등록됐어요!* · {len(groups)}건 · {total:,}장",
-             "_업체가 물류센터로 보냈다고 통보한 건입니다. WMS 입고확정 전 단계예요._",
-             ""]
+    if kind == "recv":
+        rtotal = sum(i["recv"] for g in groups for i in g["items"])
+        lines = [f"*입고 확정 시작됐어요!* · {len(groups)}건 · 확정 {rtotal:,}장 / 통보 {total:,}장",
+                 "_물류센터 검수를 거쳐 WMS 에 입고가 잡히기 시작했습니다._",
+                 ""]
+    else:
+        lines = [f"*ASN 등록됐어요!* · {len(groups)}건 · {total:,}장",
+                 "_업체가 물류센터로 보냈다고 통보한 건입니다. WMS 입고확정 전 단계예요._",
+                 ""]
     shown, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
     for g in shown:
         items = sorted(g["items"], key=lambda x: -x["qty"])
@@ -166,11 +197,19 @@ def build_message(groups: list[dict], as_of: datetime.date) -> str:
         lines.append(head)
         lines.append("")
         # 2줄 = 납품일 + 컬러별 수량(코드 + 한글 컬러명)
-        colors = " · ".join(
-            f"{i['color']} {i['color_nm']} {i['qty']:,}" if i.get("color_nm") else f"{i['color']} {i['qty']:,}"
-            for i in items)
-        lines.append(f"납품 {_fmt_date(g['eindt'])} 예정 · {colors}"
-                     + (f"  (계 {sub:,})" if len(items) > 1 else ""))
+        if kind == "recv":
+            rsub = sum(i["recv"] for i in items)
+            colors = " · ".join(
+                (f"{i['color']} {i['color_nm']} " if i.get("color_nm") else f"{i['color']} ")
+                + f"{i['recv']:,}/{i['qty']:,}" for i in items)
+            pct = f"{100 * rsub / sub:.0f}%" if sub else "—"
+            lines.append(f"납품 {_fmt_date(g['eindt'])} · 확정 {rsub:,} / 통보 {sub:,} ({pct}) · {colors}")
+        else:
+            colors = " · ".join(
+                f"{i['color']} {i['color_nm']} {i['qty']:,}" if i.get("color_nm") else f"{i['color']} {i['qty']:,}"
+                for i in items)
+            lines.append(f"납품 {_fmt_date(g['eindt'])} 예정 · {colors}"
+                         + (f"  (계 {sub:,})" if len(items) > 1 else ""))
         own = g["owners"]
         who = " · ".join(x for x in [
             f"MD {own['md']}" if own.get("md") else "",
@@ -188,13 +227,46 @@ def build_message(groups: list[dict], as_of: datetime.date) -> str:
     return "\n".join(lines)
 
 
+def _group(rows, owners):
+    """STY × 납품일 × ASN 으로 묶는다(같은 STY라도 차수가 다르면 따로 알린다)."""
+    gmap: dict[tuple, dict] = {}
+    for r in rows:
+        k = (r["style"], r["eindt"], r["asn"])
+        g = gmap.setdefault(k, {"style": r["style"], "eindt": r["eindt"], "asn": r["asn"],
+                                "hero": r["hero"], "name": r["name"], "supplier": r["supplier"],
+                                "warehouse": r["warehouse"],
+                                "owners": owners.get(r["style"], {}), "items": []})
+        g["items"].append(r)
+    return sorted(gmap.values(), key=lambda g: -sum(i["qty"] for i in g["items"]))
+
+
+def _recipients(groups):
+    want: set[str] = set()
+    for g in groups:
+        for nm in (g["owners"].get("md"), g["owners"].get("ds"), g["owners"].get("sc")):
+            if nm:
+                want.add(nm)
+    return want, {nm: T.OWNER_SLACK_IDS.get(nm) for nm in sorted(want)}
+
+
+def _send(msg, ids, tok) -> bool:
+    from soo import persona
+    targets = [T.TEST_DM_SLACK_ID] if T.TEST_ONLY else sorted({v for v in ids.values() if v})
+    ok = False
+    for tgt in targets:
+        ts = persona.send_slack(msg, bot_token=tok, target=tgt, persona=persona.RANKING_BOT)
+        print(f"    발송 {tgt}: {'OK' if ts else '실패'}")
+        ok = ok or bool(ts)
+    return ok
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--send", action="store_true", help="실제 발송(기본은 드라이런)")
     ap.add_argument("--all", action="store_true", help="원장 무시하고 전건 재발송(수동 복구용)")
     ap.add_argument("--min-qty", type=int, default=MIN_QTY)
     ap.add_argument("--since-days", type=int, default=SINCE_DAYS,
-                    help="최근 N일 안에 등록된 ASN 만 대상(백필 방지). 0=제한 없음")
+                    help="최근 N일 안에 등록/확정된 건만 대상(백필 방지). 0=제한 없음")
     args = ap.parse_args()
 
     as_of = datetime.date.today()
@@ -211,67 +283,64 @@ def main() -> int:
     since = ""
     if args.since_days > 0:
         since = (as_of - datetime.timedelta(days=args.since_days)).strftime("%Y%m%d")
+
+    # ① ASN 등록 — 통보가 처음 뜬 건
     fresh = [r for r in rows
              if f"{KEY_PREFIX}{r['asn']}:{r['sku']}" not in sent
              and r["qty"] >= args.min_qty
              and (not since or (r["ins_at"] or "")[:8] >= since)]
-    print(f"[ASN알림] 전체 {len(rows)}행 · 기발송 {len(sent)} · 신규 {len(fresh)}건 "
-          f"(최소수량 {args.min_qty} · 등록일 {since or '전체'} 이후)")
-    if not fresh:
-        print("[ASN알림] 새 통보 없음 — 발송 안 함")
+    # ② 입고 확정 시작 — 확정이 처음 잡힌 건. ★그때 1회만 보내고 이후 진행·완료는 알리지 않는다
+    #   (사용자 지시 2026-09-09). 기준일은 등록일이 아니라 **실입고일**(recv_dates 최댓값).
+    def _last_recv(r):
+        ds = [d.strip() for d in (r.get("recv_dates") or "").split(",") if d.strip()]
+        return max(ds) if ds else ""
+    recvd = [r for r in rows
+             if r["recv"] > 0
+             and f"{KEY_PREFIX_RECV}{r['asn']}:{r['sku']}" not in sent
+             and r["qty"] >= args.min_qty
+             and (not since or _last_recv(r) >= since)]
+
+    print(f"[ASN알림] 전체 {len(rows)}행 · 기발송키 {len(sent)} "
+          f"· 신규 통보 {len(fresh)}건 · 확정 시작 {len(recvd)}건 "
+          f"(최소수량 {args.min_qty} · {since or '전체'} 이후)")
+    if not fresh and not recvd:
+        print("[ASN알림] 보낼 것 없음")
         return 0
 
-    # STY × 납품일 × ASN 으로 묶는다(같은 STY라도 차수가 다르면 따로 알린다).
-    gmap: dict[tuple, dict] = {}
-    for r in fresh:
-        k = (r["style"], r["eindt"], r["asn"])
-        g = gmap.setdefault(k, {"style": r["style"], "eindt": r["eindt"], "asn": r["asn"],
-                                "hero": r["hero"], "name": r["name"], "supplier": r["supplier"],
-                                "warehouse": r["warehouse"],
-                                "owners": owners.get(r["style"], {}), "items": []})
-        g["items"].append(r)
-    groups = sorted(gmap.values(), key=lambda g: (-sum(i["qty"] for i in g["items"])))
+    tok = ""
+    if args.send:
+        import os
+        tok = os.environ.get("SLACK_BOT_TOKEN", "").strip() or (T._slack_token() or "")
+        if not tok:
+            print("[ASN알림] SLACK_BOT_TOKEN 없음 — 발송 스킵(원장도 기록하지 않는다)")
+            return 0
 
-    msg = build_message(groups, as_of)
-    # 의도한 수신자(담당자 3인) — 하드락이 풀리면 이 목록으로 나간다.
-    want: set[str] = set()
-    for g in groups:
-        for nm in (g["owners"].get("md"), g["owners"].get("ds"), g["owners"].get("sc")):
-            if nm:
-                want.add(nm)
-    ids = {nm: T.OWNER_SLACK_IDS.get(nm) for nm in sorted(want)}
-    print(f"[ASN알림] 그룹 {len(groups)} · 의도 수신자 {len(want)}명 "
-          f"(Slack ID 있음 {sum(1 for v in ids.values() if v)})")
-    for nm, sid in ids.items():
-        print(f"    {nm}: {sid or '— 미매핑'}")
+    rc = 0
+    # ★두 알림은 따로 나간다(사용자 지시) — 성격이 다르고, 한쪽 실패가 다른 쪽 원장을 오염시키지 않는다.
+    for kind, items, prefix, label in (
+            ("asn",  fresh, KEY_PREFIX,      "ASN 등록"),
+            ("recv", recvd, KEY_PREFIX_RECV, "입고 확정 시작")):
+        if not items:
+            continue
+        groups = _group(items, owners)
+        msg = build_message(groups, as_of, kind)
+        want, ids = _recipients(groups)
+        print(f"  [{label}] 그룹 {len(groups)} · 의도 수신자 {len(want)}명 "
+              f"(Slack ID 있음 {sum(1 for v in ids.values() if v)})")
+        if not args.send:
+            print("-" * 60); print(msg); print("-" * 60)
+            continue
+        if not _send(msg, ids, tok):
+            print(f"  [{label}] 전 수신자 실패 — 원장에 기록하지 않는다(다음 실행에서 재시도)")
+            rc = 1
+            continue
+        labels = ("TEST→본인DM · " if T.TEST_ONLY else "") + label + " · 의도: " + (", ".join(sorted(want)) or "미매핑")
+        record_sent_bulk(sheets, as_of, [f"{prefix}{r['asn']}:{r['sku']}" for r in items], labels)
+        print(f"  [{label}] 원장 기록 {len(items)}건")
 
     if not args.send:
-        print("-" * 60)
-        print(msg)
-        print("-" * 60)
         print("[ASN알림] 드라이런 — 보내려면 --send")
-        return 0
-
-    import os
-    tok = os.environ.get("SLACK_BOT_TOKEN", "").strip() or (T._slack_token() or "")
-    if not tok:
-        print("[ASN알림] SLACK_BOT_TOKEN 없음 — 발송 스킵(원장도 기록하지 않는다)")
-        return 0
-    from soo import persona
-    targets = [T.TEST_DM_SLACK_ID] if T.TEST_ONLY else sorted({v for v in ids.values() if v})
-    ok = False
-    for tgt in targets:
-        ts = persona.send_slack(msg, bot_token=tok, target=tgt, persona=persona.RANKING_BOT)
-        print(f"[ASN알림] 발송 {tgt}: {'OK' if ts else '실패'}")
-        ok = ok or bool(ts)
-
-    if not ok:
-        print("[ASN알림] 전 수신자 실패 — 원장에 기록하지 않는다(다음 실행에서 재시도)")
-        return 1
-    labels = ("TEST→본인DM · 의도: " if T.TEST_ONLY else "의도: ") + (", ".join(sorted(want)) or "미매핑")
-    record_sent_bulk(sheets, as_of, [f"{KEY_PREFIX}{r['asn']}:{r['sku']}" for r in fresh], labels)
-    print(f"[ASN알림] 원장 기록 {len(fresh)}건")
-    return 0
+    return rc
 
 
 if __name__ == "__main__":
