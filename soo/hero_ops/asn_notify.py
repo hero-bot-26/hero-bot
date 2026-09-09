@@ -54,6 +54,9 @@ KEY_PREFIX_DAY = "asnday:"     # ③ 금일 입하 예정 브리핑 — 날짜�
 ASN_LIVE = True
 # 담당자 Slack ID 가 없는 건은 여기로 모아 보낸다(누락을 조용히 삼키지 않기 위해).
 FALLBACK_SLACK_ID = T.TEST_DM_SLACK_ID
+# ★전략팀 전체 사본 — 담당자별 발송과 별개로 **전 건을 한 통**으로 더 받는다
+#   (사용자 요청 2026-09-09 "당분간 나도 알아야 하니까"). 끄려면 None.
+DIGEST_SLACK_ID = T.TEST_DM_SLACK_ID
 # ★`?tab=asn` — 이게 없으면 링크를 눌러도 진입 화면(수량·입고 한눈에)이 뜬다.
 APP_URL = "https://hero-master-app.vercel.app/inbound?tab=asn"
 
@@ -411,6 +414,11 @@ def main() -> int:
         for sid, gs in sorted(by_person.items()):
             tgt = sid if ASN_LIVE else T.TEST_DM_SLACK_ID
             if _send_one(build_message(gs, as_of, kind), tgt, tok):
+                ok_any = True
+        # 전략팀 전체 사본 — 담당자에게 쪼개 보낸 것과 별개로 전 건을 한 통에.
+        if DIGEST_SLACK_ID:
+            dmsg = build_message(groups, as_of, kind) + chr(10) + "_전체 사본 · 담당자에게는 각자 담당 건만 갑니다._"
+            if _send_one(dmsg, DIGEST_SLACK_ID, tok):
                 ok_any = True
         if orphan:
             # 담당자를 못 찾은 건은 조용히 버리지 않고 전략팀으로 보낸다.
