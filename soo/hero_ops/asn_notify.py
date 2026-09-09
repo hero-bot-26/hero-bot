@@ -78,6 +78,7 @@ def load_asn_rows(sheets) -> list[dict]:
         out.append({
             "asn": str(g("asn_no")).strip(), "sku": sku,
             "style": str(g("style")).strip(), "color": str(g("color")).strip(),
+            "color_nm": str(g("color_nm")).strip(),
             "hero": str(g("hero")).strip(), "name": str(g("name")).strip(),
             "eindt": str(g("eindt")).strip().split(".")[0],
             "qty": qty,
@@ -152,24 +153,30 @@ def build_message(groups: list[dict], as_of: datetime.date) -> str:
     """STY 단위로 묶은 메시지. 컬러는 한 줄에 몰아 쓴다(행이 길면 안 읽힌다)."""
     n_sku = sum(len(g["items"]) for g in groups)
     total = sum(i["qty"] for g in groups for i in g["items"])
-    lines = [f"*입하 통보* · 신규 {n_sku}건 · {total:,}장",
-             "_업체가 물류센터로 보낸 건입니다. WMS 입고확정 전 단계라 앱 '입고확정'에는 아직 안 잡힙니다._",
+    lines = [f"*ASN 등록됐어요!* · {len(groups)}건 · {total:,}장",
+             "_업체가 물류센터로 보냈다고 통보한 건입니다. WMS 입고확정 전 단계예요._",
              ""]
     shown, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
     for g in shown:
         items = sorted(g["items"], key=lambda x: -x["qty"])
         sub = sum(i["qty"] for i in items)
-        head = f"*{g['hero']}* · `{g['style']}` {g['name']}" if g["hero"] else f"`{g['style']}` {g['name']}"
+        # 1줄 = 히어로 / 상품코드 / 상품명 / 업체
+        head = " / ".join(x for x in [
+            f"*{g['hero']}*" if g["hero"] else "", f"`{g['style']}`", g["name"], g["supplier"]] if x)
         lines.append(head)
-        lines.append(f"납품 {_fmt_date(g['eindt'])} · {g['supplier']} → {_short_wh(g['warehouse'])}")
-        colors = " · ".join(f"{i['color']} {i['qty']:,}" for i in items)
-        lines.append(f"• {colors}" + (f"  (계 {sub:,})" if len(items) > 1 else ""))
+        lines.append("")
+        # 2줄 = 납품일 + 컬러별 수량(코드 + 한글 컬러명)
+        colors = " · ".join(
+            f"{i['color']} {i['color_nm']} {i['qty']:,}" if i.get("color_nm") else f"{i['color']} {i['qty']:,}"
+            for i in items)
+        lines.append(f"납품 {_fmt_date(g['eindt'])} 예정 · {colors}"
+                     + (f"  (계 {sub:,})" if len(items) > 1 else ""))
         own = g["owners"]
         who = " · ".join(x for x in [
             f"MD {own['md']}" if own.get("md") else "",
             f"디자이너 {own['ds']}" if own.get("ds") else "",
             f"소싱 {own['sc']}" if own.get("sc") else ""] if x)
-        lines.append(f"→ {who}" if who else "→ _담당자 미매핑_")
+        lines.append(f"_→ {who}_" if who else "_→ 담당자 미매핑_")
         lines.append("")
     if rest:
         rq = sum(i["qty"] for g in rest for i in g["items"])

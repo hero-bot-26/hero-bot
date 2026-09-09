@@ -56,7 +56,7 @@ TAB = "_ASN"
 # 며칠치를 담을까 — 화면은 최근 것만 보지만, 뒤늦게 확정되는 건이 있어 넉넉히 본다.
 LOOKBACK_DAYS = 45
 
-HEADER = ["asn_no", "po_no", "po_cnt", "sku", "style", "color", "hero", "name",
+HEADER = ["asn_no", "po_no", "po_cnt", "sku", "style", "color", "color_nm", "hero", "name",
           "eindt", "qty", "po_qty", "remain", "supplier", "warehouse",
           "sts", "ins_at", "upd_at", "recv_qty", "recv_dates"]
 
@@ -94,6 +94,13 @@ WITH asn AS (
     AND EINDT >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {int(lookback)}), 'yyyyMMdd')
   GROUP BY DELVNO, 2, 3, 4, EINDT
 ),
+color AS (
+  -- 컬러코드 → 한글 컬러명. ★`mutandard_color_cd` 는 color_cd 가 중복될 수 있어(2행 5개·59행 1개)
+  --   그냥 조인하면 ASN 행이 증식한다 — 코드당 하나로 접어서 붙인다.
+  SELECT color_cd, max(color_kor) color_nm
+  FROM gspread.musinsastandard.mutandard_color_cd
+  WHERE nullif(trim(color_cd),'') IS NOT NULL GROUP BY 1
+),
 wms AS (
   SELECT STL_NO sku, ACT_DATE, sum(ACT_QTY) qty
   FROM pbo.moms.ui_grreport_detail
@@ -102,11 +109,12 @@ wms AS (
     AND split_part(STL_NO, '-', 1) IN ({in_styles})
   GROUP BY 1, 2
 )
-SELECT a.DELVNO, a.po_no, a.po_cnt, a.sku, a.style, a.color, a.name, a.EINDT,
+SELECT a.DELVNO, a.po_no, a.po_cnt, a.sku, a.style, a.color, max(c.color_nm) color_nm, a.name, a.EINDT,
        a.qty, a.po_qty, a.remain, a.supplier, a.warehouse, a.sts, a.ins_at, a.upd_at,
        coalesce(sum(w.qty), 0) recv_qty,
        concat_ws(',', sort_array(collect_set(w.ACT_DATE))) recv_dates
 FROM asn a
+LEFT JOIN color c ON c.color_cd = a.color
 LEFT JOIN wms w
        ON w.sku = a.sku
       AND abs(datediff(to_date(w.ACT_DATE,'yyyyMMdd'), to_date(a.EINDT,'yyyyMMdd'))) <= 3
@@ -122,6 +130,20 @@ ORDER BY a.EINDT DESC, a.ins_at DESC, a.sku
     return rows
 
 
+def _clean_name(name: str | None) -> str:
+    """상품명 끝의 `[컬러명]` 꼬리를 뗀다.
+
+    ★원천 `MAKTX` 가 **40자에서 잘린다**(809건 중 8건이 한계). 잘리는 건 대개 뒤에 붙은
+      컬러 표기라 `…긴소매 티셔츠 [머드 그` 처럼 남는다. 컬러는 별도 열(color_nm)로 들고 있으니
+      꼬리를 떼는 게 낫다 — 닫는 괄호가 없어도(잘린 경우) 마지막 여는 괄호부터 끝까지 지운다.
+    """
+    t = (name or "").strip()
+    import re
+    t = re.sub(r"\s*\[[^\[\]]*\]\s*$", "", t)   # 온전한 [컬러]
+    t = re.sub(r"\s*\[[^\[\]]*$", "", t)          # 잘린 [컬러…
+    return t.strip()
+
+
 def _num(v) -> float:
     try:
         return float(v)
@@ -132,12 +154,13 @@ def _num(v) -> float:
 def to_grid(rows: list[list], p2h: dict[str, str]) -> list[list]:
     out = []
     for r in rows:
-        (delvno, po_no, po_cnt, sku, style, color, name, eindt,
+        (delvno, po_no, po_cnt, sku, style, color, color_nm, name, eindt,
          qty, po_qty, remain, supplier, warehouse, sts, ins_at, upd_at,
          recv_qty, recv_dates) = r
         out.append([
             delvno or "", po_no or "", int(_num(po_cnt)), sku or "", style or "", color or "",
-            p2h.get(style or "", ""), (name or "").strip(),
+            (color_nm or "").strip(),
+            p2h.get(style or "", ""), _clean_name(name),
             eindt or "",
             int(_num(qty)), int(_num(po_qty)), int(_num(remain)),
             (supplier or "").strip(), (warehouse or "").strip(), (sts or "").strip(),
@@ -168,7 +191,7 @@ def write_tab(sheets, sheet_id: str, grid: list[list], as_of: str) -> None:
     body = [[label] + [""] * (len(HEADER) - 1), HEADER] + grid
     # 이전 실행이 더 길었을 수 있으니 뒤를 비운다(잔재 행이 남으면 화면에 유령 ASN 이 뜬다).
     sheets.spreadsheets().values().clear(
-        spreadsheetId=sheet_id, range=f"'{TAB}'!A1:S", body={}).execute()
+        spreadsheetId=sheet_id, range=f"'{TAB}'!A1:T", body={}).execute()
     sheets.spreadsheets().values().update(
         spreadsheetId=sheet_id, range=f"'{TAB}'!A1",
         valueInputOption="RAW", body={"values": body}).execute()
@@ -182,7 +205,7 @@ def load_asn_from_sheet(sheets, sheet_id: str = APP_SHEET_ID, cutoff: str | None
     """
     try:
         vals = sheets.spreadsheets().values().get(
-            spreadsheetId=sheet_id, range=f"'{TAB}'!A2:S",
+            spreadsheetId=sheet_id, range=f"'{TAB}'!A2:T",
             valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
     except Exception as e:
         print(f"[_ASN] 읽기 실패 → ASN 게이트 없이 진행: {type(e).__name__}: {e}")
@@ -219,13 +242,16 @@ def load_asn_from_sheet(sheets, sheet_id: str = APP_SHEET_ID, cutoff: str | None
     return out
 
 
+C = {h: i for i, h in enumerate(HEADER)}       # 열 위치는 HEADER 에서 유도한다(열 추가에 안 밀리게)
+
+
 def summarize(grid: list[list]) -> str:
     today = datetime.date.today().strftime("%Y%m%d")
-    new_today = [g for g in grid if (g[15] or "")[:8] == today]
-    pending = [g for g in grid if g[17] == 0]
-    heroes = sorted({g[6] for g in grid if g[6]})
+    new_today = [g for g in grid if str(g[C["ins_at"]] or "")[:8] == today]
+    pending = [g for g in grid if g[C["recv_qty"]] == 0]
+    heroes = sorted({g[C["hero"]] for g in grid if g[C["hero"]]})
     return (f"ASN {len(grid)}행 · 히어로 {len(heroes)}종 · 오늘 등록 {len(new_today)}건 "
-            f"· 입고확정 미반영 {len(pending)}건 {sum(g[9] for g in pending):,}장")
+            f"· 입고확정 미반영 {len(pending)}건 {sum(g[C['qty']] for g in pending):,}장")
 
 
 def main() -> None:
@@ -245,8 +271,9 @@ def main() -> None:
 
     if not args.apply:
         for g in grid[:8]:
-            print("   ", g[8], g[6], g[3], f"{g[9]:,}장", g[12], g[13],
-                  "확정대기" if g[17] == 0 else f"입고 {g[17]:,}")
+            print("   ", g[C["eindt"]], g[C["hero"]], g[C["sku"]], g[C["color_nm"]],
+                  f"{g[C['qty']]:,}장", g[C["supplier"]], g[C["warehouse"]],
+                  "확정대기" if g[C["recv_qty"]] == 0 else f"입고 {g[C['recv_qty']]:,}")
         print("[_ASN] 드라이런 — 기입하려면 --apply")
         return
 
@@ -254,7 +281,7 @@ def main() -> None:
     write_tab(sheets, APP_SHEET_ID, grid, as_of)
     # 되읽어 검증 — 응답이 아니라 결과로 판정한다([[CLAUDE 1-16]]).
     back = sheets.spreadsheets().values().get(
-        spreadsheetId=APP_SHEET_ID, range=f"'{TAB}'!A1:S",
+        spreadsheetId=APP_SHEET_ID, range=f"'{TAB}'!A1:T",
         valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
     got = len(back) - 2
     if got != len(grid):
