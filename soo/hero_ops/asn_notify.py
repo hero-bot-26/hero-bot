@@ -45,6 +45,7 @@ PLM_TAB = "데이터"                 # style_no ↔ md_nm/ds_nm/sc_nm
 ALARM_LOG_TAB = "알람발송로그"
 KEY_PREFIX = "asn:"            # ① ASN 등록 알림
 KEY_PREFIX_RECV = "asnrecv:"   # ② 입고확정 시작 알림 — 확정이 처음 잡힌 그때 1회만
+KEY_PREFIX_DAY = "asnday:"     # ③ 금일 입하 예정 브리핑 — 날짜당 1회
 APP_URL = "https://hero-master-app.vercel.app/inbound"
 
 # 알림에 올릴 최소 수량 — 샘플·소량 보충까지 다 울리면 알림이 무뎌진다.
@@ -149,7 +150,7 @@ def load_sent_keys(sheets) -> set[str]:
         # 원장을 못 읽으면 중복 발송 위험이 있으므로 멈춘다(조용히 다 보내는 게 최악).
         raise RuntimeError(f"발송 원장을 읽지 못했다 — 중복 발송 방지 불가: {e}") from e
     return {str(r[1]).strip() for r in res.get("values", [])
-            if len(r) >= 2 and str(r[1]).strip().startswith(("asn:", "asnrecv:"))}
+            if len(r) >= 2 and str(r[1]).strip().startswith(("asn:", "asnrecv:", "asnday:"))}
 
 
 def record_sent_bulk(sheets, as_of: datetime.date, keys: list[str], labels: str) -> None:
@@ -178,7 +179,11 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
     kind='recv' → "입고 확정 시작됐어요!" (WMS 에 입고확정이 처음 잡힘 — ★그때 1회만)
     """
     total = sum(i["qty"] for g in groups for i in g["items"])
-    if kind == "recv":
+    if kind == "day":
+        lines = [f"*금일 입하 예정이에요* · {len(groups)}건 · {total:,}장",
+                 "_오늘 물류센터에 들어올 예정으로 통보된 건입니다._",
+                 ""]
+    elif kind == "recv":
         rtotal = sum(i["recv"] for g in groups for i in g["items"])
         lines = [f"*입고 확정 시작됐어요!* · {len(groups)}건 · 확정 {rtotal:,}장 / 통보 {total:,}장",
                  "_물류센터 검수를 거쳐 WMS 에 입고가 잡히기 시작했습니다._",
@@ -197,18 +202,23 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
         lines.append(head)
         lines.append("")
         # 2줄 = 납품일 + 컬러별 수량(코드 + 한글 컬러명)
-        if kind == "recv":
+        if kind == "day":
+            colors = " · ".join(
+                f"{i['color']} {i['color_nm']} {i['qty']:,}" if i.get("color_nm") else f"{i['color']} {i['qty']:,}"
+                for i in items)
+            lines.append(colors + (f"  (계 {sub:,})" if len(items) > 1 else ""))
+        elif kind == "recv":
             rsub = sum(i["recv"] for i in items)
             colors = " · ".join(
                 (f"{i['color']} {i['color_nm']} " if i.get("color_nm") else f"{i['color']} ")
                 + f"{i['recv']:,}/{i['qty']:,}" for i in items)
             pct = f"{100 * rsub / sub:.0f}%" if sub else "—"
-            lines.append(f"납품 {_fmt_date(g['eindt'])} · 확정 {rsub:,} / 통보 {sub:,} ({pct}) · {colors}")
+            lines.append(f"입하 {_fmt_date(g['eindt'])} · 확정 {rsub:,} / 통보 {sub:,} ({pct}) · {colors}")
         else:
             colors = " · ".join(
                 f"{i['color']} {i['color_nm']} {i['qty']:,}" if i.get("color_nm") else f"{i['color']} {i['qty']:,}"
                 for i in items)
-            lines.append(f"납품 {_fmt_date(g['eindt'])} 예정 · {colors}"
+            lines.append(f"입하 {_fmt_date(g['eindt'])} 예정 · {colors}"
                          + (f"  (계 {sub:,})" if len(items) > 1 else ""))
         own = g["owners"]
         who = " · ".join(x for x in [
@@ -265,6 +275,9 @@ def main() -> int:
     ap.add_argument("--send", action="store_true", help="실제 발송(기본은 드라이런)")
     ap.add_argument("--all", action="store_true", help="원장 무시하고 전건 재발송(수동 복구용)")
     ap.add_argument("--min-qty", type=int, default=MIN_QTY)
+    ap.add_argument("--with-recv", action="store_true",
+                    help="'입고 확정 시작' 알림도 보낸다(기본 꺼짐 — 사용자 결정 2026-09-09: "
+                         "알림은 'ASN 등록'과 '금일 입하' 둘로)")
     ap.add_argument("--since-days", type=int, default=SINCE_DAYS,
                     help="최근 N일 안에 등록/확정된 건만 대상(백필 방지). 0=제한 없음")
     args = ap.parse_args()
@@ -294,16 +307,24 @@ def main() -> int:
     def _last_recv(r):
         ds = [d.strip() for d in (r.get("recv_dates") or "").split(",") if d.strip()]
         return max(ds) if ds else ""
-    recvd = [r for r in rows
+    recvd = [] if not args.with_recv else [
+             r for r in rows
              if r["recv"] > 0
              and f"{KEY_PREFIX_RECV}{r['asn']}:{r['sku']}" not in sent
              and r["qty"] >= args.min_qty
              and (not since or _last_recv(r) >= since)]
 
+
+    # ③ 금일 입하 예정 — 오늘 들어올 것 전체를 한 번. ★날짜당 1회(키에 날짜를 쓴다).
+    #   등록 알림(①)과 절반쯤 겹치지만 역할이 다르다 — ①은 개별 이벤트, ③은 그날 전체 그림.
+    tkey = as_of.strftime("%Y%m%d")
+    today_rows = ([] if f"{KEY_PREFIX_DAY}{tkey}" in sent else
+                  [r for r in rows if r["eindt"] == tkey and r["qty"] >= args.min_qty])
+
     print(f"[ASN알림] 전체 {len(rows)}행 · 기발송키 {len(sent)} "
-          f"· 신규 통보 {len(fresh)}건 · 확정 시작 {len(recvd)}건 "
+          f"· 신규 통보 {len(fresh)}건 · 확정 시작 {len(recvd)}건 · 금일 입하 {len(today_rows)}건 "
           f"(최소수량 {args.min_qty} · {since or '전체'} 이후)")
-    if not fresh and not recvd:
+    if not fresh and not recvd and not today_rows:
         print("[ASN알림] 보낼 것 없음")
         return 0
 
@@ -318,8 +339,9 @@ def main() -> int:
     rc = 0
     # ★두 알림은 따로 나간다(사용자 지시) — 성격이 다르고, 한쪽 실패가 다른 쪽 원장을 오염시키지 않는다.
     for kind, items, prefix, label in (
-            ("asn",  fresh, KEY_PREFIX,      "ASN 등록"),
-            ("recv", recvd, KEY_PREFIX_RECV, "입고 확정 시작")):
+            ("day",  today_rows, KEY_PREFIX_DAY,  "금일 입하 예정"),
+            ("asn",  fresh,      KEY_PREFIX,      "ASN 등록"),
+            ("recv", recvd,      KEY_PREFIX_RECV, "입고 확정 시작")):
         if not items:
             continue
         groups = _group(items, owners)
@@ -335,8 +357,11 @@ def main() -> int:
             rc = 1
             continue
         labels = ("TEST→본인DM · " if T.TEST_ONLY else "") + label + " · 의도: " + (", ".join(sorted(want)) or "미매핑")
-        record_sent_bulk(sheets, as_of, [f"{prefix}{r['asn']}:{r['sku']}" for r in items], labels)
-        print(f"  [{label}] 원장 기록 {len(items)}건")
+        # ③은 날짜 하나가 키다(건별로 남기면 다음 날 같은 건이 또 통과한다).
+        keys = ([f"{prefix}{tkey}"] if kind == "day"
+                else [f"{prefix}{r['asn']}:{r['sku']}" for r in items])
+        record_sent_bulk(sheets, as_of, keys, labels)
+        print(f"  [{label}] 원장 기록 {len(keys)}건")
 
     if not args.send:
         print("[ASN알림] 드라이런 — 보내려면 --send")
