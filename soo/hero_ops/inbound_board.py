@@ -208,7 +208,7 @@ def load_dbx_actuals(sheets, sheet_id=SALES_SHEET_ID, tab="입고일자별"):
     return dict(out)
 
 
-def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
+def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, asn=None):
     as_of = as_of or datetime.date.today()
     p2h = build_pumbon2hero(sheets)
     prod = _read_prod_columns(sheets)
@@ -328,6 +328,10 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
                     break
             # ★상태 = 입고예정 대비 입고확정(WMS) 진행. 예정일 경과만으론 빨간불이 아니다.
             #   확정 0 & 경과 < 유예 → '확정 대기'(회색) / 유예 경과 → '미입고'(빨강)
+            # ASN(입하 통보) — 컷오프 이후 이 SKU 앞으로 통보된 물량. 게이트·배지용이며 수량 집계엔 안 쓴다.
+            _asn = (asn or {}).get(code) or (asn or {}).get(c["style"]) or {}
+            asn_total = int(_asn.get("qty", 0) or 0)
+            asn_dates = _asn.get("dates", [])
             first_open = next((p["date"] for p in planned if p.get("recv", 0) < p["qty"]), None)
             late_days = (as_of - _pdate(first_open)).days if first_open else None
             short_late = any(
@@ -342,6 +346,10 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
                 status = "예정"
             elif sheet_total > 0:
                 status = "확정 대기"          # 시트엔 입고가 적혀 있다 = 물류는 들어옴, 데이터만 아직
+            elif asn_total > 0:
+                # ★ASN(업체 입하 통보)이 떠 있으면 빨간불을 켜지 않는다 — 물건은 통보됐고 WMS 확정만 남았다.
+                #   2026-09-09 실측: '미입고' 29건 중 5건이 이 경우였다(MWFFE9B03-BK 는 검수까지 끝난 상태).
+                status = "확정 대기"
             elif late_days >= CONFIRM_GRACE_DAYS:
                 status = "미입고"
             elif late_days >= 0:
@@ -354,6 +362,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
                 "plan_total": plan_total, "actual_total": act_total,
                 "sheet_total": sheet_total, "sheet_actual": sheet_actual,
                 "ordered_total": c["ordered_total"], "status": status,
+                "asn_total": asn_total, "asn_dates": asn_dates,
                 "late_days": late_days, "short_late": short_late,
                 "next_date": next_date or (planned[0]["date"] if planned else None)})
             h_plan += plan_total
@@ -380,7 +389,9 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None):
 
     return {
         "season": "26FW", "as_of": as_of.isoformat(),
-        "source": "생산관리 탭(입고예정 AK/AL) + " + ("DBX WMS 입고확정(입고일자별)" if dbx_actuals is not None else "시트 입고확정(AO/AP)"),
+        "source": "생산관리 탭(입고예정 AK/AL) + " + ("DBX WMS 입고확정(입고일자별)" if dbx_actuals is not None else "시트 입고확정(AO/AP)")
+                   + (" + ASN 입하통보" if asn else ""),
+        "asn_on": bool(asn),
         "cutoff": CUTOFF.isoformat(), "grace_days": CONFIRM_GRACE_DAYS,
         "heroes": heroes_out, "days": days}
 

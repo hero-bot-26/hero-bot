@@ -2711,6 +2711,7 @@ except Exception as e:
 ninb = 0
 try:
     from soo.hero_ops.inbound_board import build_inbound_board, load_dbx_actuals
+    from soo.hero_ops.asn_ingest import load_asn_from_sheet
     _lm = {}
     try:
         for x in _fw_list:   # LAUNCH_26FW 히어로 메타 재사용(발매일/상태)
@@ -2718,7 +2719,10 @@ try:
     except Exception:
         pass
     _dbx_act = load_dbx_actuals(sheets)   # DBX WMS 실입고(입고일자별 탭). 없으면 None→시트 AO/AP 폴백
-    inbound_obj = build_inbound_board(sheets, as_of=TODAY, launch_meta=_lm, dbx_actuals=_dbx_act)
+    # ASN(업체 입하 통보) — asn_ingest 잡이 평일 5회 채우는 `_ASN` 탭. 상태 판정 게이트로만 쓴다
+    # (ASN 이 떠 있으면 '미입고' 빨간불 대신 '확정 대기'). 탭이 없으면 {} 라 기존 판정 그대로.
+    _asn = load_asn_from_sheet(sheets, cutoff="2026-06-01")
+    inbound_obj = build_inbound_board(sheets, as_of=TODAY, launch_meta=_lm, dbx_actuals=_dbx_act, asn=_asn)
     inbound_block = "const INBOUND_BOARD = " + json.dumps(inbound_obj, ensure_ascii=False) + ";"
     html2, ninb = re.subn(r"const INBOUND_BOARD = \{.*?\};", lambda _m: inbound_block, html2, count=1, flags=re.DOTALL)
     _nsku = sum(h["sku_count"] for h in inbound_obj["heroes"])
@@ -2726,7 +2730,7 @@ try:
     for h in inbound_obj["heroes"]:
         for s in h["skus"]:
             _st[s["status"]] = _st.get(s["status"], 0) + 1
-    print(f"INBOUND_BOARD 주입: {len(inbound_obj['heroes'])}히어로 · SKU {_nsku} · 날짜버킷 {len(inbound_obj['days'])} · 상태{_st} · 실적={'DBX' if _dbx_act is not None else '시트AO/AP'}({len(_dbx_act) if _dbx_act else 0} SKU)")
+    print(f"INBOUND_BOARD 주입: ASN {len(_asn)}SKU · {len(inbound_obj['heroes'])}히어로 · SKU {_nsku} · 날짜버킷 {len(inbound_obj['days'])} · 상태{_st} · 실적={'DBX' if _dbx_act is not None else '시트AO/AP'}({len(_dbx_act) if _dbx_act else 0} SKU)")
     if ninb != 1:
         _HEALTH.append("INBOUND_BOARD 교체 실패(앱 플레이스홀더 확인)")
 except Exception as e:

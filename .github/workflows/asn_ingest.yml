@@ -1,0 +1,72 @@
+name: ASN ingest (입하 통보 수집)
+
+# 업체가 "이 날 보낸다"고 통보한 ASN 을 DBX 에서 읽어 앱 시트 `_ASN` 탭에 적재한다.
+# 앱 `/inbound` 의 [입하 통보] 탭이 이 탭을 읽는다(api/asn).
+#
+# ★왜 daily CI 에 얹지 않았나
+#   ASN 의 가치는 실시간성이다. 마스터앱 daily CI 는 하루 1회(09시 시작 → 12:30 완료)라
+#   거기 얹으면 화면이 D+1 이 되어 이점이 사라진다. 2026-09-09 실측에서 히어로 ASN
+#   42건 145,925장이 앱 입고확정에 아직 없었고, '미입고(빨강)' 29건 중 5건은
+#   ASN 상 이미 검수까지 끝나 있었다. 그래서 가벼운 잡(1분)을 따로 돌린다.
+#
+# ★멱등
+#   매 실행이 최근 45일을 전량 다시 읽어 `_ASN` 탭을 통째로 덮는다(clear + update).
+#   여러 번 돌아도 결과가 같으므로 스케줄이 밀려 몰려 실행돼도 안전하다.
+on:
+  schedule:
+    # KST 09·11·13·15·17시(평일). GitHub schedule 은 이 레포에서 수 시간 밀리므로
+    # 정시성을 기대하지 않고 촘촘히 걸어둔다 — 멱등이라 중복 실행이 무해하다.
+    - cron: "0 0,2,4,6,8 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "며칠치를 읽을까 (기본 45)"
+        required: false
+        default: "45"
+      dry_run:
+        description: "기입 없이 요약만 (true/false)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: asn-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: ASN 수집 → 앱 시트 _ASN
+        env:
+          DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_PAT:           ${{ secrets.DATABRICKS_PAT }}
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: |
+          ARGS="--days ${{ github.event.inputs.days || '45' }}"
+          if [ "${{ github.event.inputs.dry_run }}" != "true" ]; then ARGS="$ARGS --apply"; fi
+          python -m soo.hero_ops.asn_ingest $ARGS
+
+      # 조용히 죽으면 화면의 ASN 이 옛 상태로 고착된다 — 실패는 알린다.
+      - name: 실패 알림
+        if: failure()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ ASN 수집(asn_ingest)이 실패했다 ($(date -u +%Y-%m-%d\ %H:%M) UTC) —
+          앱 [입하 통보] 탭이 옛 데이터로 고착된다.
+          단골 원인: DATABRICKS_PAT 만료, pbo.moms.iif_bam_asn 권한, 시트 권한."
