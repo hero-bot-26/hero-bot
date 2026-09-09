@@ -211,10 +211,18 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
         lines.append("")
         # 2줄 = 납품일 + 컬러별 수량(코드 + 한글 컬러명)
         if kind == "day":
+            merged: dict[str, dict] = {}
+            for i in items:
+                m = merged.setdefault(i["color"], {"color": i["color"], "color_nm": i.get("color_nm", ""), "qty": 0})
+                m["qty"] += i["qty"]
+                m["color_nm"] = m["color_nm"] or i.get("color_nm", "")
+            cs = sorted(merged.values(), key=lambda x: -x["qty"])
             colors = " · ".join(
-                f"{i['color']} {i['color_nm']} {i['qty']:,}" if i.get("color_nm") else f"{i['color']} {i['qty']:,}"
-                for i in items)
-            lines.append(colors + (f"  (계 {sub:,})" if len(items) > 1 else ""))
+                f"{c['color']} {c['color_nm']} {c['qty']:,}" if c["color_nm"] else f"{c['color']} {c['qty']:,}"
+                for c in cs)
+            n_asn = len(g.get("asns") or [])
+            lines.append(colors + (f"  (계 {sub:,})" if len(cs) > 1 else "")
+                         + (f"  · {n_asn}차 통보" if n_asn > 1 else ""))
         elif kind == "recv":
             rsub = sum(i["recv"] for i in items)
             colors = " · ".join(
@@ -245,16 +253,23 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
     return "\n".join(lines)
 
 
-def _group(rows, owners):
-    """STY × 납품일 × ASN 으로 묶는다(같은 STY라도 차수가 다르면 따로 알린다)."""
+def _group(rows, owners, merge_asn: bool = False):
+    """STY × 입하일 (× ASN) 로 묶는다.
+
+    merge_asn=True 면 **차수를 합친다**. 업체가 같은 날 물량을 두세 번에 나눠 통보하는 일이 흔한데
+    (실측: MKFFJAK90 이 9/7·9/8 두 차수로 통보되어 같은 9/9 입하), '금일 입하' 브리핑에서는
+    "오늘 이 품번 몇 장"이 알고 싶은 것이지 차수가 아니다 → 합쳐서 한 줄로 본다.
+    반대로 'ASN 등록' 알림은 그 통보 이벤트 자체가 주제라 차수를 살린다.
+    """
     gmap: dict[tuple, dict] = {}
     for r in rows:
-        k = (r["style"], r["eindt"], r["asn"])
+        k = (r["style"], r["eindt"]) if merge_asn else (r["style"], r["eindt"], r["asn"])
         g = gmap.setdefault(k, {"style": r["style"], "eindt": r["eindt"], "asn": r["asn"],
                                 "hero": r["hero"], "name": r["name"], "supplier": r["supplier"],
-                                "warehouse": r["warehouse"],
+                                "warehouse": r["warehouse"], "asns": set(),
                                 "owners": owners.get(r["style"], {}), "items": []})
         g["items"].append(r)
+        g["asns"].add(r["asn"])
     return sorted(gmap.values(), key=lambda g: -sum(i["qty"] for i in g["items"]))
 
 
@@ -348,7 +363,7 @@ def main() -> int:
             ("recv", recvd,      KEY_PREFIX_RECV, "입고 확정 시작")):
         if not items:
             continue
-        groups = _group(items, owners)
+        groups = _group(items, owners, merge_asn=(kind == "day"))
         want, ids = _recipients(groups)
 
         # ★수신자별로 '자기 담당 건만' 담아 보낸다 — 한 통에 전 품목을 담으면 남의 상품까지 보게 된다.
