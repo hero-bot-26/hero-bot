@@ -1,6 +1,7 @@
 name: ASN ingest (입하 통보 수집)
 
-# 업체가 "이 날 보낸다"고 통보한 ASN 을 DBX 에서 읽어 앱 시트 `_ASN` 탭에 적재한다.
+# 업체가 "이 날 보낸다"고 통보한 ASN 을 DBX 에서 읽어 앱 시트 `_ASN` 탭에 적재하고,
+# 새로 들어온 통보를 담당자에게 슬랙으로 알린다.
 # 앱 `/inbound` 의 [입하 통보] 탭이 이 탭을 읽는다(api/asn).
 #
 # ★왜 daily CI 에 얹지 않았나
@@ -12,11 +13,27 @@ name: ASN ingest (입하 통보 수집)
 # ★멱등
 #   매 실행이 최근 45일을 전량 다시 읽어 `_ASN` 탭을 통째로 덮는다(clear + update).
 #   여러 번 돌아도 결과가 같으므로 스케줄이 밀려 몰려 실행돼도 안전하다.
+#   알림은 `알람발송로그` 원장으로 건 단위 dedup 하므로 새 통보가 없으면 조용하다.
+
+# ── 트리거 설계 (2026-09-10 전면 교체) ────────────────────────────────
+# ★네이티브 schedule 을 신뢰하면 안 된다 — 실측:
+#     · 9/9: 4슬롯 예약 중 발화 1회(25%), 그 1회도 40분 지연
+#     · 9/10: 예약 2슬롯(00·02 UTC) 모두 발화 0회 → 알림이 통째로 안 나감
+#   이 레포의 다른 잡들이 전부 정시를 피한 분(`3,13,23,33,43,53` · `5,35` · `25,32,40`)
+#   으로 짜여 있는 게 이미 학습된 회피책인데, ASN 만 정시(`0 0,2,4,6,8`)에 걸려 있었다.
+#   UTC 정시는 전 세계 cron 이 몰리는 시각이라 특히 드롭된다.
+#
+# 해법: rank1_watch.yml 과 같은 패턴 — 외부 cron(cron-job.org)이 매시 :00 에 정확히
+#   넣어 주는 hourly.yml 의 뒤에 workflow_run 으로 얹는다. 이러면 매시 확실히 돈다
+#   (수집은 1분·멱등이라 매시 돌아도 무해하고, ASN 은 촘촘할수록 좋다).
+#   schedule 은 그 체인이 끊겼을 때를 위한 백스톱으로만 남기고, 분을 흩어 둔다.
 on:
+  workflow_run:
+    workflows: ["Hourly ranking capture"]
+    types: [completed]
   schedule:
-    # KST 09·11·13·15·17시(평일). GitHub schedule 은 이 레포에서 수 시간 밀리므로
-    # 정시성을 기대하지 않고 촘촘히 걸어둔다 — 멱등이라 중복 실행이 무해하다.
-    - cron: "0 0,2,4,6,8 * * 1-5"
+    # 백스톱 — 정시를 피해 흩어 둔다. KST 로 대략 10:07·12:37·14:07·16:37(평일).
+    - cron: "7,37 1,3,5,7 * * 1-5"
   workflow_dispatch:
     inputs:
       days:
@@ -25,6 +42,10 @@ on:
         default: "45"
       dry_run:
         description: "기입 없이 요약만 (true/false)"
+        required: false
+        default: "false"
+      force_notify:
+        description: "시각 게이트를 무시하고 알림까지 (true/false)"
         required: false
         default: "false"
 
@@ -44,6 +65,9 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # ★pandas·openpyxl 은 requirements.txt 에 들어 있다(2026-09-10).
+      #   그 전엔 빠져 있어서 asn_notify → triggers → plm_ingest → import pandas 가
+      #   ModuleNotFoundError 로 죽었고, 아래 알림 스텝이 CI 에서 한 번도 성공하지 못했다.
       - name: Install deps
         run: pip install -r requirements.txt
 
@@ -59,10 +83,27 @@ jobs:
           if [ "${{ github.event.inputs.dry_run }}" != "true" ]; then ARGS="$ARGS --apply"; fi
           python -m soo.hero_ops.asn_ingest $ARGS
 
-      # 신규 ASN 슬랙 알림 — 수집이 성공했을 때만. 원장(`알람발송로그`)으로 건 단위 dedup 하므로
-      # 새 통보가 없으면 조용하다. ★triggers.TEST_ONLY 가 True 인 동안은 본인 DM 으로만 나간다.
+      # ── 알림 시각 게이트 ────────────────────────────────────────
+      # 체인이 매시 돌기 때문에 게이트 없이는 새벽에도 DM 이 나간다.
+      # 수집은 매시 하되(화면은 항상 최신), 발송은 KST 08~20 시에만.
+      # 밤사이 등록분은 아침 첫 실행에서 나간다 — `--since-days 2` 가 그 창을 덮는다.
+      - name: 알림 시각 게이트
+        id: gate
+        run: |
+          H=$(TZ=Asia/Seoul date '+%-H')
+          if [ "${{ github.event.inputs.force_notify }}" = "true" ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"; echo "게이트 무시(force_notify) — $H 시 KST"
+          elif [ "$H" -ge 8 ] && [ "$H" -lt 20 ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"; echo "발송 시간대 — $H 시 KST"
+          else
+            echo "open=false" >> "$GITHUB_OUTPUT"; echo "발송 시간대 아님($H 시 KST) — 알림 스킵(수집만)"
+          fi
+
+      # 신규 ASN 슬랙 알림 — 원장으로 건 단위 dedup 하므로 새 통보가 없으면 조용하다.
+      # ★asn_notify.ASN_LIVE 가 False 인 동안은 전략팀 본인 DM 한 통으로만 나간다.
       - name: 신규 ASN 슬랙 알림
-        if: ${{ github.event.inputs.dry_run != 'true' }}
+        id: notify
+        if: ${{ github.event.inputs.dry_run != 'true' && steps.gate.outputs.open == 'true' }}
         continue-on-error: true      # 알림 실패가 수집을 실패로 만들지 않게
         env:
           GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
@@ -70,6 +111,23 @@ jobs:
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
           SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
         run: python -m soo.hero_ops.asn_notify --send
+
+      # ★★알림만 죽는 사고를 잡는다 (2026-09-09~10 실제 사고)
+      #   아래 `if: failure()` 는 **잡 실패만** 본다. 위 스텝은 continue-on-error 라
+      #   죽어도 잡이 success 로 끝나므로 원리상 안 잡힌다 — 수집은 성공하고 시트도
+      #   갱신되니 화면은 멀쩡한 채 알림만 조용히 안 나갔다(이틀).
+      #   그래서 스텝의 outcome 을 직접 본다.
+      - name: 알림 스텝 실패 알림
+        if: ${{ steps.notify.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ ASN 수집은 됐는데 **슬랙 알림만 실패**했다 ($(TZ=Asia/Seoul date '+%m/%d %H:%M') KST) —
+          앱 [입하 통보] 화면은 최신인데 담당자에게 통보가 안 갔다.
+          단골 원인: requirements 누락으로 인한 ModuleNotFoundError(2026-09-09 pandas),
+          SLACK_BOT_TOKEN, `담당자매핑` 탭 접근. Actions 로그의 'ASN 슬랙 알림' 스텝 확인."
 
       # 조용히 죽으면 화면의 ASN 이 옛 상태로 고착된다 — 실패는 알린다.
       - name: 실패 알림

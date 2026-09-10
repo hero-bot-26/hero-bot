@@ -44,6 +44,7 @@ APP_FILE = "public/app.html"
 ARCHIVE_SHEET = "1UqH-pi5YuQrVYpfj74khXSTVbWml1m4YuaKUAnUgzPI"      # 랭킹봇 아카이브(Long/Wide)
 SALES_SHEET = "1iHH2qG8Uj5vmlC3aXkey96usktWODmguDPD_ToT2rfA"        # 마스터앱 실적 시트
 DASH_DATA_SHEET = "1O78bMnJZq-U6zO2mZLHV84573uKM9DU2wpgzeGDBIk0"    # 26FW 대시보드 데이터시트
+APP_SHEET = "1_tZDl-heZyWT4VQYIAT3ZHFeMoQlK2FSOpEMyZjqvm0"            # 앱 시트(히어로 PLM 마일스톤) — `_ASN` 탭
 
 DBX_HOST_DEFAULT = "https://musinsa-data-ws.cloud.databricks.com"
 DBX_JOBS = {
@@ -109,17 +110,24 @@ def check_workflows(token: str, now: dt.datetime, gate: bool) -> list[Finding]:
     if not token:
         return [Finding("GH_NO_TOKEN", "감시", "GITHUB_TOKEN 없음 — 워크플로 상태 점검 스킵", "정보")]
 
-    # (파일, 표시명, 시스템, 오늘 실행이 없으면 경고할 KST 시각, 최근 성공 허용 간격[시간])
+    # (파일, 표시명, 시스템, 오늘 실행이 없으면 경고할 KST 시각, 최근 성공 허용 간격[시간],
+    #  끊겼을 때 무엇이 같이 멈추는지 — ★대상별로 다르다. 여기에 두지 않으면 문구가 한 잡
+    #  기준으로 박혀 다른 잡에 틀린 설명이 붙는다(2026-09-10 ASN 추가 때 실제로 그랬다).)
     specs = [
-        ("hourly.yml", "Hourly ranking capture", "랭킹봇", None, 3),
-        ("daily.yml", "Daily ranking report", "랭킹봇", 10.5, None),
-        ("rank1_watch.yml", "Rank1 watch", "랭킹봇", None, None),
-        ("hero_app_daily.yml", "Hero master app daily update", "마스터앱", 15.0, None),
+        ("hourly.yml", "Hourly ranking capture", "랭킹봇", None, 3,
+         "1위 즉시 알림과 ASN 수집이 이 워크플로에 체이닝돼 있어 같이 멈춘다."),
+        ("daily.yml", "Daily ranking report", "랭킹봇", 10.5, None, ""),
+        ("rank1_watch.yml", "Rank1 watch", "랭킹봇", None, None, ""),
+        ("hero_app_daily.yml", "Hero master app daily update", "마스터앱", 15.0, None, ""),
+        # ★2026-09-10 추가 — 9/9~10 이 잡이 안 도는 동안 담당자 ASN 통보가 이틀 멈췄는데
+        #   아무 알림도 없었다. hourly 체인에 얹혀 매시 돌므로 4시간이 끊기면 확실한 이상이다.
+        ("asn_ingest.yml", "ASN ingest (입하 통보 수집)", "입하통보", 11.0, 4,
+         "앱 [입하 통보] 화면이 낡고 담당 MD·디자이너·소싱 통보가 같이 멈춘다."),
     ]
     today = now.date()
     hour_f = now.hour + now.minute / 60
 
-    for wf, name, system, need_by, fresh_h in specs:
+    for wf, name, system, need_by, fresh_h, note in specs:
         runs = _gh_runs(token, GH_REPO, wf)
         if runs is None:
             continue
@@ -168,8 +176,8 @@ def check_workflows(token: str, now: dt.datetime, gate: bool) -> list[Finding]:
                 if gap >= fresh_h:
                     out.append(Finding(
                         f"WF_STALE_{wf}", system,
-                        f"{name} — 마지막 성공이 {gap:.1f}시간 전({max(oks):%m/%d %H:%M}). "
-                        f"1위 즉시 알림이 이 워크플로에 체이닝돼 있어 같이 멈춘다.", "심각"))
+                        f"{name} — 마지막 성공이 {gap:.1f}시간 전({max(oks):%m/%d %H:%M})."
+                        + (f" {note}" if note else ""), "심각"))
             else:
                 out.append(Finding(
                     f"WF_NOOK_{wf}", system,
@@ -379,6 +387,48 @@ def check_sheet_freshness(sheets, now: dt.datetime, gate: bool) -> list[Finding]
     return out
 
 
+def check_asn(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
+    """`_ASN` 탭이 고착됐는지 — 수집은 hourly 체인에 얹혀 매시 돌아야 한다.
+
+    ★check_workflows 와 독립된 축이다. 잡이 SUCCESS 로 끝나도 시트 쓰기만 실패할 수 있고
+      ([[CLAUDE 1-3]]), 반대로 잡 이력 조회가 막혀도 이 라벨을 보면 바로 드러난다.
+      2026-09-09~10 사고: 잡이 하루 안 돌아 화면이 이틀 낡고 담당자 통보도 같이 멈췄다.
+    """
+    if gate and now.hour < 9:        # 밤사이 미갱신은 정상 — 아침 첫 체인 이후에만 판정한다.
+        return []
+    import re
+    try:
+        got = sheets.spreadsheets().values().get(
+            spreadsheetId=APP_SHEET, range="'_ASN'!A1").execute()
+        txt = ((got.get("values") or [[""]])[0] or [""])[0]
+    except Exception as e:
+        return [Finding("ASN_READ", "입하통보",
+                        f"`_ASN` 탭을 읽지 못했다 — {type(e).__name__}: {e}", "경고")]
+    if not txt:
+        return [Finding("ASN_EMPTY", "입하통보",
+                        "`_ASN` 탭 A1 이 비어 있다 — 수집이 한 번도 성공하지 않았거나 탭이 비었다.",
+                        "심각")]
+    # ★라벨 단위 전환기 대응 — 2026-09-10 이전 라벨엔 `KST` 표기가 없고 그 값은 러너 기준(UTC)이다.
+    m = re.search(r"생성\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2})(\s*KST)?", txt)
+    if not m:
+        return [Finding("ASN_LABEL", "입하통보",
+                        f"`_ASN` A1 에서 생성시각을 못 찾았다 — 라벨 형식이 바뀌었나: {txt[:110]}",
+                        "경고")]
+    made = dt.datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}", "%Y-%m-%d %H:%M")
+    if not m.group(4):               # KST 표기가 없으면 UTC 로 찍힌 옛 라벨
+        made += dt.timedelta(hours=9)
+    gap = (now.replace(tzinfo=None) - made).total_seconds() / 3600
+    if gap >= 4:
+        lvl = "심각" if gap >= 12 else "경고"
+        return [Finding(
+            "ASN_STALE", "입하통보",
+            f"`_ASN` 탭이 {gap:.1f}시간 전({made:%m/%d %H:%M} KST)에 멈춰 있다 — 매시 갱신돼야 한다."
+            + chr(10)
+            + "  ★이 탭이 멈추면 앱 [입하 통보] 화면이 낡는 것으로 끝나지 않고 "
+              "**담당자 ASN 통보가 같이 멈춘다**(2026-09-09~10 이틀 실측).", lvl)]
+    return []
+
+
 # ── ⑤ 앱 배포(app.html) ──────────────────────────────────────────────────────
 def check_app_deploy(now: dt.datetime, gate: bool) -> list[Finding]:
     """app.html 이 실제로 새로 커밋됐는지 — CI 는 성공했는데 push 가 rejected 된 사고 대비.
@@ -547,6 +597,7 @@ def run(dry_run: bool = False, force: bool = False, gate: bool = True) -> int:
             ("랭킹 산출물", lambda: check_ranking_output(sheets, now, gate)),
             ("시트 신선도", lambda: check_sheet_freshness(sheets, now, gate)),
             ("부문 대시보드", lambda: check_dept_dashboard(sheets, now, gate)),
+            ("입하 통보(ASN)", lambda: check_asn(sheets, now, gate)),
         ]
     for name, fn in steps:
         try:

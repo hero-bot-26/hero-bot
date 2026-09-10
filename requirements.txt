@@ -6,3 +6,12 @@ PyYAML>=6.0.1
 requests>=2.31.0
 playwright>=1.40
 python-pptx  # 주간 리뷰 덱 생성
+# ★pandas·openpyxl 은 `plm_ingest` 임포트 경로에 있고, `triggers` 를 거쳐 `asn_notify` ·
+#   `imc_triggers` 가 전부 이 체인에 얹혀 있다 — 빠지면 그 발송이 CI 에서 ModuleNotFoundError
+#   로 통째로 죽는다. 2026-09-09~10 ASN 알림 미발송 사고의 원인.
+#   당시 hero_app_daily.yml 만 `pip install pandas openpyxl  # requirements 미포함` 으로
+#   우회하고 있어 IMC 단계 알림은 살아 있었고, 그 한 줄을 물려받지 못한 asn_ingest.yml 만
+#   죽었다(로컬엔 pandas 가 깔려 있어 로컬 테스트로는 드러나지 않는다).
+#   → 우회가 아니라 여기에 박아 둔다. 워크플로별 중복 설치 줄은 무해하게 남겨 둔다.
+pandas>=2.0
+openpyxl>=3.1

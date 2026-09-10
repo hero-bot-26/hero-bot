@@ -49,9 +49,12 @@ KEY_PREFIX_DAY = "asnday:"     # ③ 금일 입하 예정 브리핑 — 날짜�
 
 # ★실담당자 발송 스위치 — 이 모듈 전용.
 #   `triggers.TEST_ONLY` 를 끄면 IMC 단계 알림 등 **다른 발송까지 같이 풀린다**. 그래서 분리했다.
-#   True  = 담당 MD·디자이너·소싱에게 각자 담당 건만 발송(사용자 결정 2026-09-09)
-#   False = 전부 본인 DM 으로(테스트)
-ASN_LIVE = True
+#   True  = 담당 MD·디자이너·소싱에게 각자 담당 건만 발송
+#   False = 전략팀 본인 DM 으로 한 통만(테스트)
+# ★2026-09-10 False 로 되돌림(사용자 지시 "확실히 오류 고치기 전엔 보내지마, 나한테만 보내").
+#   9/9 에 True 로 켰지만 CI 경로는 pandas 누락으로 한 번도 성공한 적이 없었다 —
+#   나간 163건은 전부 로컬 수동 실행분이다. CI 에서 정상 발송이 검증된 뒤 True 로 되돌린다.
+ASN_LIVE = False
 # 담당자 Slack ID 가 없는 건은 여기로 모아 보낸다(누락을 조용히 삼키지 않기 위해).
 FALLBACK_SLACK_ID = T.TEST_DM_SLACK_ID
 # ★전략팀 전체 사본 — 담당자별 발송과 별개로 **전 건을 한 통**으로 더 받는다
@@ -424,17 +427,31 @@ def main() -> int:
             continue
 
         ok_any = False
-        for sid, gs in sorted(by_person.items()):
-            tgt = sid if ASN_LIVE else T.TEST_DM_SLACK_ID
-            if _send_one(build_message(gs, as_of, kind), tgt, tok):
-                ok_any = True
+        # ★테스트 모드(ASN_LIVE=False)에서는 담당자별로 쪼갠 통을 보내지 않는다 —
+        #   수신처가 전부 본인 DM 이라 같은 내용이 수신자 수만큼 쌓인다(9/9 실측 16통).
+        #   대신 아래 전체 사본 한 통에 '실운영이면 누구에게 갈지'를 라벨로 적는다.
+        if ASN_LIVE:
+            for sid, gs in sorted(by_person.items()):
+                if _send_one(build_message(gs, as_of, kind), sid, tok):
+                    ok_any = True
         # 전략팀 전체 사본 — 담당자에게 쪼개 보낸 것과 별개로 전 건을 한 통에.
         if DIGEST_SLACK_ID:
-            dmsg = build_message(groups, as_of, kind) + chr(10) + "_전체 사본 · 담당자에게는 각자 담당 건만 갑니다._"
+            if ASN_LIVE:
+                tail = "_전체 사본 · 담당자에게는 각자 담당 건만 갑니다._"
+            else:
+                who = ", ".join(
+                    f"{next((n for n, v in T.OWNER_SLACK_IDS.items() if v == sid), sid)}({len(gs)})"
+                    for sid, gs in sorted(by_person.items(), key=lambda kv: -len(kv[1])))
+                tail = (f"_※ 테스트 모드 — 실운영이면 {len(by_person)}명에게 쪼개 발송됩니다: "
+                        f"{who or '없음'}_"
+                        + (f"{chr(10)}_※ 담당자 미매핑 {len(orphan)}그룹은 전략팀으로 모입니다._"
+                           if orphan else ""))
+            dmsg = build_message(groups, as_of, kind) + chr(10) + tail
             if _send_one(dmsg, DIGEST_SLACK_ID, tok):
                 ok_any = True
-        if orphan:
-            # 담당자를 못 찾은 건은 조용히 버리지 않고 전략팀으로 보낸다.
+        # 담당자를 못 찾은 건은 조용히 버리지 않고 전략팀으로 보낸다.
+        # ★테스트 모드에서는 위 전체 사본에 이미 전 건이 담겨 있어 보내지 않는다(중복).
+        if orphan and ASN_LIVE:
             tail = "_※ 담당자 Slack ID 미매핑 — `담당자매핑` 탭에 채우면 자동으로 붙습니다._"
             msg = build_message(orphan, as_of, kind) + chr(10) + tail
             if _send_one(msg, FALLBACK_SLACK_ID, tok):

@@ -301,7 +301,10 @@ def main() -> None:
     p2h = build_pumbon2hero(sheets)
     rows = fetch_asn(sorted(p2h), args.days)
     grid = to_grid(rows, p2h)
-    as_of = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    # ★KST 로 못박는다 — `datetime.now()` 는 CI 러너(UTC)와 로컬(KST)에서 9시간 다르게 찍혀
+    #   같은 라벨에 두 기준이 섞였다. ops_watch 가 이 라벨로 고착을 판정하므로 단위를 명시한다.
+    as_of = (datetime.datetime.now(datetime.timezone.utc)
+             + datetime.timedelta(hours=9)).strftime("%Y-%m-%d %H:%M KST")
     print(f"[_ASN] {summarize(grid)}")
 
     if not args.apply:
