@@ -137,6 +137,7 @@ def load_asn_rows(sheets) -> list[dict]:
             "color_nm": str(g("color_nm")).strip(),
             "hero": str(g("hero")).strip(), "name": str(g("name")).strip(),
             "eindt": str(g("eindt")).strip().split(".")[0],
+            "cancelled": str(g("cancelled")).strip().upper() == "Y",
             "qty": qty,
             "supplier": str(g("supplier")).strip(),
             "warehouse": str(g("warehouse")).strip(),
@@ -363,6 +364,13 @@ def main() -> int:
     sheets = build_services(get_credentials(HERO / "credentials.json", HERO / "token.json"))["sheets"]
 
     rows = load_asn_rows(sheets)
+    # ★취소 ASN 은 알림에서 제외한다(2026-09-10 — ERP delete_flag 를 수집기가 실어 준다).
+    #   화면에서는 딱지만 붙여 그대로 보이므로 "왜 사라졌지"가 되지 않는다.
+    canc = [r for r in rows if r.get("cancelled")]
+    if canc:
+        print(f"[ASN알림] 취소 {len(canc)}건 제외 "
+              f"({', '.join(sorted({r['sku'] for r in canc})[:6])}…)")
+    rows = [r for r in rows if not r.get("cancelled")]
     if not rows:
         print("[ASN알림] `_ASN` 탭이 비었다 — asn_ingest 를 먼저 돌릴 것")
         return 0

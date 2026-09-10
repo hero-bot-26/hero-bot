@@ -58,7 +58,7 @@ LOOKBACK_DAYS = 45
 
 HEADER = ["asn_no", "po_no", "po_cnt", "sku", "style", "color", "color_nm", "hero", "name",
           "eindt", "qty", "po_qty", "remain", "supplier", "warehouse",
-          "sts", "ins_at", "upd_at", "recv_qty", "recv_dates"]
+          "sts", "ins_at", "upd_at", "recv_qty", "recv_dates", "cancelled"]
 
 
 def fetch_asn(styles: list[str], lookback: int = LOOKBACK_DAYS) -> list[list]:
@@ -103,6 +103,19 @@ WITH asn AS (
   WHERE substr(ZZ_BARCODE,1,9) IN ({in_styles})
     AND EINDT >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {int(lookback)}), 'yyyyMMdd')
   GROUP BY DELVNO, 2, 3, 4, EINDT
+),
+canc AS (
+  -- ★취소 ASN. 우리 원천(`pbo.moms.iif_bam_asn`)엔 delete_flag 가 없어 여태 못 걸렀다 →
+  --   권한이 열린 ERP 원본에서 읽는다(JIRA DAC-4570, 2026-09-10 승인).
+  -- ★★그레인 주의 = 이 테이블은 **일자별 전체 스냅샷**이다. date 를 최신 하나로 고정하지
+  --   않으면 같은 건이 날마다 반복돼 집계가 배로 뛴다(실측: 한 건이 42개 date 에 있어 수량 42배).
+  -- ★style_no 표기가 `품번-컬러`·`품번` 으로 섞여 있어(WMS STL_NO 과 같은 함정) **품번 9자로
+  --   접어서** 맞춘다. 실측으로 이렇게 접었을 때 우리 843행이 ERP 와 214/214 전건 일치했다.
+  SELECT DISTINCT asn_no, substr(style_no, 1, 9) style
+  FROM pbo.erp.supplier_order_asn
+  WHERE date = (SELECT max(date) FROM pbo.erp.supplier_order_asn)
+    AND upper(coalesce(delete_flag, '')) = 'X'
+    AND substr(style_no, 1, 9) IN ({in_styles})
 ),
 color AS (
   -- 컬러코드 → 한글 컬러명. ★`mutandard_color_cd` 는 color_cd 가 중복될 수 있어(2행 5개·59행 1개)
@@ -149,9 +162,13 @@ SELECT a.DELVNO, a.po_no, a.po_cnt, a.sku, a.style, a.color, c.color_nm, a.name,
        --   이 탭이 답할 질문은 "이 통보분이 WMS 에 잡혔나"라서 캡이 목적에 맞다.
        least(CAST(round(coalesce(sk.qty, st.qty, 0) * a.qty / nullif(t.tq, 0)) AS BIGINT),
              CAST(a.qty AS BIGINT)) recv_qty,
-       coalesce(sk.dts, st.dts, '') recv_dates
+       coalesce(sk.dts, st.dts, '') recv_dates,
+       -- 취소면 'Y'. ★행을 버리지 않고 딱지만 붙인다 — 알림은 제외하되 화면에서는 보여야
+       --   "왜 사라졌지"가 되지 않는다([[CLAUDE 1-12]] 필터로 영구 드롭하지 말고 토글로 가려라).
+       CASE WHEN cx.asn_no IS NOT NULL THEN 'Y' ELSE '' END cancelled
 FROM asn a
 LEFT JOIN color c ON c.color_cd = a.color
+LEFT JOIN canc cx ON cx.asn_no = a.DELVNO AND cx.style = a.style
 LEFT JOIN tot t ON t.sku = a.sku AND t.EINDT = a.EINDT
 LEFT JOIN sk ON sk.sku = a.sku AND sk.EINDT = a.EINDT
 LEFT JOIN st ON st.style = a.style AND st.EINDT = a.EINDT AND sk.sku IS NULL
@@ -191,7 +208,7 @@ def to_grid(rows: list[list], p2h: dict[str, str]) -> list[list]:
     for r in rows:
         (delvno, po_no, po_cnt, sku, style, color, color_nm, name, eindt,
          qty, po_qty, remain, supplier, warehouse, sts, ins_at, upd_at,
-         recv_qty, recv_dates) = r
+         recv_qty, recv_dates, cancelled) = r
         out.append([
             delvno or "", po_no or "", int(_num(po_cnt)), sku or "", style or "", color or "",
             (color_nm or "").strip(),
@@ -201,6 +218,7 @@ def to_grid(rows: list[list], p2h: dict[str, str]) -> list[list]:
             (supplier or "").strip(), (warehouse or "").strip(), (sts or "").strip(),
             ins_at or "", upd_at or "",
             int(_num(recv_qty)), recv_dates or "",
+            (cancelled or "").strip(),
         ])
     return out
 
@@ -285,8 +303,11 @@ def summarize(grid: list[list]) -> str:
     new_today = [g for g in grid if str(g[C["ins_at"]] or "")[:8] == today]
     pending = [g for g in grid if g[C["recv_qty"]] == 0]
     heroes = sorted({g[C["hero"]] for g in grid if g[C["hero"]]})
+    canc = [g for g in grid if str(g[C["cancelled"]] or "").upper() == "Y"]
     return (f"ASN {len(grid)}행 · 히어로 {len(heroes)}종 · 오늘 등록 {len(new_today)}건 "
-            f"· 입고확정 미반영 {len(pending)}건 {sum(g[C['qty']] for g in pending):,}장")
+            f"· 입고확정 미반영 {len(pending)}건 {sum(g[C['qty']] for g in pending):,}장"
+            + (f" · ★취소 {len(canc)}건 {sum(g[C['qty']] for g in canc):,}장(알림 제외)"
+               if canc else " · 취소 0건"))
 
 
 def main() -> None:
