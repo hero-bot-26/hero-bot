@@ -57,6 +57,22 @@ KEY_PREFIX_DAY = "asnday:"     # ③ 금일 입하 예정 브리핑 — 날짜�
 #   그 뒤 CI 는 pandas 누락으로 죽었고 로컬 실행은 전환 전이라, 담당자에게 실제로 나간
 #   통보는 이 시점까지 한 건도 없었다. pandas·트리거·감시를 고친 뒤(`f7826c6`) 켠다.
 ASN_LIVE = True
+# ★온라인MD 라인 리드 — 담당 3역(MD·디자이너·소싱)과 **별개로 자기 라인 전 건**을 받는다
+#   (사용자 결정 2026-09-10 "온라인팀까지 확대").
+#   라인은 **품번 앞 2자**로 가른다. 이건 추측이 아니라 PLM `브랜드라인` 열과 1:1 이다 —
+#   전체 2,717건 교차표에서 예외 0 건으로 실측했다:
+#       MM → MUSINSA STANDARD (MAN)     1,051
+#       MW → MUSINSA STANDARD (WOMAN)     723
+#       MK → MUSINSA STANDARD (KIDS)      345
+#       ME → MUSINSA STANDARD (ACCESSORY) 598
+#   덕분에 PLM `데이터` 탭에 아직 없는 품번도 라인을 알 수 있다(히어로 152 중 4건이 그렇다).
+#   ★★`ME`(벨트·양말)는 **일부러 넣지 않는다** — 사용자 결정. 히어로 액세서리 11품번을 전수로
+#     보니 벨트 3개만 상품명에 `우먼즈` 가 있고 **양말 6개·벨트 2개는 성별 표시가 아예 없다**
+#     (유니섹스). 라인으로 못 가르는 걸 억지로 한쪽에 붙이면 매일 틀린 사람에게 간다.
+#     담당 3역 알림은 그대로 가므로 액세서리 통보가 사라지는 게 아니다.
+#   ★글로벌(온라인 리드 신명철)도 없다 — 글로벌은 채널 개념이라 브랜드라인으로 안 갈린다.
+ONLINE_LEADS = {"MM": "유다휘", "MW": "한상은", "MK": "이지현"}
+
 # 담당자 Slack ID 가 없는 건은 여기로 모아 보낸다(누락을 조용히 삼키지 않기 위해).
 FALLBACK_SLACK_ID = T.TEST_DM_SLACK_ID
 # ★전략팀 전체 사본 — 담당자별 발송과 별개로 **전 건을 한 통**으로 더 받는다
@@ -401,21 +417,30 @@ def main() -> int:
 
         # ★수신자별로 '자기 담당 건만' 담아 보낸다 — 한 통에 전 품목을 담으면 남의 상품까지 보게 된다.
         by_person: dict[str, list] = {}
+        lead_sids: set = set()          # 온라인MD 로 들어간 수신자(메시지 꼬리말을 다르게 단다)
         orphan = []
         for g in groups:
             names = _owner_names(g["owners"])
             sids = {n: T.OWNER_SLACK_IDS.get(n) for n in names}
-            if not any(sids.values()):
+            # ★온라인MD — 품번 앞 2자로 라인을 가른다(ME=액세서리는 제외, 위 ONLINE_LEADS 주석 참조).
+            lead = ONLINE_LEADS.get(str(g.get("style") or "")[:2])
+            lead_sid = T.OWNER_SLACK_IDS.get(lead) if lead else None
+            # 수신자를 집합으로 모아 한 그룹이 같은 사람에게 두 번 들어가지 않게 한다.
+            targets = {sid for sid in sids.values() if sid}
+            if lead_sid:
+                targets.add(lead_sid)
+                lead_sids.add(lead_sid)
+            if not targets:
                 orphan.append(g)
                 continue
-            for n, sid in sids.items():
-                if sid:
-                    by_person.setdefault(sid, []).append(g)
+            for sid in targets:
+                by_person.setdefault(sid, []).append(g)
         print(f"  [{label}] 그룹 {len(groups)} · 수신자 {len(by_person)}명"
               + (f" · 담당자 미매핑 {len(orphan)}그룹" if orphan else ""))
         for sid, gs in sorted(by_person.items()):
             who = next((n for n, v in T.OWNER_SLACK_IDS.items() if v == sid), sid)
-            print(f"      {who} ({sid}) ← {len(gs)}건")
+            tag = " [온라인MD·라인 전건]" if sid in lead_sids else ""
+            print(f"      {who} ({sid}) ← {len(gs)}건{tag}")
 
         if not args.send:
             # 미리보기는 가장 많이 받는 사람 기준으로 한 통만 찍는다(전부 찍으면 로그가 길다).
@@ -434,7 +459,11 @@ def main() -> int:
         #   대신 아래 전체 사본 한 통에 '실운영이면 누구에게 갈지'를 라벨로 적는다.
         if ASN_LIVE:
             for sid, gs in sorted(by_person.items()):
-                if _send_one(build_message(gs, as_of, kind), sid, tok):
+                msg = build_message(gs, as_of, kind)
+                if sid in lead_sids:
+                    # 온라인MD 는 '내 담당 상품'이 아니라 '내 라인 전 건'을 받으므로 그렇게 말한다.
+                    msg += chr(10) + "_※ 온라인MD 수신 — 담당 상품이 아니라 **이 라인 전 건**입니다._"
+                if _send_one(msg, sid, tok):
                     ok_any = True
         # 전략팀 전체 사본 — 담당자에게 쪼개 보낸 것과 별개로 전 건을 한 통에.
         if DIGEST_SLACK_ID:
