@@ -71,7 +71,16 @@ ASN_LIVE = True
 #     (유니섹스). 라인으로 못 가르는 걸 억지로 한쪽에 붙이면 매일 틀린 사람에게 간다.
 #     담당 3역 알림은 그대로 가므로 액세서리 통보가 사라지는 게 아니다.
 #   ★글로벌(온라인 리드 신명철)도 없다 — 글로벌은 채널 개념이라 브랜드라인으로 안 갈린다.
-ONLINE_LEADS = {"MM": "유다휘", "MW": "정지형", "MK": "이지현"}  # ★2026-09-10 우먼 담당 교체(한상은 육아휴직 → 정지형, 둘 다 '무탠다드 우먼 온라인MD')
+# ★라인당 **여러 명**이다(2026-09-10 사용자 요청). 한 라인의 온라인MD 전원이 같은 통을 받는다.
+#   · 우먼 담당 교체 = 한상은(육아휴직) → 정지형. 한상은은 `담당자매핑` 에서 slack_id 를 비워 제외.
+#   · 전혜미는 육아휴직 복직 예정이라 명단에 넣어 둔다 — Slack ID 가 매핑돼 있어야 실제로 간다.
+#   ★`imc_triggers.ONLINE_LEADS` 는 **이름만 같고 다른 상수**다(거기선 팀 → 담당자 이름 하나,
+#     그룹 키로 쓰여 리스트로 바꾸면 깨진다). 사람이 바뀌면 **양쪽 다** 봐야 한다([[CLAUDE 1-1]]).
+ONLINE_LEADS = {
+    "MM": ["유다휘", "정채은", "배규태"],
+    "MW": ["정지형", "전혜미"],
+    "MK": ["이지현"],
+}
 
 # 담당자 Slack ID 가 없는 건은 여기로 모아 보낸다(누락을 조용히 삼키지 않기 위해).
 FALLBACK_SLACK_ID = T.TEST_DM_SLACK_ID
@@ -423,13 +432,15 @@ def main() -> int:
             names = _owner_names(g["owners"])
             sids = {n: T.OWNER_SLACK_IDS.get(n) for n in names}
             # ★온라인MD — 품번 앞 2자로 라인을 가른다(ME=액세서리는 제외, 위 ONLINE_LEADS 주석 참조).
-            lead = ONLINE_LEADS.get(str(g.get("style") or "")[:2])
-            lead_sid = T.OWNER_SLACK_IDS.get(lead) if lead else None
+            #   한 라인에 여러 명이면 전원이 같은 통을 받는다. Slack ID 가 없는 사람은 조용히 빠진다
+            #   (담당자매핑에 채우면 코드 수정 없이 붙는다).
             # 수신자를 집합으로 모아 한 그룹이 같은 사람에게 두 번 들어가지 않게 한다.
             targets = {sid for sid in sids.values() if sid}
-            if lead_sid:
-                targets.add(lead_sid)
-                lead_sids.add(lead_sid)
+            for _nm in ONLINE_LEADS.get(str(g.get("style") or "")[:2], ()):
+                _sid = T.OWNER_SLACK_IDS.get(_nm)
+                if _sid:
+                    targets.add(_sid)
+                    lead_sids.add(_sid)
             if not targets:
                 orphan.append(g)
                 continue
