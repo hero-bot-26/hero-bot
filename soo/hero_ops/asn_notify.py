@@ -9,6 +9,8 @@ ASN 은 그보다 먼저 뜨므로 "물건은 왔는데 화면은 아직 미입�
 수신자 (사용자 확정 2026-09-09)
 ------------------------------
 그 아이템의 **상품MD · 디자이너 · 소싱** 3인. 상품 건이라 전략팀은 넣지 않는다.
+거기에 **온라인MD 라인 리드**(품번 앞2자)와 **MD 팀장**(PLM `대복종`)이 각각
+자기 라인·팀 전 건을 더 받는다 — 아래 ONLINE_LEADS / MD_LEADS 주석 참조.
 STY → 담당자는 PLM `데이터` 탭의 `md_nm` / `ds_nm` / `sc_nm`,
 이름 → Slack ID 는 `담당자매핑` 탭(triggers.load_owner_map 재사용).
 
@@ -81,6 +83,33 @@ ONLINE_LEADS = {
     "MW": ["정지형", "전혜미"],
     "MK": ["이지현"],
 }
+
+# ★MD 팀장 — 담당 3역·온라인MD 와 **별개로 자기 팀 전 건**을 받는다
+#   (사용자 결정 2026-09-11 "남성/여성/키즈는 김병관, 제품/신발은 장세미, 언더웨어는 강문영").
+#   ★가르는 기준은 품번·상품명이 아니라 PLM `데이터` 탭의 **`대복종` 열**이다([[CLAUDE 1-11]]).
+#   온라인MD 처럼 품번 앞 2자로 갈라지지 **않는다** — 언더웨어가 남·여 라인에 걸쳐 있기 때문이다.
+#   실측 교차표(PLM 3,441행, 빈값 0건 — 7개 값이 전체를 빠짐없이 덮는다):
+#       Inner 1,062 · Bottom 777 · Outer 750   ← MAN/WOMAN/KIDS 라인에만 있다      → 김병관
+#       Accessory 569 · Shoes 71 · Goods 44                                          → 장세미
+#       Underwear 168  ← **MAN 79 · WOMAN 82 · KIDS 7 로 세 라인에 흔어져 있다**  → 강문영
+#   즉 `대복종` 먼저 보기로 세 팀이 겹침 없이 갈라진다. 반대로 브랜드라인을 먼저 보면
+#   남성 언더웨어 79행이 김병관에게 간다.
+#   ★세 분 모두 `담당자매핑` 탭에 `kind=팀장` 으로 Slack ID 까지 채워져 있다(사람이 유지하는 상태).
+#     이름→ID 는 거기서 읽으므로 사람이 바뀌면 **이 상수의 이름만** 고치면 된다.
+#   ★★시트의 `category` 열을 그대로 쓰지 **않는다** — 거긴 `team_leads_for()`(IMC 단계 알림 에스컬레이션)의
+#     소유라 의미가 다르고, 건드리면 그쪽까지 같이 움직인다([[CLAUDE 1-1]] 소비자가 여럿이면 함께 본다).
+#     실제로 시트엔 MD 팀장이 4명이다 — 김병관(전체) · **구본용(키즈)** · 강문영(언더웨어) · 장세미(ACC).
+#     ★키즈 ASN 은 사용자 확정으로 **김병관만** 받는다(2026-09-11) — 구본용은 이 알림 대상이 아니다.
+#     ★키즈 언더웨어(PLM 7건, 히어로 범위엔 아직 없음)도 **대복종 우선 = 강문영**(사용자 확정).
+MD_LEADS = {
+    "Inner": ["김병관"], "Bottom": ["김병관"], "Outer": ["김병관"],
+    "Accessory": ["장세미"], "Shoes": ["장세미"], "Goods": ["장세미"],
+    "Underwear": ["강문영"],
+}
+# PLM 에 아직 없는 품번(히어로 152 중 몇 건이 그렇다)은 `대복종`을 모른다.
+# 그때만 품번 앞 2자로 떨어뜨린다 — 언더웨어를 가를 수 없으므로 정확하지 않아
+# **건수를 로그로 찍어** 많아지면 보이게 한다([[CLAUDE 1-1]] 조용히 틀린 걸 읽는 게 최악).
+MD_LEADS_BY_PREFIX = {"MM": ["김병관"], "MW": ["김병관"], "MK": ["김병관"], "ME": ["장세미"]}
 
 # 담당자 Slack ID 가 없는 건은 여기로 모아 보낸다(누락을 조용히 삼키지 않기 위해).
 FALLBACK_SLACK_ID = T.TEST_DM_SLACK_ID
@@ -168,11 +197,14 @@ def load_owners(sheets) -> dict[str, dict]:
     if any(k not in idx for k in need):
         print(f"[ASN알림] `{PLM_TAB}` 헤더에 담당자 열이 없다 {hdr[:40]} → 담당자 없이 진행")
         return {}
+    if "대복종" not in idx:
+        # 죽지 않고 알린다 — MD 팀장 배정만 품번 앞2자 폴백으로 떨어진다.
+        print(f"[ASN알림] `{PLM_TAB}` 에 `대복종` 열이 없다 → MD 팀장은 품번 접두로 배정")
     out: dict[str, dict] = {}
     for row in vals[1:]:
         def g(k):
-            i = idx[k]
-            return str(row[i]).strip() if i < len(row) and row[i] is not None else ""
+            i = idx.get(k)
+            return str(row[i]).strip() if i is not None and i < len(row) and row[i] is not None else ""
         st = g("style_no")
         if not st:
             continue
@@ -180,7 +212,11 @@ def load_owners(sheets) -> dict[str, dict]:
         prev = out.get(st)
         # 담당자가 더 많이 채워진 행을 남긴다(빈 행이 뒤에 와서 덮는 걸 막는다).
         if prev is None or sum(bool(v) for v in cur.values()) > sum(bool(v) for v in prev.values()):
+            cur["cat"] = g("대복종") or (prev or {}).get("cat", "")
             out[st] = cur
+        elif not prev.get("cat"):
+            # 분류는 담당자와 따로 본다 — 담당자가 비었을 뿐 `대복종`은 차 있는 행이 있다.
+            prev["cat"] = g("대복종")
     return out
 
 
@@ -334,6 +370,36 @@ def _owner_names(own: dict) -> list[str]:
     return out
 
 
+def _sid_of(name: str) -> str:
+    """이름 → Slack ID. ★`담당자매핑` 의 `kind=팀장` 행은 `OWNER_SLACK_IDS` 에 들어가지 않고
+    `TEAM_LEADS` 로 빠진다(`triggers.load_owner_map`). 그걸 몰라 MD 팀장 배정이 0건이었다."""
+    sid = T.OWNER_SLACK_IDS.get(name)
+    if sid:
+        return sid
+    for l in (T.TEAM_LEADS or []):
+        if l.get("name") == name and l.get("slack_id"):
+            return str(l["slack_id"]).strip()
+    return ""
+
+
+def _name_of(sid: str) -> str:
+    """Slack ID → 이름(로그용). 팀장도 같이 역인덱스한다."""
+    for n, v in T.OWNER_SLACK_IDS.items():
+        if v == sid:
+            return n
+    for l in (T.TEAM_LEADS or []):
+        if str(l.get("slack_id") or "").strip() == sid:
+            return str(l.get("name") or sid)
+    return sid
+
+
+def _md_leads(style: str, cat: str) -> list[str]:
+    """그 STY 를 맡는 MD 팀장 이름 목록. `대복종`이 정본, 없으면 품번 접두 폴백."""
+    if cat and cat in MD_LEADS:
+        return MD_LEADS[cat]
+    return MD_LEADS_BY_PREFIX.get(str(style or "")[:2], [])
+
+
 def _recipients(groups):
     want: set[str] = set()
     for g in groups:
@@ -435,6 +501,11 @@ def main() -> int:
         # ★수신자별로 '자기 담당 건만' 담아 보낸다 — 한 통에 전 품목을 담으면 남의 상품까지 보게 된다.
         by_person: dict[str, list] = {}
         lead_sids: set = set()          # 온라인MD 로 들어간 수신자(메시지 꼬리말을 다르게 단다)
+        boss_sids: set = set()          # MD 팀장으로 들어간 수신자
+        boss_cnt: dict[str, int] = {}   # 팀장별 배정 그룹 수(드라이런 확인용)
+        # `대복종`이 비었거나 **MD_LEADS 에 없는 새 값**이라 접두 폴백으로 떨어진 것.
+        # ★새 복종이 생기면 조용히 김병관에게 가므로(접두가 MM/MW/MK) 반드시 건수로 찍는다.
+        no_cat: dict[str, int] = {}
         orphan = []
         for g in groups:
             names = _owner_names(g["owners"])
@@ -449,6 +520,16 @@ def main() -> int:
                 if _sid:
                     targets.add(_sid)
                     lead_sids.add(_sid)
+            # ★MD 팀장 — `대복종`(없으면 품번 접두)로 갈라 자기 팀 전 건을 받는다.
+            _cat = str((g.get("owners") or {}).get("cat") or "")
+            if _cat not in MD_LEADS:
+                no_cat[_cat or "(빈칸)"] = no_cat.get(_cat or "(빈칸)", 0) + 1
+            for _nm in _md_leads(g.get("style"), _cat):
+                _sid = _sid_of(_nm)
+                if _sid:
+                    targets.add(_sid)
+                    boss_sids.add(_sid)
+                    boss_cnt[_nm] = boss_cnt.get(_nm, 0) + 1
             if not targets:
                 orphan.append(g)
                 continue
@@ -456,16 +537,22 @@ def main() -> int:
                 by_person.setdefault(sid, []).append(g)
         print(f"  [{label}] 그룹 {len(groups)} · 수신자 {len(by_person)}명"
               + (f" · 담당자 미매핑 {len(orphan)}그룹" if orphan else ""))
+        # ★팀장 배정을 건수로 찍어 기대치와 대조한다 — 분류가 밀리면 여기서 보인다([[CLAUDE 1-1]]).
+        print(f"      · MD팀장 배정: "
+              + (", ".join(f"{n} {c}그룹" for n, c in sorted(boss_cnt.items(), key=lambda kv: -kv[1])) or "없음")
+              + (" · ⚠ 대복종 미등록 "
+                 + ", ".join(f"{k} {v}그룹" for k, v in sorted(no_cat.items(), key=lambda kv: -kv[1]))
+                 + " → 품번 접두로 배정(MD_LEADS 확인 필요)" if no_cat else ""))
         for sid, gs in sorted(by_person.items()):
-            who = next((n for n, v in T.OWNER_SLACK_IDS.items() if v == sid), sid)
-            tag = " [온라인MD·라인 전건]" if sid in lead_sids else ""
+            who = _name_of(sid)
+            tag = (" [온라인MD·라인 전건]" if sid in lead_sids else "")                 + (" [MD팀장·팀 전건]" if sid in boss_sids else "")
             print(f"      {who} ({sid}) ← {len(gs)}건{tag}")
 
         if not args.send:
             # 미리보기는 가장 많이 받는 사람 기준으로 한 통만 찍는다(전부 찍으면 로그가 길다).
             if by_person:
                 top = max(by_person.items(), key=lambda kv: len(kv[1]))
-                who = next((n for n, v in T.OWNER_SLACK_IDS.items() if v == top[0]), top[0])
+                who = _name_of(top[0])
                 print("-" * 60)
                 print(f"[미리보기] {who} 에게 가는 {len(top[1])}건")
                 print(build_message(top[1], as_of, kind))
@@ -482,6 +569,8 @@ def main() -> int:
                 if sid in lead_sids:
                     # 온라인MD 는 '내 담당 상품'이 아니라 '내 라인 전 건'을 받으므로 그렇게 말한다.
                     msg += chr(10) + "_※ 온라인MD 수신 — 담당 상품이 아니라 **이 라인 전 건**입니다._"
+                if sid in boss_sids:
+                    msg += chr(10) + "_※ MD 팀장 수신 — 담당 상품이 아니라 **팀 전 건**입니다._"
                 if _send_one(msg, sid, tok):
                     ok_any = True
         # 전략팀 전체 사본 — 담당자에게 쪼개 보낸 것과 별개로 전 건을 한 통에.
@@ -490,7 +579,7 @@ def main() -> int:
                 tail = "_전체 사본 · 담당자에게는 각자 담당 건만 갑니다._"
             else:
                 who = ", ".join(
-                    f"{next((n for n, v in T.OWNER_SLACK_IDS.items() if v == sid), sid)}({len(gs)})"
+                    f"{_name_of(sid)}({len(gs)})"
                     for sid, gs in sorted(by_person.items(), key=lambda kv: -len(kv[1])))
                 tail = (f"_※ 테스트 모드 — 실운영이면 {len(by_person)}명에게 쪼개 발송됩니다: "
                         f"{who or '없음'}_"
