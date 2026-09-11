@@ -246,6 +246,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
     heroes_out = []
     day_plan = defaultdict(lambda: {"plan_qty": 0, "actual_qty": 0, "skus": set()})
     day_act = defaultdict(lambda: {"actual_qty": 0})
+    UNPLANNED = []          # (히어로, WMS키, 수량) — 예정에 없던 WMS 입고(아래 블록에서 채움)
 
     for hero in HERO_ORDER:
         skus = hero_sku.get(hero, {})
@@ -373,6 +374,47 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
             for a in actual:
                 day_plan[a["date"]]["actual_qty"] += a["qty"]
                 day_plan[a["date"]]["skus"].add(code)
+
+        # ★★2026-09-11 WMS 에만 있고 생산관리 예정에 없는 입고를 버리지 않는다.
+        #   `입고일자별` 원천은 헤더가 "BARCODE 파싱, **품번-컬러 단위**"인데 실제로는 **컬러가 안 붙은
+        #   STY 행**이 섞여 있다(6/1~ 96종 610,160장). 위 매칭은 SKU(품번-컬러) 키라 그 행을 통째로
+        #   흘렸고, 그래서 **같은 앱의 대시보드 'FW입고'(STY 앞자리 합산)와 입고보드가 갈렸다**
+        #   — 커브드팬츠 390,013 vs 322,044(차이 67,969 중 **66,661 이 컬러 없는 행**).
+        #   ※ 중복이 아님을 실측 확인: 컬러 없는 행이 있는 (일자,스타일) 177조합 중 **166조합
+        #     473,384장은 그날 컬러 행이 아예 없다**(정확히 겹치는 건 1조합 506장뿐).
+        #     → 실제 입고인데 바코드에서 컬러만 못 뽑은 것이다.
+        #   컬러를 지어내 배분하지 않고 '(컬러 미상)' 행으로 **그대로 드러낸다**(원칙: 필터로 영구
+        #   드롭하지 말고 표시 단계에서 가린다). 근본 수정은 원천 바코드 파싱 쪽.
+        if dbx_actuals is not None:
+            _used = {m["dbx_key"] for m in merged.values()}
+            _hstyles = {m["style"] for m in merged.values() if m["style"]}
+            for _k, _arr in dbx_actuals.items():
+                if _k in _used:
+                    continue
+                _base = _k.split("-")[0]
+                if _base not in _hstyles:
+                    continue
+                _act = sorted([a for a in _arr if a["date"] >= _cut], key=lambda x: x["date"])
+                _t = sum(a["qty"] for a in _act)
+                if not _t:
+                    continue
+                _nm = next((m["name"] for m in merged.values() if m["style"] == _base and m["name"]), "")
+                sku_list.append({
+                    "sku": _k, "style": _base, "name": _nm,
+                    "color": "(컬러 미상)" if _k == _base else "(예정 없음)",
+                    # 예정이 없으므로 planned 는 비우고, 전량을 leftover(계획 외 확정)로 보낸다.
+                    "planned": [], "actual": _act, "leftover": [dict(a) for a in _act],
+                    "plan_total": 0, "actual_total": _t,
+                    "sheet_total": 0, "sheet_actual": [], "ordered_total": 0,
+                    "status": "예정 외", "unplanned": True,
+                    "asn_total": 0, "asn_dates": [],
+                    "late_days": None, "short_late": False, "next_date": None})
+                h_act += _t
+                UNPLANNED.append((hero, _k, _t))
+                for a in _act:
+                    day_plan[a["date"]]["actual_qty"] += a["qty"]
+                    day_plan[a["date"]]["skus"].add(_k)
+
         # 정렬: 상태(미입고 먼저) → next_date
         srank = {"미입고": 0, "일부 확정": 1, "확정 대기": 2, "예정": 3, "확정 완료": 4}
         sku_list.sort(key=lambda s: (srank.get(s["status"], 9), s["next_date"] or "9999"))
@@ -387,12 +429,32 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
              "sku_count": len(v["skus"])}
             for d, v in sorted(day_plan.items())]
 
+    # ★반영·미반영을 **건수로 찍는다** — 조용히 빠지면 다음 사람이 또 같은 차이를 본다.
+    #   미매핑 = 바코드 파싱이 아예 실패해 sku_code 가 숫자(바코드)인 행. 품번을 모르니 히어로에 못 붙인다
+    #   (2026-09-11 실측 6/1~ 70,000장, 예: 8809894048837). 이건 **대시보드 FW입고에도 안 잡힌다**.
+    _bare_q = sum(q for _, k, q in UNPLANNED if "-" not in k)
+    _unmapped = 0
+    if dbx_actuals is not None:
+        _cutiso = CUTOFF.isoformat()
+        for _k, _arr in dbx_actuals.items():
+            if not re.match(r"^M[A-Z0-9]{8}", _k):
+                _unmapped += sum(a["qty"] for a in _arr if a["date"] >= _cutiso)
+    if UNPLANNED or _unmapped:
+        print(f"[입고보드] 예정 외 WMS 입고 반영: {len(UNPLANNED)}건 "
+              f"{sum(q for _, _, q in UNPLANNED):,}장 (컬러 미상 {_bare_q:,}장) "
+              f"· 바코드 미파싱으로 히어로에 못 붙인 물량 {_unmapped:,}장")
+
     return {
         "season": "26FW", "as_of": as_of.isoformat(),
         "source": "생산관리 탭(입고예정 AK/AL) + " + ("DBX WMS 입고확정(입고일자별)" if dbx_actuals is not None else "시트 입고확정(AO/AP)")
                    + (" + ASN 입하통보" if asn else ""),
         "asn_on": bool(asn),
         "cutoff": CUTOFF.isoformat(), "grace_days": CONFIRM_GRACE_DAYS,
+        # 예정에 없던 WMS 입고(=컬러 미상 포함)와, 바코드 파싱 실패로 히어로에 못 붙인 물량.
+        # 화면 각주용 — 숫자가 대시보드와 갈리는 이유를 사람이 읽을 수 있게 같이 싣는다.
+        "unplanned_qty": sum(q for _, _, q in UNPLANNED),
+        "unplanned_bare_qty": _bare_q,
+        "unmapped_qty": _unmapped,
         "heroes": heroes_out, "days": days}
 
 

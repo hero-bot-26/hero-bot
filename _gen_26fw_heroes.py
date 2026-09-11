@@ -475,7 +475,9 @@ html2, n = re.subn(r"const HEROES = \[.*?\n\];", lambda _m: new_block, html, cou
 assert n == 1, f"HEROES 배열 교체 실패 (matched {n})"
 html2, nt = re.subn(r"const APP_TODAY = '[^']*';",
                     f"const APP_TODAY = '{TODAY.isoformat()}';", html2, count=1)
-# 홈 화면 실적 카드 기준일(하드코딩 SALES_AS_OF)도 DASHBOARD.as_of와 동일하게 매일 갱신
+# 홈 화면 실적 카드 기준일(하드코딩 SALES_AS_OF)도 DASHBOARD.as_of와 동일하게 매일 갱신.
+#   ★as_of 는 **생성일**이고 실적·목표 창은 전부 전일(T-1)까지다(target_26fw._windows 와 동일).
+#   화면 라벨은 앱의 `_asOfThru()` 가 전일로 환산해 찍는다 — 여기서 하루 빼지 말 것(이중 차감).
 html2, nsa = re.subn(r"const SALES_AS_OF = '[^']*';",
                      f"const SALES_AS_OF = '{TODAY.isoformat()}';", html2, count=1)
 # 실제 생성(갱신) 시각(KST). GitHub Actions 스케줄 지연으로 '매일 10시' 고정표기가 실제(≈13시)와

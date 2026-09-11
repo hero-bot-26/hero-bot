@@ -194,15 +194,21 @@ def _locate_src(ws) -> dict:
     scan_c = min(ws.max_column, 40)
     loc, fell_back = {}, []
 
-    c_label = None
+    # ★★2026-09-11 라벨열은 **하나라고 가정하지 않는다**. 담당자가 그리드 오른쪽에 라벨 블록을
+    #   하나 더 만들면(현재 그런 상태) 종전 코드는 왼쪽 것에서 break 하고 오른쪽 라벨열을 **데이터
+    #   열로 읽어**, 시리즈명이 'HERO시리즈'인 유령 시리즈가 생겼다. 그 유령이 정본 '목표 그래프'에
+    #   없으니 매일 "시리즈 불일치 — 제외하고 주입" 슬랙이 울렸다(주입 자체는 정상이었다).
+    #   → 라벨 키를 다 가진 열은 **전부** 라벨열로 보고 데이터에서 뺀다(첫 매치에서 멈추지 않는다).
+    label_cols = []
     for c in range(1, scan_c + 1):
         labels = {re.sub(r"\s+", "", str(ws.cell(r, c).value or ""))
                   for r in range(1, scan_r + 1)}
         if all(k in labels for k in SRC_LABEL_KEYS):
-            c_label = c
-            break
-    if c_label is None:
-        c_label, _ = SRC_C_DATE, fell_back.append("라벨열")
+            label_cols.append(c)
+    if not label_cols:
+        label_cols, _ = [SRC_C_DATE], fell_back.append("라벨열")
+    c_label = label_cols[0]          # 날짜·헤더행 기준은 가장 왼쪽 라벨열
+    loc["label_cols"] = set(label_cols)
     loc["c_date"] = c_label
     loc["c_data0"] = c_label + 1
 
@@ -282,10 +288,15 @@ def load_source(drive):
     loc = _locate_src(ws)
     print(f"[원천 레이아웃] 주차 {_col_letter(loc['c_week'])}열 · 날짜/라벨 {_col_letter(loc['c_date'])}열 "
           f"· 데이터 {_col_letter(loc['c_data0'])}열~ · 일자 시작 R{loc['r_daily0']}"
+          + (f" · 라벨열 {len(loc['label_cols'])}개("
+             + ",".join(_col_letter(c) for c in sorted(loc["label_cols"])) + ") — 첫 열 외 데이터에서 제외"
+             if len(loc.get("label_cols", ())) > 1 else "")
           + (f"  ⚠ 폴백: {', '.join(loc['fell_back'])}" if loc["fell_back"] else ""))
 
     cols, blank_series = [], []
     for c in range(loc["c_data0"], ws.max_column + 1):
+        if c in loc.get("label_cols", ()):      # 오른쪽에 또 있는 라벨열 — 데이터가 아니다
+            continue
         series, ch = ws.cell(loc["SRC_R_SERIES"], c).value, ws.cell(loc["SRC_R_CH"], c).value
         style = str(ws.cell(loc["SRC_R_STYLE"], c).value or "").strip()
         if not series or not ch:
