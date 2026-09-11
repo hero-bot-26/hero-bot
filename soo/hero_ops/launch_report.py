@@ -72,8 +72,22 @@ def _dbx_token() -> str:
     return p.read_text(encoding="utf-8").strip() if p.exists() else ""
 
 
-def dbx_sql(sql: str, wait: int = 300) -> list[list]:
-    """SQL 실행 후 data_array 반환. 실패하면 예외를 올린다(조용한 0 금지, [[CLAUDE 2-6]])."""
+def dbx_sql(sql: str, wait: int = 300, attempts: int = 3) -> list[list]:
+    """SQL 실행 후 data_array 반환. 실패하면 예외를 올린다(조용한 0 금지, [[CLAUDE 2-6]]).
+
+    ★★`PENDING` 으로 시간을 다 쓰는 건 쿼리가 느린 게 아니라 **공유 웨어하우스가 혼잡**해
+      실행 슬롯을 못 받은 것이다(2026-09-11 실측 — 같은 쿼리가 혼잡 창을 벗어나자 5초 안에
+      SUCCEEDED). 그래서 두 가지를 한다.
+
+      ①**포기할 땐 반드시 취소한다.** 예전엔 폴링만 멈추고 statement 를 그대로 뒀는데,
+        그 쿼리는 서버에서 계속 살아 **공유 웨어하우스 슬롯을 물고 있다**. 매시 도는 잡이
+        실패할 때마다 고아가 하나씩 쌓이니, 혼잡을 우리가 더 키우고 다음 시도까지 막는다.
+      ②**혼잡이면 한 번 더 시도한다.** 대기 초과는 고장이 아니라 줄서기라서, 취소하고
+        잠깐 쉬었다 다시 내면 대개 통과한다. 이걸 안 하면 자연히 풀릴 상태를 두고
+        잡이 빨갛게 죽고 알림이 나가 **사람이 없는 고장을 찾으러 간다**(실제로 밟음).
+
+      권한·문법 오류 같은 **진짜 실패는 즉시 올린다** — 재시도는 대기 초과에만 건다.
+    """
     host = (os.environ.get("DATABRICKS_HOST") or "").strip() or DBX_HOST_DEFAULT
     tok = _dbx_token()
     if not tok:
@@ -89,18 +103,43 @@ def dbx_sql(sql: str, wait: int = 300) -> list[list]:
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"DBX HTTP {e.code}: {e.read().decode()[:400]}") from e
 
-    r = api("POST", "/api/2.0/sql/statements", {
-        "warehouse_id": WAREHOUSE, "statement": sql, "wait_timeout": "30s",
-        "on_wait_timeout": "CONTINUE", "format": "JSON_ARRAY", "disposition": "INLINE"})
-    sid = r.get("statement_id")
-    t0 = time.time()
-    while r.get("status", {}).get("state") in ("PENDING", "RUNNING") and time.time() - t0 < wait:
-        time.sleep(3)
-        r = api("GET", f"/api/2.0/sql/statements/{sid}")
-    st = r.get("status", {})
-    if st.get("state") != "SUCCEEDED":
-        raise RuntimeError(f"DBX 실패: {json.dumps(st, ensure_ascii=False)[:400]}")
-    return (r.get("result") or {}).get("data_array") or []
+    last = ""
+    for attempt in range(1, max(1, attempts) + 1):
+        r = api("POST", "/api/2.0/sql/statements", {
+            "warehouse_id": WAREHOUSE, "statement": sql, "wait_timeout": "30s",
+            "on_wait_timeout": "CONTINUE", "format": "JSON_ARRAY", "disposition": "INLINE"})
+        sid = r.get("statement_id")
+        t0 = time.time()
+        while r.get("status", {}).get("state") in ("PENDING", "RUNNING") and time.time() - t0 < wait:
+            time.sleep(3)
+            r = api("GET", f"/api/2.0/sql/statements/{sid}")
+        st = r.get("status", {})
+        state = st.get("state")
+        if state == "SUCCEEDED":
+            return (r.get("result") or {}).get("data_array") or []
+
+        if state in ("PENDING", "RUNNING"):
+            # 대기 초과 = 혼잡. 고아를 남기지 않게 취소부터 하고 물러난다.
+            waited = int(time.time() - t0)
+            last = f"{state} {waited}초 초과(웨어하우스 혼잡 추정)"
+            if sid:
+                try:
+                    api("DELETE", f"/api/2.0/sql/statements/{sid}")
+                except Exception as e:          # 취소 실패는 치명적이지 않다 — 기록만
+                    print(f"[dbx] statement {sid} 취소 실패: {e}")
+            if attempt < attempts:
+                backoff = 30 * attempt
+                print(f"[dbx] {last} — {attempt}/{attempts} 회차, {backoff}초 뒤 재시도")
+                time.sleep(backoff)
+                continue
+        else:
+            # 권한·문법 등 진짜 실패는 재시도하지 않는다.
+            raise RuntimeError(f"DBX 실패: {json.dumps(st, ensure_ascii=False)[:400]}")
+
+    raise RuntimeError(
+        f"DBX 대기 초과: {last} — {attempts}회 시도 모두 실행 슬롯을 못 받았다. "
+        f"공유 SQL 웨어하우스(2X-Small·최대 5클러스터) 혼잡이 단골 원인이고, "
+        f"KST 10시 전후 대형 잡과 겹칠 때 나온다. 잡은 멱등이라 다음 정시 실행에서 스스로 복구된다.")
 
 
 def goods_nos(style: str) -> tuple[list[int], list[int]]:

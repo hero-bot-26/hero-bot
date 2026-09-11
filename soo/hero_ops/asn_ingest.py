@@ -174,7 +174,11 @@ LEFT JOIN sk ON sk.sku = a.sku AND sk.EINDT = a.EINDT
 LEFT JOIN st ON st.style = a.style AND st.EINDT = a.EINDT AND sk.sku IS NULL
 ORDER BY a.EINDT DESC, a.ins_at DESC, a.sku
 """
-    rows = dbx_sql(sql, wait=600)
+    # ★대기 예산 = 240초 x 3회(+백오프 30·60초) ≈ 13.5분 < 잡 timeout 20분.
+    #   예전엔 `wait=600` 1회였는데, 재시도를 붙이면서 600x3 이면 잡 자체가 GH 하드
+    #   타임아웃에 걸려 **깔끔한 에러 대신 잘린 로그**가 남는다. 한 번을 길게 기다리는
+    #   것보다 짧게 끊고 다시 줄 서는 쪽이 혼잡에 강하다(실행 자체는 평소 3초다).
+    rows = dbx_sql(sql, wait=240, attempts=3)
     if not rows:
         # 조용한 0 금지 — 빈 결과는 실패로 올린다([[CLAUDE 2-6]]).
         raise RuntimeError(f"ASN 0행 — 품번 {len(styles)}개 · lookback {lookback}일. "

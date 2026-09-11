@@ -139,4 +139,7 @@ jobs:
           python -m soo.hero_ops.notify
           "⚠️ ASN 수집(asn_ingest)이 실패했다 ($(date -u +%Y-%m-%d\ %H:%M) UTC) —
           앱 [입하 통보] 탭이 옛 데이터로 고착된다.
-          단골 원인: DATABRICKS_PAT 만료, pbo.moms.iif_bam_asn 권한, 시트 권한."
+          ★먼저 볼 것: 예외 메시지가 'DBX 대기 초과'면 **공유 SQL 웨어하우스 혼잡**이라
+          고장이 아니다(KST 10시 전후 대형 잡과 겹칠 때 난다). 잡은 멱등이라 다음 정시
+          실행에서 스스로 복구되니, 한 번이면 지켜보고 연속이면 손을 댄다.
+          그 밖의 단골 원인: DATABRICKS_PAT 만료, pbo.moms.iif_bam_asn 권한, 시트 권한."
