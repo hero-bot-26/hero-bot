@@ -23,8 +23,8 @@ DEFAULTS = {
     "imc_calendar": {  # IMC 캘린더 액션 (SNS/CRM 통합 관리 시트의 2)일정·5)온사이트·6)PR·4)IG광고)
         "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "2)일정", "range": "", "expected": []},
     # ★sns_perf / crm_perf 는 2026-08-15 제거 — SNS/CRM 채널 성과가 앱 화면에 렌더된 적이 없어 수집 폐지.
-    "budget": {        # 월 예산 (PMKT/CRM 예산)
-        "id": "11f6JTGvms3uVcuVJW-M9Wa9-Lt4x3Tjn5IFJ2m8jifE", "tab": "PMKT/CRM 예산", "range": "", "expected": []},
+    # ★budget('PMKT/CRM 예산') 은 2026-09-11 제거 — 같은 이유(앱이 budRows 를 만들고 렌더는 안 함)
+    #   + 월 라벨 2026/01~06 하드코딩이라 7월 이후는 못 읽는 상태였다. 사용자 지시로 원천째 폐지.
     "dashboard": {     # 실적 대시보드 (Databricks 잡이 채우는 전용 시트, raw/PMKT 탭)
         "id": "1iHH2qG8Uj5vmlC3aXkey96usktWODmguDPD_ToT2rfA", "tab": "", "range": "", "expected": []},
     "pdp_daily": {     # PDP 일별 유입 — 원천이 웨어하우스 뷰라 시트 ID 없음(#2에서 별도 처리)

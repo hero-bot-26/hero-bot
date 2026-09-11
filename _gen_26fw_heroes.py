@@ -686,8 +686,8 @@ GOAL_TAB = "히어로 마케팅 목표"
 MKT_SHEET_ID = "16jqlhmynIxXckdrpjICaDNajZd-xjnrl0x332qDCtzg"  # 마케팅팀 MKT calendar (캠페인 레벨/진행상황·에너지/바이럴)
 
 # SNS 클러스터 소스키는 현재 물리적으로 같은 시트에 공존(imc_calendar). 소스키별 독립 오버라이드 유지:
-#   imc_calendar → SNS_SHEET_ID 전역(일정/온사이트/PR/IG광고) · budget → 호출부 sid=
-#   (sns_perf/crm_perf 는 2026-08-15 채널 성과 폐지와 함께 제거됨)
+#   imc_calendar → SNS_SHEET_ID 전역(일정/온사이트/PR/IG광고)
+#   (sns_perf/crm_perf 는 2026-08-15 채널 성과 폐지와 함께 · budget 은 2026-09-11 예산 폐지와 함께 제거됨)
 # (_REG·_src 는 파일 상단 sheets 정의 직후에 로드됨 — DASHBOARD 주입 블록이 여기보다 앞서 _src 를 씀)
 SNS_SHEET_ID = _src("imc_calendar") or SNS_SHEET_ID
 print("[소스] " + " · ".join(_SRCREG.describe(_REG)))
@@ -1409,7 +1409,11 @@ except Exception as _e:
 #   앱 renderImcPerf 안에 카드 정의(igCard/crmCard/hl)는 있었지만 최종 innerHTML 조립부가 한 번도
 #   참조하지 않아 **화면에 나온 적이 없다** — 생성기만 매일 손입력 탭 3개를 읽어 Sheets 쿼터를 쓰고
 #   '★원천 정체' 경고 3줄(우먼 IG 2026-02·CRM 2025-12 고착)을 매일 띄우고 있었다.
-#   남기는 것 = 예산(PMKT/CRM 예산) + 히어로별 PMKT 성과(Databricks). 이게 실제로 화면에 그려진다.
+#   남기는 것 = 히어로별 PMKT 성과(Databricks). 이게 실제로 화면에 그려진다.
+# ★2026-09-11: 예산('PMKT/CRM 예산' 탭)도 같은 이유로 **폐지**했다(사용자 지시).
+#   앱 renderImcPerf 가 budRows 를 만들기만 하고 innerHTML 에서 한 번도 참조하지 않아 화면에 나온 적이
+#   없고, 파서는 월 라벨이 2026/01~06 **6개월 하드코딩**이라 7월 이후는 원리상 못 읽는 상태였다.
+#   → 생성기·앱·소스 레지스트리에서 통째로 제거. 다시 살릴 거면 월 라벨을 기준일에서 산출할 것.
 nperf = 0
 try:
     import re as _re3
@@ -1417,22 +1421,6 @@ try:
     def _n(s):
         d = _re3.sub(r"[^\d]", "", str(s or ""))
         return int(d) if d else 0
-
-    # 예산(PMKT/CRM 예산): 구분 라벨 행 × 월 컬럼 (헤더명 기반)
-    _mlbl = ["2026/01", "2026/02", "2026/03", "2026/04", "2026/05", "2026/06"]
-    _mkey = ["m1", "m2", "m3", "m4", "m5", "m6"]
-    budget = {"months": _mlbl, "hero": [], "perf": []}
-    _bkeys = {"gubun": ["구분"]}
-    _bkeys.update({k: [lbl] for k, lbl in zip(_mkey, _mlbl)})
-    rows, cm = _sns_table("PMKT/CRM 예산", _bkeys, last_col="P", max_row=40,
-                          sid=_src("budget") or SNS_SHEET_ID)
-    _hrow = next((r for r in rows if _gv(r, cm, "gubun") == "Hero"), None)
-    _prow = next((r for r in rows if "퍼포먼스" in _gv(r, cm, "gubun")), None)
-    for k in _mkey:
-        budget["hero"].append(_n(_gv(_hrow, cm, k)) if _hrow else 0)
-        budget["perf"].append(_n(_gv(_prow, cm, k)) if _prow else 0)
-    if not _hrow:
-        _HEALTH.append("예산 Hero 행 못 찾음")
 
     # 시트 읽기 헬퍼(_raw/_g2/_hdr_idx) — 아래 '히어로 마케팅 목표' 로드 등에서 사용.
     # ★히어로별 PMKT 성과는 더 이상 캠페인 트래커가 아니라 Databricks 탭에서 로드한다(하단 hero_perf 블록).
@@ -2280,7 +2268,7 @@ try:
             _HEALTH.append(f"히어로 PMKT 0건 → 기존값 보존({len(_prev_heroes)}종)")
             print(f"[보존] 히어로 PMKT 읽기 0 — 앱 기존값 유지({len(_prev_heroes)}종)")
 
-    perf = {"budget": budget, "hero": hero_list,
+    perf = {"hero": hero_list,
             # wks[].p 의 첫 값은 이 배열의 인덱스(경로명 반복 저장을 피하려고 인덱스로 넣는다)
             "path_names": _PATH_NAMES}
     # ★제어문자 탐지 — 손입력·UTM 값에 \x00 같은 제어문자가 섞이면 json 이 \uXXXX 로 이스케이프하고,
@@ -2305,7 +2293,7 @@ try:
     perf_block = "const IMC_PERF = " + json.dumps(perf, ensure_ascii=False) + ";"
     html2, nperf = re.subn(r"const IMC_PERF = \{.*?\};", lambda _m: perf_block, html2, count=1, flags=re.DOTALL)
     assert nperf == 1, f"IMC_PERF 교체 실패 (matched {nperf})"
-    print(f"IMC_PERF 주입: 히어로PMKT {len(hero_list)}종 · 예산 {len(budget['months'])}개월")
+    print(f"IMC_PERF 주입: 히어로PMKT {len(hero_list)}종")
 except Exception as e:
     _HEALTH.append(f"IMC_PERF 주입 예외: {type(e).__name__}")
     print(f"[주의] IMC_PERF 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
