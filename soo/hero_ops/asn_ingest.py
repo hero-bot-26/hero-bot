@@ -174,11 +174,16 @@ LEFT JOIN sk ON sk.sku = a.sku AND sk.EINDT = a.EINDT
 LEFT JOIN st ON st.style = a.style AND st.EINDT = a.EINDT AND sk.sku IS NULL
 ORDER BY a.EINDT DESC, a.ins_at DESC, a.sku
 """
-    # ★대기 예산 = 240초 x 3회(+백오프 30·60초) ≈ 13.5분 < 잡 timeout 20분.
-    #   예전엔 `wait=600` 1회였는데, 재시도를 붙이면서 600x3 이면 잡 자체가 GH 하드
-    #   타임아웃에 걸려 **깔끔한 에러 대신 잘린 로그**가 남는다. 한 번을 길게 기다리는
-    #   것보다 짧게 끊고 다시 줄 서는 쪽이 혼잡에 강하다(실행 자체는 평소 3초다).
-    rows = dbx_sql(sql, wait=240, attempts=3)
+    # ★대기 예산 = 900초 x 3회(+백오프 30·60초) ≈ 47분 < 잡 timeout 60분.
+    #   (2026-09-14 확대 — 전엔 240초 x 3회 ≈ 13.5분이었다.)
+    #   9/14(월) 혼잡이 00:26Z~01:16Z 최소 50분 이어져 **두 런 연속 3회를 다 소진**했다.
+    #   9/11 과 합쳐 실패 4건이 전부 00~01Z(KST 09~10시) 창이다. 13.5분으로는 그 창을
+    #   못 건너고, 짧게 끊고 다시 내면 **대기열 자리를 매번 버리고 맨 뒤로 선다**.
+    #   → 한 번을 길게 기다려 자리를 지킨다. 대기 중인 statement 는 실행 슬롯을 물지 않고
+    #   줄만 선다(포기할 땐 여전히 취소한다 — launch_report.dbx_sql).
+    #   47분 + 다음 hourly 런(concurrency 로 이어서 대기)이면 1시간 창이 사실상 끊김 없이 덮인다.
+    #   ★잡 timeout 을 같이 안 늘리면 GH 하드 타임아웃에 걸려 **잘린 로그**만 남는다(yml 과 짝).
+    rows = dbx_sql(sql, wait=900, attempts=3)
     if not rows:
         # 조용한 0 금지 — 빈 결과는 실패로 올린다([[CLAUDE 2-6]]).
         raise RuntimeError(f"ASN 0행 — 품번 {len(styles)}개 · lookback {lookback}일. "
