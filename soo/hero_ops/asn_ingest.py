@@ -24,12 +24,28 @@ ASN 원천은 실시간에 가깝게 적재된다. 2026-09-09 실측에서 **히
   - `CMENGE`  = 잔량으로 보이나 `MENGE = EINQTY + CMENGE` 가 54%에서만 성립 → 참고값.
   세 필드의 정확한 정의는 원본 테이블(`supplier_order_asn`) 권한을 받아 대조해야 확정된다.
 
-★남은 한계 — 취소 ASN
-  준 쿼리의 `delete_flag NOT IN ('X')` 에 해당하는 컬럼이 `iif_bam_asn` 에는 없다.
-  대안으로 찾은 `gspread.musinsastandard.mutandard_asn_deleted` 는 asn_no 체계가 달라
-  (그쪽은 `MUTA`·`NIKE` 류, 이쪽은 `TX-INB…`) 7~8월 매칭이 0건이었다. 지금은 못 거른다.
-  매 실행마다 전 구간을 다시 읽어 덮으므로(멱등) 취소분이 사라지면 자연히 빠지지만,
-  '취소됐는데 원천에 남는' 경우는 잡히지 않는다.
+★취소 ASN — ERP 원본(`pbo.erp.supplier_order_asn`) delete_flag 로 `cancelled` 딱지(2026-09-10).
+
+★★입고확정 매칭 = ASN 번호 정확 매칭 (2026-09-15, ±3일 창 폐기)
+  WMS `ui_grreport_detail` 은 입고 오더마다 **`ORD_OPT_NO` = ASN 번호**(`TX-INB…`·`260902-MUTAN-…`),
+  `GDS_CD` = ZZ_BARCODE 와 같은 `품번+컬러+사이즈` 문자열을 들고 있다(`REF_NO1/2` = PO/라인).
+  그래서 "이 통보분이 WMS 에 잡혔나"를 날짜 창 없이 **ASN × SKU 로 바로** 센다.
+  옛 방식(같은 SKU 의 실입고를 납품일 ±3일로 붙이고 통보량 비례 안분 + 캡)이 틀리던 두 경우 —
+  ①창 밖 입고: 빅토리아 울 `MWFWL9A25` 8/29 통보 7,888 이 **8/25 에 정확히 7,888 입고**됐는데 0% ·
+    데님 8/7 통보분이 8/13 입고라 0% ②중복 등록이 실입고를 나눠 가짐: 슬랙스 `MMDPL3Z07` 8/7 통보 2건이
+    WMS 확정 4,933 을 안분받아 둘 다 54%(실제로는 13:54 통보만 100% 입고, 10:06 통보는 입고대기 0).
+  ★실측 연결률 = 최근 45일 ASN×SKU 의 97%+ 가 WMS 오더를 가진다(없는 건 WMS 오더 생성 전인 최근분).
+
+★★중복 등록 = `dup_qty` 딱지 (2026-09-15)
+  업체가 같은 PO·SKU·납품일로 ASN 을 **다시 등록**하면 앞 통보가 취소 없이 남는다(ERP delete_flag 도 비어 있음).
+  WMS 는 새 통보로만 입고하고 옛 통보 오더는 '입고대기' 로 영원히 남아 화면에 '확정대기' 로 굳는다.
+  → 유예(`DUP_GRACE_DAYS`)가 지났는데 **WMS 가 사실상 안 받은 통보**(입고 10% 미만)의 미입고분을,
+  같은 SKU·PO 로 납품일 ±3일 안에 등록된 다른 ASN 이 실제 입고한 수량 한도 안에서 `dup_qty` 로 표시한다
+  (`dup_of` = 그 ASN). 행은 버리지 않는다([[CLAUDE 1-12]]). 대부분 입고된 통보의 잔량은 판정하지 않는다
+  (검수 부족분과 못 가른다). ★날짜가 달라도 본다 — `MMFDJ9A82` 는 8/27 통보를 8/28 로 옮겨 재등록했다.
+  ★규칙을 PO 잔량·등록시각으로 짜려던 시도는 실측으로 폐기 — 같은 날 분할 출고(트럭 2대)가 흔하고,
+  WMS 가 받아 준 쪽이 먼저 등록된 통보인 경우도 절반이라 '나중 것이 정본'이 성립하지 않았다.
+  실입고라는 결과로만 판정한다.
 
 ZZ_BARCODE 파싱
   바코드 숫자가 아니라 `품번(9)+컬러(2)+사이즈` 문자열이다(`MWFPCAA12GR027`).
@@ -55,18 +71,35 @@ TAB = "_ASN"
 
 # 며칠치를 담을까 — 화면은 최근 것만 보지만, 뒤늦게 확정되는 건이 있어 넉넉히 본다.
 LOOKBACK_DAYS = 45
+# 중복 등록 판정 유예 — 같은 날 분할 출고의 두 번째 트럭이 하루이틀 늦게 확정되는 건 정상이다.
+#   입고 보드의 확정 유예(`inbound_board.CONFIRM_GRACE_DAYS` = 3)와 같은 값을 쓴다.
+DUP_GRACE_DAYS = 3
+DUP_DATE_WINDOW = 3          # 재등록은 납품일을 옮기기도 한다 — 같은 SKU·PO 의 ±N일 통보를 형제로 본다
+DUP_MAX_RECV_RATIO = 0.1     # 이만큼도 안 들어온 통보만 중복 후보(대부분 들어온 통보의 잔량은 검수 부족분)
+# 유예 지난 통보 중 WMS 오더가 연결된 비율의 하한 — 밑돌면 키(ORD_OPT_NO·GDS_CD) 형식이 바뀐 것이다.
+#   조용히 전건 '확정대기' 가 되느니 실패로 올린다([[CLAUDE 1-1]] 값 입도가 바뀌면 교집합이 0 이 된다).
+MIN_LINK_RATIO = 0.8
 
+# ★열은 끝에만 붙인다 — 앱·알림은 헤더 이름으로 읽지만 옛 범위(A1:T 등)가 남아 있을 수 있다.
 HEADER = ["asn_no", "po_no", "po_cnt", "sku", "style", "color", "color_nm", "hero", "name",
           "eindt", "qty", "po_qty", "remain", "supplier", "warehouse",
-          "sts", "ins_at", "upd_at", "recv_qty", "recv_dates", "cancelled"]
+          "sts", "ins_at", "upd_at", "recv_qty", "recv_dates", "cancelled",
+          "wms_linked", "dup_qty", "dup_of"]
+
+
+def _col(n: int) -> str:
+    s = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+LAST_COL = _col(len(HEADER))     # 범위는 HEADER 에서 유도한다(열이 늘 때 뒤 열이 잘리던 사고 2회)
 
 
 def fetch_asn(styles: list[str], lookback: int = LOOKBACK_DAYS) -> list[list]:
-    """히어로 품번의 ASN + 같은 SKU 의 WMS 실입고(±3일)를 한 번에 읽는다.
-
-    WMS 를 EINDT 정확일치가 아니라 ±3일 창으로 붙이는 이유 = 통보일과 입고확정일이
-    같은 날인 게 89% 지만 나머지는 하루이틀 밀린다. 정확일치로 잡으면 '확정대기'가 과다해진다.
-    """
+    """히어로 품번의 ASN + 그 ASN 번호로 잡힌 WMS 실입고를 한 번에 읽는다(상단 주석 참조)."""
     if not styles:
         raise RuntimeError("히어로 품번이 비었다 — HERO STY 매핑부터 확인할 것")
     in_styles = ",".join(f"'{s}'" for s in styles)
@@ -82,7 +115,8 @@ WITH asn AS (
   --     ①컬러 마스터에 없는 코드로 판정 → `LG`·`SW`·`AH`·`KH`·`BR` 이 마스터에 빠져 라이트다운이 접힘
   --     ②WMS 적재형태로 판정 → 의류도 품번 단위 적재 이력이 섞여 커브드팬츠가 접힘
   --     ③코드에 숫자면 사이즈로 판정 → 양말은 WMS 도 `MEASC0Z03-77` 로 사이즈째 적재해서 깨짐
-  --   결론: **접지 않는다.** SKU 는 항상 품번-코드로 두고 WMS 를 두 키(품번-코드 / 품번)로 본다.
+  --   결론: **접지 않는다.** SKU 는 항상 품번-코드로 둔다. WMS 는 STL_NO 가 아니라 ZZ_BARCODE 와
+  --   같은 형식인 `GDS_CD` 로 붙이므로 상품군별 STL_NO 적재형태 차이를 탈 일이 없다.
   SELECT DELVNO,
          concat(substr(ZZ_BARCODE,1,9),'-',substr(ZZ_BARCODE,10,2)) sku,
          substr(ZZ_BARCODE,1,9) style,
@@ -125,53 +159,33 @@ color AS (
   WHERE nullif(trim(color_cd),'') IS NOT NULL GROUP BY 1
 ),
 wms AS (
-  -- STL_NO 는 상품군에 따라 `품번-컬러`·`품번-사이즈`·`품번` 이 섞여 있다. 그대로 두고 두 번 본다.
-  SELECT STL_NO sku, ACT_DATE, sum(ACT_QTY) qty
+  -- ★ASN 번호 정확 매칭. WMS 입고 오더의 `ORD_OPT_NO` 가 ASN 번호다(`TX-INB…` 외 `260902-MUTAN-…`
+  --   류도 있으니 접두로 거르지 말 것 — 실측으로 95건이 그 형식이었다).
+  --   ★ORD_TYPE·SPR_NM 필터는 걸지 않는다 — ASN 번호로 이미 좁혀졌고, 걸면 조용히 빠질 뿐이다.
+  --   linked = 상태 무관 오더 존재 여부(입고대기 포함) — 연결률 가드와 중복 판정에 쓴다.
+  SELECT ORD_OPT_NO asn_no,
+         concat(substr(GDS_CD,1,9),'-',substr(GDS_CD,10,2)) sku,
+         sum(CASE WHEN ORD_STATUS NOT IN ('출고취소','입고취소','입고대기') THEN ACT_QTY ELSE 0 END) qty,
+         concat_ws(',', sort_array(collect_set(
+           CASE WHEN ORD_STATUS NOT IN ('출고취소','입고취소','입고대기') AND ACT_QTY > 0 THEN ACT_DATE END))) dts
   FROM pbo.moms.ui_grreport_detail
-  WHERE ORD_STATUS NOT IN ('출고취소','입고취소','입고대기') AND ORD_TYPE = '일반' AND SPR_NM = 'MUSINSA'
-    AND ACT_DATE >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {int(lookback) + 7}), 'yyyyMMdd')
-    AND split_part(STL_NO, '-', 1) IN ({in_styles})
+  WHERE PLN_DATE >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {int(lookback) + 30}), 'yyyyMMdd')
+    AND ORD_OPT_NO IN (SELECT DISTINCT DELVNO FROM asn)
   GROUP BY 1, 2
-),
-sk AS (  -- ① 품번-코드 정확 매칭. ★(sku, 납품일) 단위 — ASN(DELVNO)별로 잡으면 같은 실입고를
-         --   여러 ASN 이 각각 전량 가져가 과대계상된다(실측: 통보 60 인데 확정 320).
-  SELECT a.sku, a.EINDT, sum(w.qty) qty,
-         concat_ws(',', sort_array(collect_set(w.ACT_DATE))) dts
-  FROM (SELECT DISTINCT sku, EINDT FROM asn) a
-  JOIN wms w
-    ON w.sku = a.sku
-   AND abs(datediff(to_date(w.ACT_DATE,'yyyyMMdd'), to_date(a.EINDT,'yyyyMMdd'))) <= 3
-  GROUP BY 1,2
-),
-st AS (  -- ② 품번 단위 적재분(벨트 등 — WMS 가 STL_NO=품번 으로만 넣는 상품).
-  SELECT a.style, a.EINDT, sum(w.qty) qty,
-         concat_ws(',', sort_array(collect_set(w.ACT_DATE))) dts
-  FROM (SELECT DISTINCT style, EINDT FROM asn) a
-  JOIN wms w
-    ON w.sku = a.style
-   AND abs(datediff(to_date(w.ACT_DATE,'yyyyMMdd'), to_date(a.EINDT,'yyyyMMdd'))) <= 3
-  GROUP BY 1,2
-),
-tot AS (  -- 같은 (sku, 납품일) 의 통보 총량 — 실입고를 통보량 비례로 안분해 합계를 보존한다
-  SELECT sku, style, EINDT, sum(qty) tq FROM asn GROUP BY 1,2,3
 )
 SELECT a.DELVNO, a.po_no, a.po_cnt, a.sku, a.style, a.color, c.color_nm, a.name, a.EINDT,
        a.qty, a.po_qty, a.remain, a.supplier, a.warehouse, a.sts, a.ins_at, a.upd_at,
-       -- ★통보량으로 캡한다. 조인 창(±3일)에 인접 차수의 실입고가 겹쳐 들어와 캡이 없으면
-       --   합계가 110% 까지 부푼다(실측). 차수별 정확한 귀속은 입고 보드(FIFO 배분)가 하는 일이고,
-       --   이 탭이 답할 질문은 "이 통보분이 WMS 에 잡혔나"라서 캡이 목적에 맞다.
-       least(CAST(round(coalesce(sk.qty, st.qty, 0) * a.qty / nullif(t.tq, 0)) AS BIGINT),
-             CAST(a.qty AS BIGINT)) recv_qty,
-       coalesce(sk.dts, st.dts, '') recv_dates,
+       -- ★캡·안분 없음 — 이 ASN 번호로 잡힌 실입고 그대로다(과입고면 통보량을 넘을 수 있다).
+       CAST(coalesce(w.qty, 0) AS BIGINT) recv_qty,
+       coalesce(w.dts, '') recv_dates,
        -- 취소면 'Y'. ★행을 버리지 않고 딱지만 붙인다 — 알림은 제외하되 화면에서는 보여야
        --   "왜 사라졌지"가 되지 않는다([[CLAUDE 1-12]] 필터로 영구 드롭하지 말고 토글로 가려라).
-       CASE WHEN cx.asn_no IS NOT NULL THEN 'Y' ELSE '' END cancelled
+       CASE WHEN cx.asn_no IS NOT NULL THEN 'Y' ELSE '' END cancelled,
+       CASE WHEN w.asn_no IS NOT NULL THEN 'Y' ELSE '' END wms_linked
 FROM asn a
 LEFT JOIN color c ON c.color_cd = a.color
 LEFT JOIN canc cx ON cx.asn_no = a.DELVNO AND cx.style = a.style
-LEFT JOIN tot t ON t.sku = a.sku AND t.EINDT = a.EINDT
-LEFT JOIN sk ON sk.sku = a.sku AND sk.EINDT = a.EINDT
-LEFT JOIN st ON st.style = a.style AND st.EINDT = a.EINDT AND sk.sku IS NULL
+LEFT JOIN wms w ON w.asn_no = a.DELVNO AND w.sku = a.sku
 ORDER BY a.EINDT DESC, a.ins_at DESC, a.sku
 """
     # ★대기 예산 = 900초 x 3회(+백오프 30·60초) ≈ 47분 < 잡 timeout 60분.
@@ -217,7 +231,7 @@ def to_grid(rows: list[list], p2h: dict[str, str]) -> list[list]:
     for r in rows:
         (delvno, po_no, po_cnt, sku, style, color, color_nm, name, eindt,
          qty, po_qty, remain, supplier, warehouse, sts, ins_at, upd_at,
-         recv_qty, recv_dates, cancelled) = r
+         recv_qty, recv_dates, cancelled, wms_linked) = r
         out.append([
             delvno or "", po_no or "", int(_num(po_cnt)), sku or "", style or "", color or "",
             (color_nm or "").strip(),
@@ -228,8 +242,70 @@ def to_grid(rows: list[list], p2h: dict[str, str]) -> list[list]:
             ins_at or "", upd_at or "",
             int(_num(recv_qty)), recv_dates or "",
             (cancelled or "").strip(),
+            (wms_linked or "").strip(),
+            0, "",                                   # dup_qty · dup_of — mark_duplicates 가 채운다
         ])
     return out
+
+
+def mark_duplicates(grid: list[list], today: datetime.date,
+                    grace: int = DUP_GRACE_DAYS) -> list[list]:
+    """중복 등록 통보의 미입고분에 `dup_qty`·`dup_of` 를 채운다(상단 주석 '중복 등록' 참조).
+
+    같은 (SKU, PO, 납품일) 묶음에서, 유예가 지났는데 아직 안 들어온 통보분을 **다른 ASN 이 실제로
+    입고한 수량** 한도 안에서만 중복으로 본다. 한 ASN 의 실입고를 두 통보가 나눠 쓰지 않게
+    먼저 등록된 통보부터 차감한다. 취소 통보는 판정에서 뺀다(이미 딱지가 있다).
+    """
+    def _d(s):
+        s = str(s)
+        return datetime.date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+
+    cut = (today - datetime.timedelta(days=grace)).strftime("%Y%m%d")
+    groups: dict[tuple, list[list]] = {}
+    for g in grid:
+        if str(g[C["cancelled"]]).upper() == "Y" or len(str(g[C["eindt"]])) != 8:
+            continue
+        groups.setdefault((g[C["sku"]], g[C["po_no"]]), []).append(g)
+    for rows in groups.values():
+        if len({g[C["asn_no"]] for g in rows}) < 2:
+            continue
+        used: dict[str, int] = {}                    # ASN → 다른 통보의 중복 판정에 이미 쓴 실입고
+        for g in sorted(rows, key=lambda x: str(x[C["ins_at"]])):
+            if str(g[C["eindt"]]) > cut:
+                continue
+            # ★WMS 가 사실상 안 받은 통보(입고 < DUP_MAX_RECV_RATIO)만 본다. 대부분 들어온 통보의 잔량은
+            #   검수 부족분(97~99%)이라 중복이 아니다 — 라이트다운 `MMFDJ9A82-BR` 780 중 765 입고분의
+            #   부족 15장이 옆 ASN 입고분에 걸려 중복으로 오판된 걸 드라이런에서 잡았다.
+            #   0 이 아니라 비율로 거는 이유 = 재등록 직전에 옛 통보로 몇 장이 먼저 찍힌다
+            #   (`MMFDJ9A82-BK` 옛 통보 3,270 중 15장 입고 → 나머지는 새 통보로 3,195장).
+            if g[C["recv_qty"]] >= g[C["qty"]] * DUP_MAX_RECV_RATIO:
+                continue
+            pending = g[C["qty"]] - g[C["recv_qty"]]
+            if pending <= 0:
+                continue
+            dup, of = 0, []
+            # 가까운 납품일 → 나중에 등록된 통보 순으로 본다(재등록은 대개 같은 날·더 늦은 등록이다).
+            near = sorted(rows, key=lambda o: (abs((_d(o[C["eindt"]]) - _d(g[C["eindt"]])).days),
+                                               0 if str(o[C["ins_at"]]) > str(g[C["ins_at"]]) else 1))
+            for o in near:
+                if o[C["asn_no"]] == g[C["asn_no"]] or dup >= pending:
+                    continue
+                # ★납품일이 같을 필요는 없다 — 재등록하면서 날짜를 하루 옮기는 경우가 있다
+                #   (`MMFDJ9A82` 8/27 통보 → 8/28 로 재등록, WMS 는 새 통보로 입고).
+                if abs((_d(o[C["eindt"]]) - _d(g[C["eindt"]])).days) > DUP_DATE_WINDOW:
+                    continue
+                # 다른 ASN 이 자기 통보량을 채우고 남긴 실입고가 아니라 '실입고 전체'를 근거로 쓴다 —
+                #   재등록은 보통 같은 수량을 다시 올린 것이라 상대는 자기 통보분만큼 들어온다.
+                avail = o[C["recv_qty"]] - used.get(o[C["asn_no"]], 0)
+                take = min(pending - dup, avail)
+                if take > 0:
+                    dup += take
+                    used[o[C["asn_no"]]] = used.get(o[C["asn_no"]], 0) + take
+                    of.append(o[C["asn_no"]])
+            if dup:
+                g[C["dup_qty"]] = dup
+                g[C["dup_of"]] = ",".join(of)
+    return grid
 
 
 def ensure_tab(sheets, sheet_id: str, title: str) -> None:
@@ -252,8 +328,9 @@ def write_tab(sheets, sheet_id: str, grid: list[list], as_of: str) -> None:
              f"· 수량=EINQTY · 생성 {as_of}")
     body = [[label] + [""] * (len(HEADER) - 1), HEADER] + grid
     # 이전 실행이 더 길었을 수 있으니 뒤를 비운다(잔재 행이 남으면 화면에 유령 ASN 이 뜬다).
+    #   ★범위는 HEADER 에서 유도 — `A1:T` 로 박혀 있어 U열(cancelled) 이후는 안 지워지고 있었다.
     sheets.spreadsheets().values().clear(
-        spreadsheetId=sheet_id, range=f"'{TAB}'!A1:T", body={}).execute()
+        spreadsheetId=sheet_id, range=f"'{TAB}'!A1:{LAST_COL}", body={}).execute()
     sheets.spreadsheets().values().update(
         spreadsheetId=sheet_id, range=f"'{TAB}'!A1",
         valueInputOption="RAW", body={"values": body}).execute()
@@ -264,10 +341,13 @@ def load_asn_from_sheet(sheets, sheet_id: str = APP_SHEET_ID, cutoff: str | None
 
     입고 보드 상태 판정에 쓴다 — ASN 이 떠 있으면 '미입고(빨강)' 대신 '확정 대기'.
     탭이 없거나 읽기 실패면 None 을 돌려 게이트를 끈다(있던 화면이 깨지지 않게).
+    ★취소 통보는 빼고, 중복 등록분(`dup_qty`)은 통보량에서 뺀다 — 안 빼면 중복 통보만 남은 SKU 가
+      '확정 대기'로 게이트를 열어 진짜 미입고(빨강)를 가린다. (예전엔 `A2:T` 로 읽어 cancelled 열이
+      아예 안 읽혔다 — 알림만 고치고 이 소비자는 안 고쳐져 있었다 [[CLAUDE 1-1]].)
     """
     try:
         vals = sheets.spreadsheets().values().get(
-            spreadsheetId=sheet_id, range=f"'{TAB}'!A2:T",
+            spreadsheetId=sheet_id, range=f"'{TAB}'!A2:{LAST_COL}",
             valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
     except Exception as e:
         print(f"[_ASN] 읽기 실패 → ASN 게이트 없이 진행: {type(e).__name__}: {e}")
@@ -293,8 +373,13 @@ def load_asn_from_sheet(sheets, sheet_id: str = APP_SHEET_ID, cutoff: str | None
         iso = f"{eindt[:4]}-{eindt[4:6]}-{eindt[6:8]}"
         if cutoff and iso < cutoff:
             continue
+        if "cancelled" in idx and str(gv("cancelled")).strip().upper() == "Y":
+            continue
+        live = int(_num(gv("qty"))) - (int(_num(gv("dup_qty"))) if "dup_qty" in idx else 0)
+        if live <= 0:
+            continue
         e = out.setdefault(sku, {"qty": 0, "dates": [], "last_ins": ""})
-        e["qty"] += int(_num(gv("qty")))
+        e["qty"] += live
         e["dates"].append(iso)
         ins = str(gv("ins_at")).strip()
         if ins > e["last_ins"]:
@@ -307,16 +392,32 @@ def load_asn_from_sheet(sheets, sheet_id: str = APP_SHEET_ID, cutoff: str | None
 C = {h: i for i, h in enumerate(HEADER)}       # 열 위치는 HEADER 에서 유도한다(열 추가에 안 밀리게)
 
 
-def summarize(grid: list[list]) -> str:
-    today = datetime.date.today().strftime("%Y%m%d")
-    new_today = [g for g in grid if str(g[C["ins_at"]] or "")[:8] == today]
-    pending = [g for g in grid if g[C["recv_qty"]] == 0]
+def _kst_today() -> datetime.date:
+    return (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)).date()
+
+
+def link_stats(grid: list[list], today: datetime.date, grace: int = DUP_GRACE_DAYS) -> tuple[int, int]:
+    """유예 지난(취소 아닌) 통보 중 WMS 오더가 연결된 행 수 / 전체 행 수."""
+    cut = (today - datetime.timedelta(days=grace)).strftime("%Y%m%d")
+    aged = [g for g in grid
+            if str(g[C["eindt"]]) <= cut and str(g[C["cancelled"]]).upper() != "Y"]
+    return sum(1 for g in aged if g[C["wms_linked"]] == "Y"), len(aged)
+
+
+def summarize(grid: list[list], today: datetime.date) -> str:
+    t = today.strftime("%Y%m%d")
+    new_today = [g for g in grid if str(g[C["ins_at"]] or "")[:8] == t]
+    pending = [g for g in grid if g[C["recv_qty"]] == 0 and not g[C["dup_qty"]]]
     heroes = sorted({g[C["hero"]] for g in grid if g[C["hero"]]})
     canc = [g for g in grid if str(g[C["cancelled"]] or "").upper() == "Y"]
+    dups = [g for g in grid if g[C["dup_qty"]]]
+    linked, aged = link_stats(grid, today)
     return (f"ASN {len(grid)}행 · 히어로 {len(heroes)}종 · 오늘 등록 {len(new_today)}건 "
             f"· 입고확정 미반영 {len(pending)}건 {sum(g[C['qty']] for g in pending):,}장"
             + (f" · ★취소 {len(canc)}건 {sum(g[C['qty']] for g in canc):,}장(알림 제외)"
-               if canc else " · 취소 0건"))
+               if canc else " · 취소 0건")
+            + f" · 중복등록 {len(dups)}건 {sum(g[C['dup_qty']] for g in dups):,}장"
+            + f" · WMS 연결 {linked}/{aged}행(유예 {DUP_GRACE_DAYS}일 지난 통보)")
 
 
 def main() -> None:
@@ -330,18 +431,32 @@ def main() -> None:
 
     p2h = build_pumbon2hero(sheets)
     rows = fetch_asn(sorted(p2h), args.days)
-    grid = to_grid(rows, p2h)
+    today = _kst_today()
+    grid = mark_duplicates(to_grid(rows, p2h), today)
     # ★KST 로 못박는다 — `datetime.now()` 는 CI 러너(UTC)와 로컬(KST)에서 9시간 다르게 찍혀
     #   같은 라벨에 두 기준이 섞였다. ops_watch 가 이 라벨로 고착을 판정하므로 단위를 명시한다.
     as_of = (datetime.datetime.now(datetime.timezone.utc)
              + datetime.timedelta(hours=9)).strftime("%Y-%m-%d %H:%M KST")
-    print(f"[_ASN] {summarize(grid)}")
+    print(f"[_ASN] {summarize(grid, today)}")
+
+    # ★연결률 가드 — ASN 번호 매칭이 깨지면(키 형식 변경) 전건 '확정대기' 가 조용히 쌓인다.
+    #   매칭 0 은 에러가 아니라 숫자로만 나타나므로 여기서 실패로 올리고 양쪽 키 예시를 싣는다.
+    linked, aged = link_stats(grid, today)
+    if aged >= 20 and linked < aged * MIN_LINK_RATIO:
+        miss = [g for g in grid if g[C["wms_linked"]] != "Y"][:5]
+        raise RuntimeError(
+            f"WMS 연결률 {linked}/{aged} < {MIN_LINK_RATIO:.0%} — ORD_OPT_NO(ASN번호)·GDS_CD 형식이 "
+            f"바뀌었는지 볼 것. 미연결 예: " + ", ".join(f"{g[C['asn_no']]}:{g[C['sku']]}" for g in miss))
 
     if not args.apply:
         for g in grid[:8]:
             print("   ", g[C["eindt"]], g[C["hero"]], g[C["sku"]], g[C["color_nm"]],
                   f"{g[C['qty']]:,}장", g[C["supplier"]], g[C["warehouse"]],
                   "확정대기" if g[C["recv_qty"]] == 0 else f"입고 {g[C['recv_qty']]:,}")
+        for g in [g for g in grid if g[C["dup_qty"]]]:
+            print("    중복", g[C["eindt"]], g[C["hero"]], g[C["sku"]], g[C["asn_no"]],
+                  f"통보 {g[C['qty']]:,} · 입고 {g[C['recv_qty']]:,} · 중복 {g[C['dup_qty']]:,}",
+                  "← " + g[C["dup_of"]])
         print("[_ASN] 드라이런 — 기입하려면 --apply")
         return
 
@@ -349,7 +464,7 @@ def main() -> None:
     write_tab(sheets, APP_SHEET_ID, grid, as_of)
     # 되읽어 검증 — 응답이 아니라 결과로 판정한다([[CLAUDE 1-16]]).
     back = sheets.spreadsheets().values().get(
-        spreadsheetId=APP_SHEET_ID, range=f"'{TAB}'!A1:T",
+        spreadsheetId=APP_SHEET_ID, range=f"'{TAB}'!A1:{LAST_COL}",
         valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
     got = len(back) - 2
     if got != len(grid):
