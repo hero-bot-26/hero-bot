@@ -407,13 +407,20 @@ def link_stats(grid: list[list], today: datetime.date, grace: int = DUP_GRACE_DA
 def summarize(grid: list[list], today: datetime.date) -> str:
     t = today.strftime("%Y%m%d")
     new_today = [g for g in grid if str(g[C["ins_at"]] or "")[:8] == t]
-    pending = [g for g in grid if g[C["recv_qty"]] == 0 and not g[C["dup_qty"]]]
+    # ★화면(`asnState`)의 '확정대기'와 같은 정의로 센다 — 취소 제외 · 확정 0 ·
+    #   통보량에서 중복분을 뺀 잔량이 남아 있는 건. 옛 정의(중복분이 조금이라도 있으면 통째로 제외)는
+    #   부분 중복 건을 빼먹어 로그가 화면보다 1건 적게 나왔다(실측 78 vs 79 · 15장).
+    pending = [g for g in grid
+               if str(g[C["cancelled"]] or "").upper() != "Y"
+               and g[C["recv_qty"]] == 0
+               and g[C["qty"]] - g[C["dup_qty"]] > 0]
     heroes = sorted({g[C["hero"]] for g in grid if g[C["hero"]]})
     canc = [g for g in grid if str(g[C["cancelled"]] or "").upper() == "Y"]
     dups = [g for g in grid if g[C["dup_qty"]]]
     linked, aged = link_stats(grid, today)
     return (f"ASN {len(grid)}행 · 히어로 {len(heroes)}종 · 오늘 등록 {len(new_today)}건 "
-            f"· 입고확정 미반영 {len(pending)}건 {sum(g[C['qty']] for g in pending):,}장"
+            f"· 입고확정 미반영 {len(pending)}건 "
+            f"{sum(g[C['qty']] - g[C['dup_qty']] for g in pending):,}장"
             + (f" · ★취소 {len(canc)}건 {sum(g[C['qty']] for g in canc):,}장(알림 제외)"
                if canc else " · 취소 0건")
             + f" · 중복등록 {len(dups)}건 {sum(g[C['dup_qty']] for g in dups):,}장"
