@@ -48,6 +48,7 @@ ALARM_LOG_TAB = "알람발송로그"
 KEY_PREFIX = "asn:"            # ① ASN 등록 알림
 KEY_PREFIX_RECV = "asnrecv:"   # ② 입고확정 시작 알림 — 확정이 처음 잡힌 그때 1회만
 KEY_PREFIX_DAY = "asnday:"     # ③ 금일 입하 예정 브리핑 — 날짜당 1회
+KEY_PREFIX_SLOW = "asnslow:"   # ④ 입고 지연 — 납품일이 지났는데 확정이 안 차는 건. ★건당 1회만
 
 # ★실담당자 발송 스위치 — 이 모듈 전용.
 #   `triggers.TEST_ONLY` 를 끄면 IMC 단계 알림 등 **다른 발송까지 같이 풀린다**. 그래서 분리했다.
@@ -139,6 +140,21 @@ APP_URL = "https://hero-master-app.vercel.app/inbound?tab=asn"
 
 # 알림에 올릴 최소 수량 — 샘플·소량 보충까지 다 울리면 알림이 무뎌진다.
 MIN_QTY = 100
+
+# ★입고 지연 알림(④) — "통보한 날이 지났는데 물류가 안 들어온다"를 한 번 알린다.
+#   지금 이 신호는 **아무 데도 안 나간다** — 등록·확정 시작만 알리고 있어 화면에 '일부확정'으로
+#   조용히 남을 뿐이다(2026-09-16 실측 20행 28,532장이 그 상태였다).
+#   ★★기점은 **통보된 납품일(eindt)** 이다. '실제 입고일'을 기점으로 잡으면 확정이 0장인 건은
+#     기점 자체가 없어 **영영 안 걸린다** — 위 20행 중 7행이 그 0% 건이고 제일 급한 것들이다.
+#   문턱 감도(2026-09-16 실측, 45일) = 30% 7통 · **50% 7통** · 70% 9통 · 90% 15통.
+#     90% 는 검수 부족분(88~99%)이 섞여 잡음이 된다 → 50% 가 신호/잡음 경계.
+#   ★납품일 창(SLOW_WINDOW_DAYS)은 **첫 실행 백필 방지**다. 45일을 열면 D+40 짜리 옛 건까지
+#     한꺼번에 나간다(등록 알림 첫 실행 718건 사고와 같은 자리). 14일이면 3통.
+#   ★한 번 알리고 끝 — 영영 안 닫히는 잔량(통보 과다·취소 미등록)이 섞여 있어 반복 리마인드로
+#     만들면 그것들이 매일 울린다([[CLAUDE 1-12]] 는 드롭 얘기지 반복 알림이 아니다).
+SLOW_GRACE_DAYS = 3        # 납품일에서 며칠 지나야 보나(입고보드 확정 유예와 같은 값)
+SLOW_RATIO = 0.5           # 확정/(통보−중복) 이 이 밑이면 지연
+SLOW_WINDOW_DAYS = 14      # 납품일이 이보다 오래되면 안 본다(백필 방지)
 # ★백필 방지 — `_ASN` 탭은 45일치를 담으므로 원장만 보고 "안 보낸 것"을 고르면
 #   첫 실행에 718건(=45일 전부)이 한 번에 나간다(실측). 최근 등록분만 대상으로 한다.
 SINCE_DAYS = 2
@@ -190,6 +206,8 @@ def load_asn_rows(sheets) -> list[dict]:
             "warehouse": str(g("warehouse")).strip(),
             "ins_at": str(g("ins_at")).strip(),
             "recv": int(_num(g("recv_qty"))),
+            # 중복 등록분 — 다른 ASN 으로 이미 들어간 수량이라 '들어와야 할 양'에서 뺀다.
+            "dup": int(_num(g("dup_qty"))),
             "recv_dates": str(g("recv_dates")).strip(),
         })
     return out
@@ -287,6 +305,15 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
         lines = [f"*금일 물류센터에 들어올 예정이에요* · {len(groups)}건 · {total:,}장",
                  "_오늘 물류센터에 들어올 예정으로 ASN 통보된 건입니다. 입고처리 빨리 되야하는 STY은 챙겨주세요._",
                  ""]
+    elif kind == "slow":
+        live = sum(max(0, i["qty"] - i.get("dup", 0)) for g in groups for i in g["items"])
+        rtot = sum(i["recv"] for g in groups for i in g["items"])
+        lines = [f"*입고확정이 늦어지고 있어요* · {len(groups)}건 · 미확정 {live - rtot:,}장",
+                 f"_통보한 납품일에서 {SLOW_GRACE_DAYS}일이 지났는데 물류 입고 확정이 "
+                 f"{SLOW_RATIO * 100:.0f}% 를 못 넘었습니다. "
+                 f"업체 확인 및 물류에서 검수작업이 늦어지고 있지는 않은지 확인 필요해요._",
+                 "_이 건은 한 번만 알려드립니다(매일 반복 알림 없음)._",
+                 ""]
     elif kind == "recv":
         rtotal = sum(i["recv"] for g in groups for i in g["items"])
         lines = [f"*실물 물류 입고 시작됐어요!* · {len(groups)}건 · 입고 {rtotal:,}장 / ASN 등록완료 {total:,}장",
@@ -322,6 +349,17 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
                 for c in cs)
             lines.append(colors + (f"  (계 {sub:,})" if len(cs) > 1 else "")
                          + (f"  · {n_asn}차 통보" if n_asn > 1 else ""))
+        elif kind == "slow":
+            lsub = sum(max(0, i["qty"] - i.get("dup", 0)) for i in items)
+            rsub = sum(i["recv"] for i in items)
+            colors = " · ".join(
+                (f"{i['color']} {i['color_nm']} " if i.get("color_nm") else f"{i['color']} ")
+                + f"{i['recv']:,}/{max(0, i['qty'] - i.get('dup', 0)):,}" for i in items)
+            pct = f"{100 * rsub / lsub:.0f}%" if lsub else "—"
+            dlate = _days_late(g["eindt"], as_of)
+            lines.append(f"납품 예정 {_fmt_date(g['eindt'])}"
+                         + (f" (D+{dlate})" if dlate is not None else "")
+                         + f" · 입고확정 {rsub:,} / 입고예정 {lsub:,} ({pct}) · {colors}")
         elif kind == "recv":
             rsub = sum(i["recv"] for i in items)
             colors = " · ".join(
@@ -350,6 +388,15 @@ def build_message(groups: list[dict], as_of: datetime.date, kind: str = "asn") -
     if not ASN_LIVE:
         lines.append("_※ 테스트 모드 — 실운영 전환 시 담당자에게 직접 발송됩니다._")
     return "\n".join(lines)
+
+
+def _days_late(eindt: str, as_of: datetime.date):
+    """납품 예정일에서 며칠 지났나. 형식이 깨졌으면 None(줄에서 빠질 뿐 알림은 나간다)."""
+    try:
+        d = datetime.date(int(eindt[:4]), int(eindt[4:6]), int(eindt[6:8]))
+    except (ValueError, TypeError, IndexError):
+        return None
+    return (as_of - d).days
 
 
 def _group(rows, owners, merge_asn: bool = False):
@@ -490,10 +537,30 @@ def main() -> int:
     today_rows = ([] if f"{KEY_PREFIX_DAY}{tkey}" in sent else
                   [r for r in rows if r["eindt"] == tkey and r["qty"] >= args.min_qty])
 
+    # ④ 입고 지연 — 납품일 D+N 이 지났는데 확정이 문턱을 못 넘은 건. ★건당 1회만.
+    #   수신은 **등록 알림과 같은 전원**(담당 3역 + 온라인MD + MD팀장 + 상품컨트롤팀, 사용자 결정).
+    #   ME(벨트·양말)도 후보에 남긴다 — 상품컨트롤팀만 라인이 없어 못 받을 뿐 담당 3역·MD팀장은 받는다.
+    slow_lo = (as_of - datetime.timedelta(days=SLOW_WINDOW_DAYS)).strftime("%Y%m%d")
+    slow_hi = (as_of - datetime.timedelta(days=SLOW_GRACE_DAYS)).strftime("%Y%m%d")
+
+    def _is_slow(r) -> bool:
+        live = r["qty"] - r.get("dup", 0)
+        return (live >= args.min_qty
+                and bool(r["eindt"]) and slow_lo <= r["eindt"] <= slow_hi
+                and r["recv"] / live < SLOW_RATIO)
+
+    slow_all = [r for r in rows
+                if f"{KEY_PREFIX_SLOW}{r['asn']}:{r['sku']}" not in sent and _is_slow(r)]
+    slow = slow_all
+    slow_me = sum(1 for r in slow if str(r.get("style") or "")[:2] not in CTRL_LEADS)
+
     print(f"[ASN알림] 전체 {len(rows)}행 · 기발송키 {len(sent)} "
           f"· 신규 통보 {len(fresh)}건 · 확정 시작 {len(recvd)}건 · 금일 입하 {len(today_rows)}건 "
           f"(최소수량 {args.min_qty} · {since or '전체'} 이후)")
-    if not fresh and not recvd and not today_rows:
+    print(f"[ASN알림] 입고 지연 {len(slow)}건 "
+          f"(납품일 {slow_lo}~{slow_hi} · 확정 {SLOW_RATIO * 100:.0f}% 미만"
+          + (f" · 그중 ME {slow_me}건은 상품컨트롤 배정 없음" if slow_me else "") + ")")
+    if not fresh and not recvd and not today_rows and not slow:
         print("[ASN알림] 보낼 것 없음")
         return 0
 
@@ -510,7 +577,8 @@ def main() -> int:
     for kind, items, prefix, label in (
             ("day",  today_rows, KEY_PREFIX_DAY,  "금일 입하 예정"),
             ("asn",  fresh,      KEY_PREFIX,      "ASN 등록"),
-            ("recv", recvd,      KEY_PREFIX_RECV, "입고 확정 시작")):
+            ("recv", recvd,      KEY_PREFIX_RECV, "입고 확정 시작"),
+            ("slow", slow,       KEY_PREFIX_SLOW, "입고 지연")):
         if not items:
             continue
         groups = _group(items, owners, merge_asn=(kind == "day"))
