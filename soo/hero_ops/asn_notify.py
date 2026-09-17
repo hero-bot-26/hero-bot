@@ -49,6 +49,10 @@ KEY_PREFIX = "asn:"            # ① ASN 등록 알림
 KEY_PREFIX_RECV = "asnrecv:"   # ② 입고확정 시작 알림 — 확정이 처음 잡힌 그때 1회만
 KEY_PREFIX_DAY = "asnday:"     # ③ 금일 입하 예정 브리핑 — 날짜당 1회
 KEY_PREFIX_SLOW = "asnslow:"   # ④ 입고 지연 — 납품일이 지났는데 확정이 안 차는 건. ★건당 1회만
+# ★★원장을 되읽을 때 쓰는 접두 목록 — **여기에 안 넣으면 기록은 되는데 읽히지 않아 매시 재발송된다.**
+#   2026-09-17 `asnslow:` 를 추가하며 이 목록을 빠뜨려 실제로 그 상태였다(13시 런 전에 잡았다).
+#   그래서 상수에서 유도한다 — 새 종류를 만들면 위에 상수만 더하면 자동으로 따라온다([[CLAUDE 1-1]]).
+ALL_KEY_PREFIXES = (KEY_PREFIX, KEY_PREFIX_RECV, KEY_PREFIX_DAY, KEY_PREFIX_SLOW)
 
 # ★실담당자 발송 스위치 — 이 모듈 전용.
 #   `triggers.TEST_ONLY` 를 끄면 IMC 단계 알림 등 **다른 발송까지 같이 풀린다**. 그래서 분리했다.
@@ -265,7 +269,7 @@ def load_sent_keys(sheets) -> set[str]:
         # 원장을 못 읽으면 중복 발송 위험이 있으므로 멈춘다(조용히 다 보내는 게 최악).
         raise RuntimeError(f"발송 원장을 읽지 못했다 — 중복 발송 방지 불가: {e}") from e
     return {str(r[1]).strip() for r in res.get("values", [])
-            if len(r) >= 2 and str(r[1]).strip().startswith(("asn:", "asnrecv:", "asnday:"))}
+            if len(r) >= 2 and str(r[1]).strip().startswith(ALL_KEY_PREFIXES)}
 
 
 def record_sent_bulk(sheets, as_of: datetime.date, keys: list[str], labels: str) -> None:
