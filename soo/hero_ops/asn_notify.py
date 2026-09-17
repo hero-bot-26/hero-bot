@@ -84,6 +84,20 @@ ONLINE_LEADS = {
     "MK": ["이지현"],
 }
 
+# ★상품컨트롤팀 — 담당 3역·온라인MD·MD팀장 과 **별개로 자기 라인 전 건**을 받는다
+#   (사용자 명단 2026-09-17). 라인 판정은 온라인MD 와 같은 **품번 앞 2자**다(위 주석의 실측 참조).
+#   ★★`ME`(벨트·양말)는 **보내지 않는다** — 사용자 결정. 세 라인 어디에도 넣지 않았으므로
+#     ME 31행(9/17 기준)은 상품컨트롤 배정이 0이 된다. 담당 3역·MD팀장 알림은 그대로 간다.
+#   ★공통 5명(김성은·최종민·박대영·두현진·이수민) + 맨즈 전담 박기홍 · 우먼즈 전담 정소이.
+#   ★이름→ID 는 `담당자매핑` 탭에서 읽는다(사람이 유지하는 상태 = 설정 [[CLAUDE 1-2]]).
+#     7명 모두 `kind=담당자` 로 넣었다 — `팀장` 으로 넣으면 `load_owner_map` 이 TEAM_LEADS 로
+#     빼서 배정이 조용히 0건이 된다(2026-09-11 MD팀장 때 실제로 밟음).
+CTRL_LEADS = {
+    "MM": ["김성은", "박기홍", "최종민", "박대영", "두현진", "이수민"],
+    "MW": ["김성은", "정소이", "최종민", "박대영", "두현진", "이수민"],
+    "MK": ["김성은", "최종민", "박대영", "두현진", "이수민"],
+}
+
 # ★MD 팀장 — 담당 3역·온라인MD 와 **별개로 자기 팀 전 건**을 받는다
 #   (사용자 결정 2026-09-11 "남성/여성/키즈는 김병관, 제품/신발은 장세미, 언더웨어는 강문영").
 #   ★가르는 기준은 품번·상품명이 아니라 PLM `데이터` 탭의 **`대복종` 열**이다([[CLAUDE 1-11]]).
@@ -507,6 +521,8 @@ def main() -> int:
         lead_sids: set = set()          # 온라인MD 로 들어간 수신자(메시지 꼬리말을 다르게 단다)
         boss_sids: set = set()          # MD 팀장으로 들어간 수신자
         boss_cnt: dict[str, int] = {}   # 팀장별 배정 그룹 수(드라이런 확인용)
+        ctrl_sids: set = set()          # 상품컨트롤팀으로 들어간 수신자
+        ctrl_cnt: dict[str, int] = {}   # 상품컨트롤팀원별 배정 그룹 수(드라이런 확인용)
         # `대복종`이 비었거나 **MD_LEADS 에 없는 새 값**이라 접두 폴백으로 떨어진 것.
         # ★새 복종이 생기면 조용히 김병관에게 가므로(접두가 MM/MW/MK) 반드시 건수로 찍는다.
         no_cat: dict[str, int] = {}
@@ -524,6 +540,13 @@ def main() -> int:
                 if _sid:
                     targets.add(_sid)
                     lead_sids.add(_sid)
+            # ★상품컨트롤팀 — 온라인MD 와 같은 라인 기준(품번 앞 2자), ME 는 배정 없음.
+            for _nm in CTRL_LEADS.get(str(g.get("style") or "")[:2], ()):
+                _sid = _sid_of(_nm)
+                if _sid:
+                    targets.add(_sid)
+                    ctrl_sids.add(_sid)
+                    ctrl_cnt[_nm] = ctrl_cnt.get(_nm, 0) + 1
             # ★MD 팀장 — `대복종`(없으면 품번 접두)로 갈라 자기 팀 전 건을 받는다.
             _cat = str((g.get("owners") or {}).get("cat") or "")
             if _cat not in MD_LEADS:
@@ -547,9 +570,15 @@ def main() -> int:
               + (" · ⚠ 대복종 미등록 "
                  + ", ".join(f"{k} {v}그룹" for k, v in sorted(no_cat.items(), key=lambda kv: -kv[1]))
                  + " → 품번 접두로 배정(MD_LEADS 확인 필요)" if no_cat else ""))
+        print(f"      · 상품컨트롤 배정: "
+              + (", ".join(f"{n} {c}그룹" for n, c in sorted(ctrl_cnt.items(), key=lambda kv: -kv[1]))
+                 or "없음")
+              + f" · ME(배정 없음) {sum(1 for g in groups if str(g.get('style') or '')[:2] == 'ME')}그룹")
         for sid, gs in sorted(by_person.items()):
             who = _name_of(sid)
-            tag = (" [온라인MD·라인 전건]" if sid in lead_sids else "")                 + (" [MD팀장·팀 전건]" if sid in boss_sids else "")
+            tag = ((" [온라인MD·라인 전건]" if sid in lead_sids else "")
+                   + (" [상품컨트롤·라인 전건]" if sid in ctrl_sids else "")
+                   + (" [MD팀장·팀 전건]" if sid in boss_sids else ""))
             print(f"      {who} ({sid}) ← {len(gs)}건{tag}")
 
         if not args.send:
@@ -573,6 +602,8 @@ def main() -> int:
                 if sid in lead_sids:
                     # 온라인MD 는 '내 담당 상품'이 아니라 '내 라인 전 건'을 받으므로 그렇게 말한다.
                     msg += chr(10) + "_※ 온라인MD 수신 — 담당 상품이 아니라 **이 라인 전 건**입니다._"
+                if sid in ctrl_sids:
+                    msg += chr(10) + "_※ 상품컨트롤팀 수신 — 담당 상품이 아니라 **이 라인 전 건**입니다._"
                 if sid in boss_sids:
                     msg += chr(10) + "_※ MD 팀장 수신 — 담당 상품이 아니라 **팀 전 건**입니다._"
                 if _send_one(msg, sid, tok):
