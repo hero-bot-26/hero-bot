@@ -465,8 +465,11 @@ if not po_qty or not prep26:
                 _rest_p += 1
         if _rest_p:
             print(f"[보존] 준비수량 실패 — 직전값 유지({_rest_p}종)")
+            _EARLY_MSGS.append(f"★준비수량 0건 — 직전값 유지 {_rest_p}종")
         if _rest:
             print(f"[보존] PO수량 실패 — 직전 발주량 유지({_rest}종)")
+            # ★보존은 조용하면 고장을 영구히 가린다(0건 11일+ 무경고, 2026-09-29) → 발동한 날은 경고로 올림
+            _EARLY_MSGS.append(f"★PO수량(MD투입) 0건 — 발주량 직전값 유지 {_rest}종 (헤더·키 형식 변경 의심)")
     except Exception as _epo:
         print(f"[주의] PO수량 직전값 보존 실패: {type(_epo).__name__}: {_epo}")
 clean = [{k: v for k, v in h.items() if not k.startswith("_")} for h in heroes]
