@@ -52,6 +52,25 @@ TRACK_HINTS = {
 }
 
 
+# ★시즌 전용 표 구조 — 27FW 부터 표가 `① 캐리오버 / ② MAIN / ③ QR` 로 바뀌었다(가을/겨울·선발주 없음).
+#   tracks : 앱 트랙 → 헤더 그룹 키워드. 'main_late' 트랙은 QC~입고(10~13)를 그룹 안 **가장 늦은 입고월**로
+#            (입고월 7월물~11월물이 열로 갈린다. 이른 달을 쓰면 없던 '지연'이 생긴다 — 기존 폴백 규칙과 같은 방향).
+#   다른 트랙으로의 폴백은 하지 않는다(QR·캐리오버에 MAIN 날짜가 끼면 틀린 기준일이 된다).
+#   year   : 기획 시작 연도. 앞단(≤9 Initial PO)은 7월 이후=그해, 뒷단(≥10 QC~입고)은 판매 연도.
+#            (FW 공통 cut=10 규칙으로는 27FW 킥오프 8/19 가 2027 로 읽힌다.)
+SEASON_LAYOUTS = {
+    "27FW": {
+        "tracks": {"캐리오버": "캐리오버", "MAIN": "MAIN", "QR": "QR"},
+        "main_late": "MAIN",
+        # 캐리오버 열은 단계와 1:1 이 아닌 **문장 메모**다('캐리오버 발주 SKU 최종 확정 11/19' 가 원단 확정 행에 있음)
+        #   → 뜻이 맞는 단계만 받는다: Initial PO 행의 '캐리오버 선발주 11/30'
+        "only": {"캐리오버": {9}},
+        "plan_year": 2026, "front_cut": 7,
+    },
+}
+_MD_ANY = re.compile(r"(\d{1,2})\s*/\s*(\d{1,2})")
+
+
 def _s(row, i):
     return str(row[i]).strip() if i < len(row) and row[i] is not None else ""
 
@@ -176,6 +195,8 @@ def load_mdp_baseline(sheets, season: str, sheet_id: str | None = None,
         warns.append(f"MDP에 '{season}' 블록이 없습니다 — 단계 기준일 기존값 유지")
         return {}
     _, title, start, end = blk
+    if season in SEASON_LAYOUTS:
+        return _load_layout(rows, season, start, end, warns)
     hi, groups, subs = _header(rows, start, end)
     if hi is None:
         warns.append(f"MDP {season}: 헤더행(Initiative)을 못 찾음 — 기준일 없이 진행")
@@ -216,6 +237,69 @@ def load_mdp_baseline(sheets, season: str, sheet_id: str | None = None,
                 cand = [d for c in allcols for d in [col_dates(c).get(ri)] if d]
                 if cand:
                     t[stage] = max(cand)
+        if t:
+            out[track] = t
+    if not out:
+        warns.append(f"MDP {season}: 트랙별 기준일을 하나도 못 만듦 — 기준일 없이 진행")
+    return out
+
+
+def _load_layout(rows, season, start, end, warns):
+    """SEASON_LAYOUTS 시즌 — 헤더 그룹을 캐리오버 포함 그대로 읽고, 단계·연도를 시즌 규칙으로 정한다."""
+    cfg = SEASON_LAYOUTS[season]
+    hi = next((i for i in range(start, min(end, start + 20))
+               if any("Initiative" in _s(rows[i], j) for j in range(6))), None)
+    if hi is None:
+        warns.append(f"MDP {season}: 헤더행(Initiative)을 못 찾음 — 기준일 없이 진행")
+        return {}
+    # 같은 블록 아래 두 번째 표(예: 27FW 'AS-IS')는 읽지 않는다
+    end = next((i for i in range(hi + 1, end)
+                if any("Initiative" in _s(rows[i], j) for j in range(6))), end)
+    hdr = rows[hi]
+    groups, cur = {}, None
+    for j in range(4, len(hdr)):                  # E열~ (KR/Initiative/OWNER/END 뒤)
+        lab = _s(hdr, j)
+        if lab and "비고" in lab:
+            cur = None
+            continue
+        if lab:
+            cur = next((t for t, kw in cfg["tracks"].items() if kw in lab), None)
+        if cur:
+            groups.setdefault(cur, []).append(j)
+    srows = _stage_rows(rows, hi, end)
+    if not srows:
+        warns.append(f"MDP {season}: 단계 행을 하나도 못 찾음 — 기준일 없이 진행")
+        return {}
+    y0, fcut = cfg["plan_year"], cfg["front_cut"]
+
+    def date_at(ri, c, stage):
+        m = _MD_ANY.search(_s(rows[ri], c))      # 캐리오버 칸은 '캐리오버 선발주 11/30' 같은 문장이다
+        if not m:
+            return None
+        mo, da = int(m.group(1)), int(m.group(2))
+        yr = (y0 if mo >= fcut else y0 + 1) if stage <= 9 else (y0 + 1 if mo <= 10 else y0)
+        try:
+            return dt.date(yr, mo, da)
+        except ValueError:
+            return None
+
+    out = {}
+    for track in cfg["tracks"]:
+        cols = groups.get(track, [])
+        if not cols:
+            warns.append(f"MDP {season}: 트랙 '{track}' 컬럼 없음")
+            continue
+        t = {}
+        for stage, ri in srows.items():
+            if track in cfg.get("only", {}) and stage not in cfg["only"][track]:
+                continue
+            if stage >= 10 and track == cfg.get("main_late"):
+                cand = [d for c in cols for d in [date_at(ri, c, stage)] if d]
+                d = max(cand) if cand else None
+            else:
+                d = date_at(ri, cols[0], stage)
+            if d:
+                t[stage] = d
         if t:
             out[track] = t
     if not out:
