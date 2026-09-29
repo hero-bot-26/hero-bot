@@ -120,10 +120,15 @@ def parse_po_qty(sheets, season, sheet_id=PO_SHEET_ID) -> dict:
         return col[r] if r < len(col) else ""
 
     out: dict[str, dict] = {}
+    n_from_color = 0
     for r in range(n):
         style = str(cell("style", r)).strip()
         if not STYLE_RE.match(style):
-            continue
+            # '품번' 라벨이 다른 열(L='M' 한 글자)로 옮겨간 적 있음(2026-09) — 같은 행 품번-컬러에서 유도
+            style = str(cell("color", r)).strip().split("-")[0]
+            if not STYLE_RE.match(style):
+                continue
+            n_from_color += 1
         if str(cell("season", r)).strip() != season:
             continue
         vals = {c: _num(cell(c, r)) for c in CHANNELS}
@@ -144,6 +149,8 @@ def parse_po_qty(sheets, season, sheet_id=PO_SHEET_ID) -> dict:
             for c in CHANNELS:
                 cc[c] += vals[c]
             cc["t"] += t
+    if n_from_color:
+        print(f"[po_ingest] '품번' 열 값이 품번꼴이 아님 — 품번-컬러에서 유도 {n_from_color}행")
     return out
 
 

@@ -2320,57 +2320,26 @@ try:
 except Exception:
     pass
 
-# ── 27SS 진척 카드 주입 (기획 관리판 #.상세일정 → SEASON_27SS_PROGRESS) ──
-# 품평회 일자는 소스에 없어 제외, GO-DROP을 앵커로. 봄=G·여름=J(좌측 블록). 트랙별 D-day 자동.
+# ── 시즌 진척 카드 주입 (기획 관리판 #.상세일정 → SEASON_27SS_PROGRESS / SEASON_27FW_PROGRESS) ──
+# ★라벨로 찾는다(soo/hero_ops/season_progress.py). 행 하드코딩(122/124/129/138)이 시트 행 밀림으로
+#   엉뚱한 단계 날짜를 싣고 있었다(2026-09-29). 못 찾으면 해당 카드는 직전값 유지.
 n27 = 0
-try:
-    from soo.hero_ops.baseline_ingest import parse_mdp_date, SEASON_MDP_MAP
-    sm27 = SEASON_MDP_MAP["27SS"]
-    # (단계, 라벨, MDP 행, {트랙: 열}) — 킥오프는 공통 단일, 나머지는 봄/여름
-    CARD_STAGES = [
-        (1, "킥오프",       122, {"공통": "G"}),
-        (2, "매트릭스 합의", 124, {"봄": "G", "여름": "J"}),
-        (3, "GO-DROP",     129, {"봄": "G", "여름": "J"}),
-        (4, "Initial PO",  138, {"봄": "G", "여름": "J"}),
-    ]
-    ranges = [f"'{sm27.tab}'!{col}{row}"
-              for _, _, row, cols in CARD_STAGES for col in set(cols.values())]
-    resp = sheets.spreadsheets().values().batchGet(
-        spreadsheetId=(_src("plm_27ss") or sm27.spreadsheet_id), ranges=ranges).execute()
-    cmap = {}
-    for vr in resp.get("valueRanges", []):
-        a1 = vr["range"].split("!")[-1]
-        vals = vr.get("values", [])
-        cmap[a1] = vals[0][0] if vals and vals[0] else ""
-
-    def _mk_track(track, col, row):
-        d = parse_mdp_date(cmap.get(f"{col}{row}", ""), sm27.year)
-        if not d:
-            return None
-        md = f"{d.month}/{d.day}"
-        delta = (d - TODAY).days
-        if delta < 0:
-            status, msg = "done", f"✓ 완료 ({md})"
-        elif delta == 0:
-            status, msg = "imminent", f"D-DAY ({md})"
-        elif delta <= 7:
-            status, msg = "imminent", f"D-{delta} ({md})"
-        else:
-            status, msg = "upcoming", f"D-{delta} ({md})"
-        return {"track": track, "status": status, "date": d.isoformat(), "msg": msg}
-
-    prog = []
-    for stage, label, row, cols in CARD_STAGES:
-        tracks = [t for t in (_mk_track(tk, col, row) for tk, col in cols.items()) if t]
-        if tracks:
-            prog.append({"stage": stage, "label": label, "tracks": tracks})
-    if prog:
-        blk = "const SEASON_27SS_PROGRESS = " + json.dumps(prog, ensure_ascii=False, indent=2) + ";"
-        html2, n27 = re.subn(r"const SEASON_27SS_PROGRESS = \[.*?\n\];", lambda _m: blk, html2, count=1, flags=re.DOTALL)
-        assert n27 == 1, f"SEASON_27SS_PROGRESS 교체 실패 (matched {n27})"
-        print(f"27SS 진척: {len(prog)}단계 주입 (트랙 {sum(len(p['tracks']) for p in prog)})")
-except Exception as e:
-    print(f"[주의] 27SS 진척 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
+from soo.hero_ops.season_progress import build_progress as _build_prog
+for _sea in ("27SS", "27FW"):
+    try:
+        _pw = []
+        prog = _build_prog(sheets, _sea, TODAY, _pw, sheet_id=_src("plm_27ss"))
+        for _w in _pw:
+            print(f"[주의] {_w}")
+        if prog:
+            _name = f"SEASON_{_sea}_PROGRESS"
+            blk = f"const {_name} = " + json.dumps(prog, ensure_ascii=False, indent=2) + ";"
+            html2, _n = re.subn(r"const " + _name + r" = \[.*?\];", lambda _m: blk, html2, count=1, flags=re.DOTALL)
+            assert _n == 1, f"{_name} 교체 실패 (matched {_n})"
+            n27 += 1
+            print(f"{_sea} 진척: {len(prog)}단계 주입 (트랙 {sum(len(p['tracks']) for p in prog)})")
+    except Exception as e:
+        print(f"[주의] {_sea} 진척 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
 # ── 27SS 보드 단계 스케줄 주입 (★ MS_27SS_작업의뢰 기획시트 → STY_SCHED_27SS) ──
 # STY별 stages/dates(14칸)에 '기준 YYYY-MM-DD'를 심어 26FW와 같은 원리로 D+ 지연을 띄운다.
@@ -2953,7 +2922,7 @@ try:
 except Exception:
     pass
 
-print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · GEN_AT→{_GEN_KST.strftime('%Y-%m-%d %H:%M')}(교체 {nga}) · DASHBOARD(교체 {nd}) · 27SS진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch}) · PDP일별(교체 {npdp}) · INBOUND_BOARD(교체 {ninb})")
+print(f"교체 완료: {len(heroes)} 히어로(시리즈) · APP_TODAY→{TODAY.isoformat()}(교체 {nt}) · SALES_AS_OF(교체 {nsa}) · GEN_AT→{_GEN_KST.strftime('%Y-%m-%d %H:%M')}(교체 {nga}) · DASHBOARD(교체 {nd}) · 시즌진척(교체 {n27}) · LAUNCH_26FW(교체 {nlaunch}) · PDP일별(교체 {npdp}) · INBOUND_BOARD(교체 {ninb})")
 for h in heroes:
     done = sum(1 for s in h["stages"] if s == "done")
     prog = sum(1 for s in h["stages"] if s == "progress")
