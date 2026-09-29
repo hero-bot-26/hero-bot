@@ -44,7 +44,11 @@ DEFAULTS = {
         #   ⚠보충일 뿐 대체가 아니다 — 이 시트엔 **담당자 4열이 전부 비어 있고 입고 실적(A:)이 0건**
         #   (PLM 은 WMS 입고를 모른다). 겹치는 스타일은 **주 원천이 이긴다**.
         #   비우면(id 공란) 보충 없이 종전 동작.
-        "id": "1Cv-upIFHYIkUom__1bf9VGdNJ-CblZ0ZvvK1CJv2zx4", "tab": "시트1", "range": "",
+        # ★2026-09-29 **폐지(id 공란)** — 다움님 DBX 적재에 27SS 가 들어와 주 원천 2,824종(27SS 1,242)이
+        #   보충 2,710종 중 2,688종을 덮었다. 보충에만 있던 22종은 9/4 스냅샷의 (가명) 컬래버 코드로
+        #   앱 어디에도 안 나왔고, 정체 경고("27SS 단계가 굳는다")만 거짓으로 울렸다.
+        #   옛 id = 1Cv-upIFHYIkUom__1bf9VGdNJ-CblZ0ZvvK1CJv2zx4 / 시트1 (되살릴 땐 여기 복원)
+        "id": "", "tab": "시트1", "range": "",
         "expected": ["시즌", "스타일 코드", "스타일 생성", "컬러 확정"]},
     "plm_27ss": {      # 27SS 기획 관리판 (#.상세일정) — 홈 카드 SEASON_27SS_PROGRESS
         "id": "10guWc_5t06nu9QryPymTIl2oogQfV4qOEO81iXSgenI", "tab": "#.상세일정", "range": "", "expected": []},
