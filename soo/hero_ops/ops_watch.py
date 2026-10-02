@@ -7,6 +7,7 @@
   ③ 입고               — 마스터앱에서 분리한 `/inbound` 보드의 원천(입고확정 = DBX `입고일자별`)
   ④ 26FW 히어로 대시보드 — DBX 잡 971710339901758 + 데이터시트 신선도
   ⑤ 부문 대시보드      — 정적 3탭(실적·오프라인·매장별)이 며칠째 고착인지
+  ⑥ Mutan 상품 리포트   — 주간 raw 3탭 자동 적재(DBX 잡 1053608725145257, 매주 월 07:00) + 리포트의 IMPORTRANGE
 
 ★설계 원칙 (CLAUDE.md 1-3 "잡이 SUCCESS라고 데이터가 들어온 게 아니다")
   - 워크플로/잡 **실패**만 보지 않는다. **실행 자체가 없었던 것**(외부 cron 사망·빌링 차단)과
@@ -50,7 +51,16 @@ DBX_HOST_DEFAULT = "https://musinsa-data-ws.cloud.databricks.com"
 DBX_JOBS = {
     "334354908178394": ("마스터앱", "히어로 마스터 앱_실적"),
     "971710339901758": ("26FW대시보드", "히어로 26FW 실적 (자동화)"),
+    "1053608725145257": ("Mutan리포트", "[Report] Mutan 상품 주간 raw 적재 (월 07:00)"),
 }
+# 주 1회 도는 잡 = {잡ID: (실행 요일 0=월, 첫 정기 실행일)}. 여기 없는 잡은 매일 도는 것으로 본다.
+DBX_WEEKLY = {"1053608725145257": (0, dt.date(2026, 10, 5))}
+
+# Mutan 상품 리포트: DBX 잡이 중간 시트에 쓰고, 리포트 3탭의 J4 가 그걸 IMPORTRANGE 한다(공유드라이브엔 서비스계정을 못 넣는다)
+MUTAN_STAGING_SHEET = "1fSvUNh6Tcol4qIJW5CSV_y_cl2wzEgGkmo_R9ROCv34"
+MUTAN_REPORT_SHEET = "1SIP8Yi4Z3RJvsB1JkJuZoiTKucXs1wiPeofnWqn_Qj0"
+MUTAN_TABS = ["r_올해_W", "r_전년_W", "r_올해_W-1"]
+MUTAN_FIRST_RUN = dt.date(2026, 10, 5)
 
 WATCH_TAB = "_감시로그"
 WATCH_HEADER = ["날짜", "코드", "레벨", "시스템", "메시지", "발송시각"]
@@ -246,7 +256,14 @@ def check_dbx(now: dt.datetime, gate: bool) -> list[Finding]:
             return dt.datetime.utcfromtimestamp(r.get("start_time", 0) / 1000) + dt.timedelta(hours=9)
 
         periodic = [r for r in runs if r.get("trigger") == "PERIODIC"]
+        weekly = DBX_WEEKLY.get(jid)
         if not periodic:
+            # 주간 잡은 첫 정기 실행이 아예 안 뜬 것도 잡아야 한다(등록만 되고 한 번도 안 돈 채 방치).
+            if weekly and today >= weekly[1] and (not gate or today > weekly[1] or now.hour >= 11):
+                out.append(Finding(
+                    f"DBX_MISSING_{jid}", system,
+                    f"DBX 잡 `{jname}` — 정기 실행이 한 번도 없다(첫 예정 {weekly[1]:%m/%d}). "
+                    f"스케줄 해제·일시중지를 확인할 것.", "심각"))
             continue
 
         # ★진행중(RUNNING/PENDING) run 은 판정하지 않되, **그것 때문에 직전 실패를 놓치면 안 된다.**
@@ -287,7 +304,17 @@ def check_dbx(now: dt.datetime, gate: bool) -> list[Finding]:
 
         # 오늘 정기 실행이 아예 없나 (스케줄 해제·일시중지·클러스터 정책 변경).
         # ★위와 독립으로 본다 — '어제 실패'와 '오늘 미실행'은 서로 다른 사고다.
-        if not gate or now.hour >= 11:
+        if weekly:
+            # 주간 잡: '오늘'이 아니라 **가장 최근 실행 요일 이후로** 정기 실행이 있었는지 본다.
+            due = today - dt.timedelta(days=(today.weekday() - weekly[0]) % 7)
+            if due >= weekly[1] and (not gate or today > due or now.hour >= 11):
+                if not any(_started(r).date() >= due for r in periodic):
+                    newest = _started(periodic[0])
+                    out.append(Finding(
+                        f"DBX_MISSING_{jid}", system,
+                        f"DBX 잡 `{jname}` — 이번 주({due:%m/%d}) 정기 실행이 없다"
+                        f"(마지막 {newest:%m/%d %H:%M}). 스케줄 해제·일시중지를 확인할 것.", "심각"))
+        elif not gate or now.hour >= 11:
             if not any(_started(r).date() == today for r in periodic):
                 newest = _started(periodic[0])
                 gap = (today - newest.date()).days
@@ -524,6 +551,60 @@ def check_dept_dashboard(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
         f"상류 「[데이터] 브랜드부문 대시보드」의 raw 적재부터 확인할 것.", lvl)]
 
 
+def check_mutan_report(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
+    """[Report] Mutan 상품 주간 raw 3탭 — 잡 성패가 아니라 **시트에 닿은 기간**과 **리포트의 연결**을 본다.
+
+    두 가지가 조용히 깨질 수 있다:
+      · 잡은 SUCCESS 인데 중간 시트의 기준 주가 지난주가 아니다(다른 as_of 로 수동 실행된 채 방치 등)
+      · 누군가 리포트 J4 위에 수동으로 붙여넣어 IMPORTRANGE 수식이 사라졌다(이후 영원히 갱신 안 됨, 에러 없음)
+    """
+    today = now.date()
+    last_sun = today - dt.timedelta(days=today.isoweekday())      # 직전 일요일(오늘이 일요일이면 지난주 일요일)
+    if today.weekday() == 0 and gate and now.hour < 11:            # 월요일 07:00 잡 + 약 35분 소요 → 11시 전엔 판정 보류
+        return []
+    out: list[Finding] = []
+    v = sheets.spreadsheets().values()
+    try:
+        meta = v.get(spreadsheetId=MUTAN_STAGING_SHEET, range="'_meta'!A2:G6",
+                     valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+    except Exception as e:
+        print(f"[mutan] 중간 시트 조회 실패 — 판단 보류: {type(e).__name__}: {e}")
+        meta = None
+    if meta is not None and today >= MUTAN_FIRST_RUN:
+        ends = {r[0]: str(r[2]) for r in meta if len(r) >= 3}
+        got = ends.get("r_올해_W")
+        if got != f"{last_sun:%Y%m%d}":
+            out.append(Finding(
+                "MUTAN_STAGING_STALE", "Mutan리포트",
+                f"주간 raw 중간 시트의 기준 주가 지난주가 아니다 — r_올해_W 종료일 {got or '없음'} "
+                f"(기대 {last_sun:%Y%m%d}). DBX 잡 `1053608725145257` 의 이번 주 실행을 확인할 것.", "심각"))
+    try:
+        # 수식은 FORMULA 로, 넘어온 값은 값 렌더로 따로 읽는다 — FORMULA 렌더는 배열이 펼쳐진 칸(J5)을 빈칸으로 준다.
+        fx = v.batchGet(spreadsheetId=MUTAN_REPORT_SHEET, ranges=[f"'{t}'!J4" for t in MUTAN_TABS],
+                        valueRenderOption="FORMULA").execute().get("valueRanges", [])
+        val = v.batchGet(spreadsheetId=MUTAN_REPORT_SHEET, ranges=[f"'{t}'!J5" for t in MUTAN_TABS],
+                         valueRenderOption="FORMATTED_VALUE").execute().get("valueRanges", [])
+    except Exception as e:
+        print(f"[mutan] 리포트 시트 조회 실패 — 판단 보류: {type(e).__name__}: {e}")
+        return out
+    broken = []
+    for tab, rf, rv in zip(MUTAN_TABS, fx, val):
+        f, x = rf.get("values") or [], rv.get("values") or []
+        j4 = str(f[0][0]) if f and f[0] else ""
+        j5 = str(x[0][0]) if x and x[0] else ""
+        if not j4.upper().startswith("=IMPORTRANGE"):
+            broken.append(f"{tab}(J4 수식 없음)")
+        elif j5 == "" or j5.startswith("#"):
+            broken.append(f"{tab}(값이 안 넘어옴: {j5 or '빈칸'})")
+    if broken:
+        out.append(Finding(
+            "MUTAN_REPORT_LINK", "Mutan리포트",
+            "리포트 raw 탭이 중간 시트와 끊겼다 — " + " · ".join(broken) + ".\n"
+            "  J4 위에 수동으로 붙여넣으면 수식이 덮여 **에러 없이 갱신이 멈춘다**. "
+            "`dash_audit/mutan_weekly/switch_report.py --apply` 로 복구.", "심각"))
+    return out
+
+
 # ── dedup 원장 ───────────────────────────────────────────────────────────────
 def _ensure_watch_tab(sheets) -> bool:
     try:
@@ -598,6 +679,7 @@ def run(dry_run: bool = False, force: bool = False, gate: bool = True) -> int:
             ("시트 신선도", lambda: check_sheet_freshness(sheets, now, gate)),
             ("부문 대시보드", lambda: check_dept_dashboard(sheets, now, gate)),
             ("입하 통보(ASN)", lambda: check_asn(sheets, now, gate)),
+            ("Mutan 리포트", lambda: check_mutan_report(sheets, now, gate)),
         ]
     for name, fn in steps:
         try:
