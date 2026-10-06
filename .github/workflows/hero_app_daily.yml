@@ -140,6 +140,7 @@ jobs:
       #   → xlsx 를 정본으로 고정하고 매일 이 스텝이 시트를 따라오게 한다.
       #   멱등이라 이미 같으면 0건. 소문자 online/offline 블록만 쓰고 열·행은 건드리지 않는다.
       - name: 대시보드 목표 동기화 (xlsx 정본 → 히어로목표(거래량))
+        id: target_sync
         if: always()
         continue-on-error: true
         env:
@@ -147,6 +148,19 @@ jobs:
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
         run: python _sync_target_raw.py --apply
+
+      # ★★2026-10-06: 위 스텝은 continue-on-error 라 실패해도 잡이 초록불이고 `if: failure()` 로도 안 잡힌다.
+      #   새 품번 목표가 대시보드 그리드에 열이 없어 '미배치'로 한 달 넘게 0 이었다(리커버리·힛탠다드).
+      #   이제 여유 열에 자동 배치하고, 여유가 모자라거나 실패하면 exit≠0 → 여기서 DM.
+      - name: 목표 동기화 실패/미배치 알림 (슬랙 DM)
+        if: always() && steps.target_sync.outcome == 'failure'
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 대시보드 목표 동기화 실패 또는 미배치 남음 ($(date -u +%Y-%m-%d)) — 새 품번 목표가 대시보드에 0으로 보일 수 있음.
+          Actions 로그의 '[미배치]' 줄 확인. 여유 열 부족이면 그리드 열 + 품목 탭 수식 범위 확장 필요."
 
       # ★★2026-08-04 제거: "대시보드 26FW 목표 반영"(push_26fw_targets.py --apply)
       #   이 스텝은 **시즌 누계(YTD) 목표를 MTD 목표 칸(AI/BH)에 값으로** 박아 넣고 있었다.

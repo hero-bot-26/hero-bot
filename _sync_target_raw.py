@@ -11,8 +11,12 @@
 ★안전 규칙 (전부 실제 사고 이력에서 나온 것)
   1. **소문자 `online`/`offline` 블록만** 건드린다. 대문자 `Online`/`Offline` 블록은 2~6월
      26SS 기간 목표라 xlsx 에 없다 — 덮으면 상반기 목표가 통째로 0 이 된다.
-  2. **열·행을 추가하거나 지우지 않는다.** 시트가 없는 품번×채널은 기입하지 않고 '미배치'로 보고만 한다
-     (열을 끼워 넣으면 품목 탭의 SUMPRODUCT `$C$2:$GV$2` 범위가 밀린다).
+  2. **열·행을 추가하거나 지우지 않는다**(열을 끼워 넣으면 품목 탭 SUMPRODUCT 범위가 밀린다).
+     ★2026-10-06: 시트에 열이 없는 품번×채널은 **수식 범위 안의 빈 여유 열에 헤더를 써서 자동 배치**한다.
+       기존엔 '미배치' 로그 한 줄만 남기고 건너뛰어서, 리커버리 8종·힛탠다드 10종 목표가 9/1 부터
+       한 달 넘게 대시보드에서 0 이었다(9/1 MKFUTBK06 에 이은 두 번째). 여유 열이 모자라면
+       배치할 수 있는 만큼만 하고 **exit 2** → CI 가 슬랙 DM 을 보낸다(조용히 넘어가지 않게).
+     ★수식 범위 끝열은 상수가 아니라 **품목 탭 수식에서 실측**한다(상수와 시트가 갈리면 새 열을 못 읽는다).
   3. 값이 같은 셀은 건드리지 않는다 → 재실행하면 **0건**(멱등).
   4. `--dry` 가 기본. `--apply` 시 직전값을 JSON 으로 백업하고, 쓴 뒤 되읽어 검증한다.
 
@@ -38,10 +42,52 @@ DASH_SID = "1-A04_TwKZJNPkFg27USkKAScZRu6CAhbgVeXk9c09nA"   # 26FW 히어로 실
 RAW_TAB = "히어로목표(거래량)"
 R_CHANNEL, R_STYLE, R_DAILY_FROM, R_DAILY_TO = 2, 3, 14, 378
 C_DATE = 2                       # B열 = 일자(시리얼)
-MAX_COL_LETTER = "HH"            # 품목 탭 SUMPRODUCT 가 훑는 마지막 열
-# ★2026-09-01: GV → HH. 미배치로 건너뛰던 품번 열을 그리드 끝에 붙이고 여유 열을 더 확보하면서
-#   품목 탭 15개의 SUMPRODUCT 범위를 $GV$ → $HH$ 로 넓혔다(도구 `_dash_add_goal_cols.py`).
-#   이 상수가 시트 범위보다 좁으면 새 열을 못 읽어 **조용히 '미배치'로 건너뛴다** — 같이 고칠 것.
+FALLBACK_LAST_COL = "HH"         # 실측 실패 시에만 쓰는 값 (2026-09-01 GV→HH, 10-06 HH→JV)
+# ★2026-10-06: 상수 대신 품목 탭 수식 `'히어로목표(거래량)'!$C$3:$XX$3` 의 XX 를 실측한다.
+#   예전엔 이 상수가 시트 범위보다 좁으면 새 열을 못 읽어 **조용히 '미배치'로 건너뛰었다**.
+GOAL_REF_RE = re.compile(r"'히어로목표\(거래량\)'!\$C\$3:\$([A-Z]{1,3})\$3")
+LABEL_ALL, LABEL_MAIN = "HERO+SUB", "HERO"   # 품목 탭 A12 / A13 (주간 리포트와 같은 탐지 규칙)
+AUTO_NOTE = "(자동배치 {d})"                 # 자동 배치 열의 4행(상품명 자리) 표식
+R_NAME = 4
+
+
+def col_idx(name: str) -> int:
+    n = 0
+    for ch in name:
+        n = n * 26 + (ord(ch) - 64)
+    return n - 1
+
+
+def formula_last_col(sheets) -> str:
+    """품목 탭(A12='HERO+SUB'·A13='HERO')의 목표 수식이 훑는 끝열을 실측. 탭마다 다르면 중단."""
+    meta = sheets.spreadsheets().get(spreadsheetId=DASH_SID, fields="sheets.properties.title").execute()
+    titles = [s["properties"]["title"] for s in meta["sheets"]]
+    lab = sheets.spreadsheets().values().batchGet(
+        spreadsheetId=DASH_SID, ranges=[f"'{t}'!A12:A13" for t in titles],
+        valueRenderOption="UNFORMATTED_VALUE").execute()["valueRanges"]
+    items = []
+    for t, vr in zip(titles, lab):
+        a = [str(x[0]).strip() if x else "" for x in vr.get("values", [])] + ["", ""]
+        if a[0] == LABEL_ALL and a[1] == LABEL_MAIN:
+            items.append(t)
+    fr = sheets.spreadsheets().values().batchGet(
+        spreadsheetId=DASH_SID, ranges=[f"'{t}'!A14:IE40" for t in items],
+        valueRenderOption="FORMULA").execute()["valueRanges"]
+    ends = {}
+    for t, vr in zip(items, fr):
+        found = {m for r in vr.get("values", []) for c in r for m in GOAL_REF_RE.findall(str(c))}
+        if found:
+            ends[t] = found
+    allv = set().union(*ends.values()) if ends else set()
+    if not allv:
+        print(f"[범위] 품목 탭 목표 수식을 못 찾음 — 기본값 {FALLBACK_LAST_COL} 사용")
+        return FALLBACK_LAST_COL
+    if len(allv) > 1:
+        raise RuntimeError(f"품목 탭마다 목표 범위 끝열이 다릅니다 — 범위부터 맞출 것: "
+                           f"{ {t: sorted(v) for t, v in ends.items()} }")
+    last = allv.pop()
+    print(f"[범위] 품목 탭 {len(ends)}개 목표 수식 끝열 = {last} (실측)")
+    return last
 
 
 def col_name(idx0: int) -> str:
@@ -125,13 +171,15 @@ def main():
     styles = sorted({b for b, _ in src})
     print(f"[xlsx] 품번 {len(styles)}개 × 채널 / 일자 {d_from} ~ {d_to}")
 
+    last_col = formula_last_col(sheets)
+    width = col_idx(last_col) + 1
     grid = sheets.spreadsheets().values().get(
-        spreadsheetId=DASH_SID, range=f"'{RAW_TAB}'!A1:{MAX_COL_LETTER}{R_DAILY_TO}",
+        spreadsheetId=DASH_SID, range=f"'{RAW_TAB}'!A1:{last_col}{R_DAILY_TO}",
         valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
 
     def row(n):
         r = grid[n - 1] if len(grid) >= n else []
-        return r + [""] * (250 - len(r))
+        return r + [""] * (width - len(r))
 
     chan_row, style_row = row(R_CHANNEL), row(R_STYLE)
     # ★소문자 블록만. 대문자는 26SS 상반기라 건드리면 안 된다.
@@ -150,11 +198,35 @@ def main():
         if isinstance(v, (int, float)) and v:
             row_of_date[datetime.date(1899, 12, 30) + datetime.timedelta(days=int(v))] = rn
 
+    # ── 미배치 → 여유 열 자동 배치 ──────────────────────────────────────────
+    #   여유 열 = 마지막 품번 열 **뒤** ~ 수식 범위 끝(last_col) 사이에서 2·3행 헤더와 4~378행이 전부 빈 열.
+    #   빈 열은 2행(채널)이 비어 SUMPRODUCT 곱이 0 이라, 헤더를 쓰는 순간부터 집계에 들어간다.
+    #   열 위치는 안 바뀌므로 다른 품번에는 영향이 없다.
+    #   ★중간의 빈 열(예: DJ = 26SS 대문자 블록과 26FW 소문자 블록 사이 구분열)은 쓰지 않는다.
     missing = sorted(k for k in src if k not in dest)
+    last_used = max((ci for ci in range(width) if str(style_row[ci]).strip()), default=1)
+    spare = [ci for ci in range(last_used + 1, width)
+             if not str(chan_row[ci]).strip() and not str(style_row[ci]).strip()
+             and all(not str(row(rn)[ci]).strip() for rn in range(R_NAME, R_DAILY_TO + 1))]
+    placed = list(zip(missing, spare))
+    unplaced = missing[len(placed):]
+    headers = []
     if missing:
-        print(f"[미배치] 시트에 열이 없는 품번×채널 {len(missing)}건 — 기입하지 않음(열 삽입 금지):")
-        for b, c in missing[:12]:
-            print(f"    {b} {c}")
+        today = datetime.date.today().isoformat()
+        print(f"[자동배치] 시트에 열이 없는 품번×채널 {len(missing)}건 → 여유 열 {len(spare)}개 중 "
+              f"{len(placed)}개에 배치")
+        for (b, c), ci in placed:
+            print(f"    {col_name(ci):>3}  {b} {c}")
+            dest[(b, c)] = ci
+            headers.append({"range": f"'{RAW_TAB}'!{col_name(ci)}{R_CHANNEL}:{col_name(ci)}{R_NAME}",
+                            "values": [[c], [b], [AUTO_NOTE.format(d=today)]]})
+        if unplaced:
+            print(f"★[미배치] 여유 열이 모자라 {len(unplaced)}건을 못 넣었습니다 — "
+                  f"그리드 열과 품목 탭 수식 범위(${last_col}$)를 넓혀야 합니다:")
+            for b, c in unplaced:
+                print(f"    {b} {c}")
+    print(f"[여유] 배치 후 남은 여유 열 {len(spare) - len(placed)}개 (범위 끝 {last_col})")
+    rc = 2 if unplaced else 0
 
     updates, diffs, same = [], [], 0
     for key, daily in src.items():
@@ -185,19 +257,25 @@ def main():
         for b, v in sorted(by_style.items()):
             print(f"  {b:12} {v['n']:>6} {v['cur']:>10,.0f} {v['want']:>10,.0f}   {v['first']}~{v['last']}")
 
-    if not updates:
+    if not updates and not headers:
         print("\n[OK] 시트가 이미 xlsx 와 같습니다 (멱등).")
-        return
+        return rc
     if not args.apply:
         print("\n드라이런입니다. 실제로 기입하려면 --apply 를 붙이세요.")
-        return
+        return rc
 
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    bak = ROOT / f"_target_raw_backup_{stamp}.json"
-    bak.write_text(json.dumps({"cells": [{"range": u["range"], "prev": d[3]}
+    bak = ROOT / f"_target_raw_backup_{DASH_SID[:8]}_{stamp}.json"
+    bak.write_text(json.dumps({"headers_added": [h["range"] for h in headers],
+                               "cells": [{"range": u["range"], "prev": d[3]}
                                          for u, d in zip(updates, diffs)]},
                               ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n[백업] {bak}")
+
+    if headers:
+        sheets.spreadsheets().values().batchUpdate(spreadsheetId=DASH_SID, body={
+            "valueInputOption": "RAW", "data": headers}).execute()
+        print(f"[적용] 자동배치 헤더 {len(headers)}열 기입")
 
     # ★사내망(VDI)이 큰 배치에서 소켓 타임아웃을 자주 낸다(실제로 밟음) — 잘게 쪼개고 직접 재시도한다.
     #   멱등이라 중간에 끊겨도 다시 돌리면 남은 것만 쓴다.
@@ -220,12 +298,12 @@ def main():
     print("[적용] 완료 — 되읽어 검증합니다")
 
     grid2 = sheets.spreadsheets().values().get(
-        spreadsheetId=DASH_SID, range=f"'{RAW_TAB}'!A1:{MAX_COL_LETTER}{R_DAILY_TO}",
+        spreadsheetId=DASH_SID, range=f"'{RAW_TAB}'!A1:{last_col}{R_DAILY_TO}",
         valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
 
     def row2(n):
         r = grid2[n - 1] if len(grid2) >= n else []
-        return r + [""] * (250 - len(r))
+        return r + [""] * (width - len(r))
 
     left = 0
     for key, daily in src.items():
@@ -241,7 +319,12 @@ def main():
             if abs(cur - float(want)) >= 1e-9:
                 left += 1
     print("[검증] 되읽기 불일치:", left, "건")
+    if left:
+        rc = rc or 1
+    if rc == 2:
+        print("★ 미배치가 남아 exit 2 — CI 가 슬랙 DM 을 보냅니다.")
+    return rc
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
