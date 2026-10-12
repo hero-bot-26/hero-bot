@@ -202,6 +202,7 @@ def load_mutan_release_dates(sheets) -> dict:
 MSTRD_SHEET = "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"
 MSTRD_STY_TAB = "HERO STY"   # R6헤더/R7~: A·C=품번 B=HERO|HERO SUB D=시리즈 E=캐리/신규 F=발매시즌 M=품명
 MSTRD_SKU_TAB = "SKU"        # R4헤더/R5~: B=품번 I=uid
+DASH_26FW_SHEET = "1-A04_TwKZJNPkFg27USkKAScZRu6CAhbgVeXk9c09nA"   # 26FW 히어로 실적 대시보드(라이브) — uid 보강용
 # B열이 'HERO/HERO SUB'가 아니지만 히어로로 인정하는 예외 {품번: 시리즈} (사용자 확정)
 MSTRD_STY_EXCEPTIONS = {"MMFFJBA01": "에센셜 플리스"}   # B열='핵심상품'이나 HERO SUB로 인정
 # ★26FW 대시보드(1-A04)와 구성을 맞추는 보정 (사용자 확정 2026-10-12, "대시보드 기준으로 앱도 맞춘다").
@@ -326,6 +327,32 @@ def load_26fw_hero_goods(sheets, sid=None) -> dict:
         for u in uids:
             goods_to_hero[u] = s["hero"]
             goods_to_style[u] = sty
+
+    # 4) 26FW 대시보드 A열(uid)·B열(품번) — **합집합으로만** 보탠다 (2026-10-12).
+    #   ItemMaster 는 컬러당 uid 하나라, 같은 컬러에 새 uid 가 등록되면(등록중) 판매 중인 옛 uid 가 밀려난다.
+    #   힛탠다드 블랙 MMFUTBZ03-BK 6761483·MWFUTBZ02-BK 6761513(판매중)이 7287567·7287205(9/9 등록중)로
+    #   바뀌어 앱 필터에서 빠졌고, 앱 힛탠다드가 MTD −296장·재고 −58,731 과소였다. 대시보드 A열은
+    #   `_dash_fill_uid` 가 빈칸만 채우고 사람이 고친 값을 안 덮으므로 판매 중인 uid 가 남아 있다.
+    try:
+        _meta = sheets.spreadsheets().get(spreadsheetId=DASH_26FW_SHEET,
+                                          fields="sheets(properties(title,gridProperties))").execute()
+        _tabs = [x["properties"]["title"] for x in _meta["sheets"]
+                 if not x["properties"]["title"].startswith(("(", "_"))
+                 and x["properties"]["gridProperties"].get("columnCount", 0) >= 232]   # 품목탭(HX 열까지)
+        _vr = sheets.spreadsheets().values().batchGet(
+            spreadsheetId=DASH_26FW_SHEET, ranges=[f"'{t}'!A14:B600" for t in _tabs],
+            valueRenderOption="UNFORMATTED_VALUE").execute().get("valueRanges", [])
+        _added = []
+        for _x in _vr:
+            for r in _x.get("values", []):
+                uid, sty = g(r, 0).split(".")[0], g(r, 1)
+                if uid.isdigit() and sty in styles and uid not in goods_to_hero:
+                    goods_to_hero[uid] = styles[sty]["hero"]
+                    goods_to_style[uid] = sty
+                    _added.append(f"{sty}:{uid}")
+        print(f"26FW 매핑 보강(대시보드 A열): uid {len(_added)}개" + (f" — {', '.join(_added[:8])}" if _added else ""))
+    except Exception as _e:
+        print(f"[주의] 대시보드 A열 uid 보강 실패(ItemMaster 만 사용): {type(_e).__name__}: {_e}")
 
     return {"season": "26FW",
             "style_to_hero": {k: v["hero"] for k, v in styles.items()},
