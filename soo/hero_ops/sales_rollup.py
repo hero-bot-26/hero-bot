@@ -76,7 +76,9 @@ def _color(row, code2kor=None, kor2code=None) -> str:
         return color_display("", nm, code2kor, kor2code) if nm else "기타"
     style = str(row.get("style_no") or "")
     if "-" in style:                                 # 컬러별 UID: 'MWFUR0C03-BK'
-        code = style.rsplit("-", 1)[-1].strip()
+        # ★구품번 접미 제거 — 'FMASC101-BK_X' 의 'BK_X' 가 'BK' 와 다른 컬러로 갈라져
+        #   양말 블랙 판매가 재고 없는 'BK_X' 행으로 빠졌다(2026-10-12).
+        code = style.rsplit("-", 1)[-1].strip().split("_", 1)[0]
         return color_display(code, "", code2kor, kor2code)
     return "기타"
 
