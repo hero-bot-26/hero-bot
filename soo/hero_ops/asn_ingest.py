@@ -437,6 +437,14 @@ def main() -> None:
     sheets = svc["sheets"]
 
     p2h = build_pumbon2hero(sheets)
+    # ★2026-10-12 DBX 중계 — DBX 잡(spec=asn, 매시 :35)이 이 품번 목록으로 같은 SQL 을 돌려 둔다.
+    #   목록을 먼저 올리고(바뀐 경우만), 결과는 2시간 안의 것만 인정한다(ASN 은 실시간성이 가치).
+    from soo.hero_ops import dbx_relay
+    try:
+        dbx_relay.publish_styles(sheets, sorted(p2h))
+    except Exception as e:                 # 목록 갱신 실패가 수집을 막지 않게 — 다음 실행에서 다시 올린다
+        print(f"[relay] ⚠ 품번 목록 갱신 실패: {type(e).__name__}: {e}")
+    dbx_relay.configure(sheets, "asn", max_age_h=2)
     rows = fetch_asn(sorted(p2h), args.days)
     today = _kst_today()
     grid = mark_duplicates(to_grid(rows, p2h), today)

@@ -87,7 +87,17 @@ def dbx_sql(sql: str, wait: int = 300, attempts: int = 3) -> list[list]:
         잡이 빨갛게 죽고 알림이 나가 **사람이 없는 고장을 찾으러 간다**(실제로 밟음).
 
       권한·문법 오류 같은 **진짜 실패는 즉시 올린다** — 재시도는 대기 초과에만 건다.
+
+    ★2026-10-12 SQL Warehouse 직접 접근(개인 PAT·REST)은 데이터플랫폼팀이 순차 제한한다 →
+      DBX 잡 `[자동] DBX 쿼리 중계`가 이 레포 코드를 그대로 불러 같은 SQL 을 돌려 둔 결과를 먼저 본다
+      (soo/hero_ops/dbx_relay.py). 중계가 configure 안 됐거나 결과가 없으면 아래 직접 조회(prefer 모드).
     """
+    from soo.hero_ops import dbx_relay
+    if dbx_relay._cfg["sheets"] is not None:
+        try:
+            return dbx_relay.rows(sql)
+        except dbx_relay.Miss as e:
+            dbx_relay.fallback(e, "DBX 조회")
     host = (os.environ.get("DATABRICKS_HOST") or "").strip() or DBX_HOST_DEFAULT
     tok = _dbx_token()
     if not tok:
