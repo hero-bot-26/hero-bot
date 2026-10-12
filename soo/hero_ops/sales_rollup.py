@@ -516,12 +516,21 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
         return {"tq": {p: {k: 0.0 for k in _CH} for p in PERIODS},
                 "prep": {k: 0.0 for k in _CH}}
 
+    # ★히어로 목표 합계·달성율 분자는 **HERO 등급 STY만** (2026-10-12, 사용자 확정 "대시보드 기준").
+    #   26FW 대시보드 r13(목표 행)은 15개 탭 전부 HERO 소계행만 더한다 — HERO SUB 에 목표가 붙으면
+    #   (힛탠다드 키즈 MKFUTBK06 455장) 앱 합계만 그만큼 커져 두 산출물이 갈렸다.
+    #   STY 행 자체의 목표는 그대로 싣는다. style_meta 가 없는 블록(26SS)은 종전대로 전 STY.
+    smeta = {_base(k): v for k, v in (style_meta or {}).items()}
+
+    def _main(base):
+        return not smeta or (smeta.get(base) or {}).get("grade") == "HERO"
+
     hero_target = defaultdict(_blank_target)
     sty_target = {}                       # 신품번base → target (per-style, 코드 맞을 때만 sty에 부착)
     for style, t in targets.items():
         sty_target[style] = t
         hero = s2h.get(style)
-        if not hero:
+        if not hero or not _main(style):
             continue
         HT = hero_target[hero]
         for p in PERIODS:
@@ -565,7 +574,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
     def _goal_of(base, period):
         """이 STY의 해당 기간 목표(total). 없으면 0."""
         t = sty_target.get(base)
-        if not t:
+        if not t or not _main(base):
             return 0
         return (t["tq"].get(period) or {}).get("t") or 0
 
@@ -659,8 +668,7 @@ def build_dashboard(sheets, drive, sheet_id, as_of, style2hero=None, goods2hero=
             o["inbound"] = ib
         return o
 
-    # 매핑된 STY를 히어로별로 — 매출 0인 STY(발매 전)도 리스트에 싣기 위한 소스
-    smeta = {_base(k): v for k, v in (style_meta or {}).items()}
+    # 매핑된 STY를 히어로별로 — 매출 0인 STY(발매 전)도 리스트에 싣기 위한 소스 (smeta 는 위 목표 블록에서 정의)
     sty_by_hero = defaultdict(list)
     for _b, _m in smeta.items():
         sty_by_hero[_m.get("hero")].append(_b)

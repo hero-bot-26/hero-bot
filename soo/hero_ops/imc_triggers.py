@@ -90,8 +90,12 @@ def load_releases(sheets) -> list[dict]:
         grade, ser = g(r, 1).upper(), g(r, 3)
         if not sty or sty == "-" or sty in seen:
             continue
+        if sty in MSTRD_STY_EXCLUDE:
+            continue
         if sty in MSTRD_STY_EXCEPTIONS:      # B열='핵심상품'이나 HERO SUB로 인정(사용자 확정)
             grade, ser = "HERO SUB", MSTRD_STY_EXCEPTIONS[sty]
+        if grade in ("HERO", "HERO SUB") and sty in MSTRD_GRADE_OVERRIDE:
+            grade = MSTRD_GRADE_OVERRIDE[sty]
         if grade not in GRADES or not ser or ser == "-":
             continue
         rel = rep_first.get(sty)
@@ -200,6 +204,11 @@ MSTRD_STY_TAB = "HERO STY"   # R6헤더/R7~: A·C=품번 B=HERO|HERO SUB D=시�
 MSTRD_SKU_TAB = "SKU"        # R4헤더/R5~: B=품번 I=uid
 # B열이 'HERO/HERO SUB'가 아니지만 히어로로 인정하는 예외 {품번: 시리즈} (사용자 확정)
 MSTRD_STY_EXCEPTIONS = {"MMFFJBA01": "에센셜 플리스"}   # B열='핵심상품'이나 HERO SUB로 인정
+# ★26FW 대시보드(1-A04)와 구성을 맞추는 보정 (사용자 확정 2026-10-12, "대시보드 기준으로 앱도 맞춘다").
+#   MSTRD 에는 남아 있지만 대시보드 담당이 뺀 STY → 앱에서도 뺀다.
+MSTRD_STY_EXCLUDE = {"MMFDJ9A94"}           # 라이트다운 [알레산드로 푼제티] 협업 — 대시보드 블록 삭제(10/7~10/12)
+#   등급이 MSTRD 와 대시보드에서 갈린 STY → 대시보드 등급을 따른다(목표 합계 r13 은 HERO 행만 더한다).
+MSTRD_GRADE_OVERRIDE = {"MKFUTBK06": "HERO SUB"}   # 힛탠다드 키즈 셋업 — MSTRD 'HERO' ↔ 대시보드 'HERO SUB'
 
 
 # 26FW 준비물량 — ★MSTRD 상품MAP 'SKU' 탭 **AA/AB/AC = TOTAL/ON/OFF**(R3 그룹라벨 '26FW 준비물량',
@@ -280,6 +289,9 @@ def load_26fw_hero_goods(sheets, sid=None) -> dict:
             ser = MSTRD_STY_EXCEPTIONS[sty]
         if not ser or ser == "-":
             continue
+        if sty in MSTRD_STY_EXCLUDE:
+            continue
+        grade = MSTRD_GRADE_OVERRIDE.get(sty, grade)
         styles[sty] = {"grade": grade, "hero": ser, "carry": g(r, 4),
                        "rel_season": g(r, 5), "name": g(r, 12), "uid_src": "없음"}
 

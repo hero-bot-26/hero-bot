@@ -266,6 +266,21 @@ except Exception as e:
     print(f"[주의] 준비수량 로드 실패: {type(e).__name__}: {e}")
     _EARLY_MSGS.append(f"준비수량(MSTRD SKU AA/AB/AC) 로드 실패({type(e).__name__}) — 직전값 유지")
 
+# ★준비수량 폴백 = 오더시트 MD투입 2027SS 발주량 (2026-10-12, 26FW 대시보드 HT 와 같은 규칙).
+#   대시보드는 품번-컬러별로 `IF(준비물량(SKU)>0, 그것, 준비물량(오더시트27SS))` 라, MSTRD SKU 탭에 아직 없는
+#   27SS 발매 STY(리커버리 MWGUT0Z02·MWGUB0Z01·MMGUB0Z01·MMGUB0Z03·MWGUB0Z03 = 34,300장)도 준비물량이 잡힌다.
+#   앱은 MSTRD 만 읽어 그 STY 들이 공란이었다(리커버리 앱 71,000 vs 대시보드 105,300). MSTRD 에 값이 있는 STY 는 그대로.
+if prep26:
+    try:
+        from soo.hero_ops.order_ingest import parse_orders as _po27
+        _, _sp27 = _po27(sheets, {}, {}, season="27SS")
+        _fb = {b: {"t": v["t"], "o": v["o"], "f": v["f"], "colors": {}}
+               for b, v in _sp27.items() if v.get("t") and not (prep26.get(b) or {}).get("t")}
+        prep26.update(_fb)
+        print(f"준비수량 폴백(오더시트 27SS): 스타일 {len(_fb)}개 · 합계 {sum(v['t'] for v in _fb.values()):,.0f}")
+    except Exception as _e27:
+        print(f"[주의] 준비수량 27SS 폴백 실패(MSTRD 값만 사용): {type(_e27).__name__}: {_e27}")
+
 # 히어로별 준비수량 — ★귀속은 MSTRD 'HERO STY' 매핑(스냅샷 hero_goods_26fw.json)으로.
 #   수량 탭이 PLM style 목록으로 합산하면 실적 대시보드(같은 MSTRD 매핑)와 값이 어긋난다
 #   (커브드 559,231 vs 508,831 처럼). 두 화면이 같은 수를 보이도록 기준을 하나로 묶는다.
@@ -2493,7 +2508,8 @@ try:
     _fw_goal_qty = {}
     for _b, _tv in (globals().get("FW_TARGETS") or {}).items():
         _h = (_fw_styles.get(_b) or {}).get("hero")
-        if not _h:
+        # ★HERO 등급만 합산 — 26FW 대시보드 r13 과 같은 규칙(sales_rollup._main 주석, 2026-10-12)
+        if not _h or (_fw_styles.get(_b) or {}).get("grade") != "HERO":
             continue
         _acc = _fw_goal_qty.setdefault(_h, {})
         for _p in _PERIODS:
@@ -2588,6 +2604,8 @@ try:
                 _styp = (globals().get("hero_sty_fw", {}) or {}).get(name, {})
 
                 def _sty_goal(_b, _p):
+                    if (_fw_styles.get(_b) or {}).get("grade") != "HERO":   # 목표 합계와 같은 모수(HERO만)
+                        return 0
                     return ((((globals().get("FW_TARGETS") or {}).get(_b) or {}).get("tq") or {})
                             .get(_p) or {}).get("t") or 0
 
