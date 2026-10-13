@@ -281,12 +281,44 @@ if prep26:
     except Exception as _e27:
         print(f"[주의] 준비수량 27SS 폴백 실패(MSTRD 값만 사용): {type(_e27).__name__}: {_e27}")
 
+_FW_LIVE = None
+
+
+def _load_fw_snap():
+    """26FW 히어로 매핑 — 라이브 MSTRD 'HERO STY'(1회 로드·캐시) 우선, 실패 시 스냅샷 + 같은 제외·등급 보정.
+    ★CI 는 커밋본 스냅샷(9/4)을 읽어 DASHBOARD 26FW 블록·준비수량만 옛 매핑으로 돌았다 — 협업 STY(MMFDJ9A94)
+      포함 · 키즈 셋업 HERO · 리커버리 4STY 가 SUB 로 남아 발매센터(LAUNCH)·대시보드와 갈렸다(2026-10-13 발견)."""
+    global _FW_LIVE
+    import copy
+    from soo.hero_ops.imc_triggers import MSTRD_STY_EXCLUDE, MSTRD_GRADE_OVERRIDE, load_26fw_hero_goods
+    if _FW_LIVE is None:
+        try:
+            _FW_LIVE = load_26fw_hero_goods(sheets, sid=_src("mstrd"))
+        except Exception as e:
+            _FW_LIVE = False
+            print(f"[주의] 26FW 매핑 라이브 실패 — 스냅샷+보정 사용: {type(e).__name__}: {e}")
+    if _FW_LIVE:
+        return copy.deepcopy({k: _FW_LIVE[k] for k in ("season", "style_to_hero", "goods_to_hero", "goods_to_style", "styles")})
+    m = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
+    g2s, g2h = m.get("goods_to_style") or {}, m.get("goods_to_hero") or {}
+    for sty in MSTRD_STY_EXCLUDE:
+        (m.get("style_to_hero") or {}).pop(sty, None)
+        (m.get("styles") or {}).pop(sty, None)
+        for g in [g for g, s in g2s.items() if str(s).split("-")[0] == sty]:
+            g2s.pop(g, None)
+            g2h.pop(g, None)
+    for sty, grade in MSTRD_GRADE_OVERRIDE.items():
+        if sty in (m.get("styles") or {}):
+            m["styles"][sty]["grade"] = grade
+    return m
+
+
 # 히어로별 준비수량 — ★귀속은 MSTRD 'HERO STY' 매핑(스냅샷 hero_goods_26fw.json)으로.
 #   수량 탭이 PLM style 목록으로 합산하면 실적 대시보드(같은 MSTRD 매핑)와 값이 어긋난다
 #   (커브드 559,231 vs 508,831 처럼). 두 화면이 같은 수를 보이도록 기준을 하나로 묶는다.
 _PREP_HERO, _PREP_STY = {}, {}
 try:
-    _snap26 = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
+    _snap26 = _load_fw_snap()
     _pnorm = lambda x: re.sub(r"\s+", "", str(x or ""))
     for _sty, _hero in (_snap26.get("style_to_hero") or {}).items():
         _pv = prep26.get(_sty)
@@ -605,7 +637,7 @@ try:
     #   FWTD 행이 아직 없으면 aggregate_funnel이 퍼널을 통째로 꺼서 '-'로 남긴다(어긋난 값 방지).
     try:
         from soo.hero_ops.sales_rollup import PERIOD_TABS as _PT
-        _fw_map = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
+        _fw_map = _load_fw_snap()
         _fw_tabs = dict(_PT)
         _fw_tabs["YTD"] = ("FWTD", "전년FWTD")
         try:
@@ -680,7 +712,7 @@ try:
     #   26FW STY(양말 7팩·10팩 등)가 STY_NAMES에 없어 '기타'로 폴백되던 것 보강.
     _sty_names = dict(_map26.get("style_names", {}))
     try:
-        _fw_snap = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
+        _fw_snap = _load_fw_snap()
         for _b, _s in _fw_snap.get("styles", {}).items():
             if _s.get("name") and _b not in _sty_names:
                 _sty_names[_b] = _s["name"]
@@ -809,7 +841,7 @@ _MUT_BY_KEY = {_ser_key(s): h for s, h in _MUTAN_REL.get("heroes", {}).items()}
 _FW_HERO_MAP = None
 _FW_STY_NUMS = None
 try:
-    _FW_HERO_MAP = _IMCT0.load_26fw_hero_goods(sheets, sid=_src("mstrd"))
+    _FW_HERO_MAP = _FW_LIVE or _IMCT0.load_26fw_hero_goods(sheets, sid=_src("mstrd"))   # 위 _load_fw_snap 캐시 재사용
     _FW_STY_NUMS = set(_FW_HERO_MAP["style_to_hero"].keys())
     print(f"HERO STY 발매 필터 기준: {len(_FW_STY_NUMS)} 품번 (15 시리즈)")
 except Exception as e:
@@ -1522,7 +1554,7 @@ try:
             _HEALTH.append(f"26FW 히어로 매핑 로드 실패({type(_efw).__name__}) — 스냅샷 사용")
             print(f"[주의] 26FW 매핑 라이브 실패 — 스냅샷 폴백: {type(_efw).__name__}: {_efw}")
             try:
-                _snap = json.load(open(ROOT / "hero_goods_26fw.json", encoding="utf-8"))
+                _snap = _load_fw_snap()
                 _fw2h_sty, _fw2h_goods = _snap["style_to_hero"], _snap["goods_to_hero"]
                 _fw2sty = _snap.get("goods_to_style", {})
             except Exception:

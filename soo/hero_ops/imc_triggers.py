@@ -342,7 +342,7 @@ def load_26fw_hero_goods(sheets, sid=None) -> dict:
         _vr = sheets.spreadsheets().values().batchGet(
             spreadsheetId=DASH_26FW_SHEET, ranges=[f"'{t}'!A14:B600" for t in _tabs],
             valueRenderOption="UNFORMATTED_VALUE").execute().get("valueRanges", [])
-        _added = []
+        _added, _regrade, _gseen = [], [], set()
         for _x in _vr:
             for r in _x.get("values", []):
                 uid, sty = g(r, 0).split(".")[0], g(r, 1)
@@ -350,7 +350,16 @@ def load_26fw_hero_goods(sheets, sid=None) -> dict:
                     goods_to_hero[uid] = styles[sty]["hero"]
                     goods_to_style[uid] = sty
                     _added.append(f"{sty}:{uid}")
-        print(f"26FW 매핑 보강(대시보드 A열): uid {len(_added)}개" + (f" — {', '.join(_added[:8])}" if _added else ""))
+                # ★등급도 대시보드 소계행 A열(HERO/HERO SUB)을 따른다 — r13 목표가 'HERO 소계행만' 합산이라
+                #   MSTRD 와 등급이 다르면 앱 목표가 갈린다(2026-10-13: 리커버리 3STY MSTRD SUB ↔ 대시보드 HERO,
+                #   −87장). 품번당 첫 소계행만(아래 26SS 층 블록 무시).
+                elif uid in ("HERO", "HERO SUB") and sty in styles and sty not in _gseen:
+                    _gseen.add(sty)
+                    if styles[sty]["grade"] != uid:
+                        _regrade.append(f"{sty}:{styles[sty]['grade']}→{uid}")
+                        styles[sty]["grade"] = uid
+        print(f"26FW 매핑 보강(대시보드 A열): uid {len(_added)}개" + (f" — {', '.join(_added[:8])}" if _added else "")
+              + f" · 등급 대시보드 기준 {len(_regrade)}건" + (f" — {', '.join(_regrade)}" if _regrade else ""))
     except Exception as _e:
         print(f"[주의] 대시보드 A열 uid 보강 실패(ItemMaster 만 사용): {type(_e).__name__}: {_e}")
 
