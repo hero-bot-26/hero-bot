@@ -129,7 +129,14 @@ def build_pumbon2hero(sheets):
             print(f"[입고보드] 히어로 매핑 '{name}' 읽기 실패: {type(e).__name__}: {e}")
             continue
         if p2h:
-            print(f"[입고보드] 히어로 매핑 소스='{name}' 품번 {len(p2h)}개 · 히어로 {len(set(p2h.values()))}종")
+            # ★앱 공통 제외 STY 를 같이 뺀다 — 실적·발매센터는 imc_triggers.MSTRD_STY_EXCLUDE 로 빼는데
+            #   보드만 HERO STY 탭을 직접 읽어 협업 STY(MMFDJ9A94)가 라이트다운 입고에 5,700장 남아 있었다(2026-10-13).
+            from soo.hero_ops.imc_triggers import MSTRD_STY_EXCLUDE
+            _drop = [p for p in p2h if p.split("-")[0] in MSTRD_STY_EXCLUDE]
+            for p in _drop:
+                p2h.pop(p)
+            print(f"[입고보드] 히어로 매핑 소스='{name}' 품번 {len(p2h)}개 · 히어로 {len(set(p2h.values()))}종"
+                  + (f" · 제외 {len(_drop)}" if _drop else ""))
             return p2h
     raise RuntimeError("입고 보드 히어로 매핑을 어느 탭에서도 못 읽었습니다 — 상품MAP 탭 구성 확인 필요")
 
@@ -387,7 +394,10 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
         #   드롭하지 말고 표시 단계에서 가린다). 근본 수정은 원천 바코드 파싱 쪽.
         if dbx_actuals is not None:
             _used = {m["dbx_key"] for m in merged.values()}
-            _hstyles = {m["style"] for m in merged.values() if m["style"]}
+            # ★생산관리 탭에 행이 없는 히어로 품번(캐리오버 등)도 포함 — 예전엔 생산관리 기준 품번만 봐서
+            #   심리스 브라(3 STY 모두 캐리오버)는 WMS 입고 28,314장이 통째로 0 이었다(2026-10-13).
+            _hstyles = ({m["style"] for m in merged.values() if m["style"]}
+                        | {p.split("-")[0] for p, h in p2h.items() if h == hero})
             for _k, _arr in dbx_actuals.items():
                 if _k in _used:
                     continue
