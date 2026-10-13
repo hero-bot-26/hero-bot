@@ -2810,6 +2810,53 @@ try:
         _tot = {h: sum(v.values()) for h, v in _pdp_by.items() if h != "전체"}
         _order = ["전체"] + sorted(_tot, key=lambda h: -_tot[h])          # 전체 먼저 + 총UV 내림차순
         _series = {h: [_pdp_by[h].get(d, 0) for d in _pdp_dates] for h in _order}
+        # ★2026-10-13 전년 시리즈 — 'PDP일별전년' 탭(노트북 (6) 셀, 같은 쿼리 1년 전 창·같은 품번)을
+        #   같은 히어로 롤업으로 접어 **올해 날짜에 정렬**(날짜-1년의 값). 앱 트렌드의 '전년 대비'(일평균) 분모.
+        #   탭이 없거나 비면 series_ly 를 싣지 않는다 → 앱이 전년 대비를 '—' 로 둔다(0 으로 채우지 않음).
+        _series_ly, _series_lfl = {}, {}
+        try:
+            _ly_by, _ly_sty = {}, set()
+            for _r in _read_tab(sheets, _pdp_sid, "PDP일별전년"):
+                _d = str(_r.get("date") or "")[:10]
+                _h = _pdp_h_of(_r.get("style_no"), _r.get("goods_no")) if _pdp_h_of else ""
+                try:
+                    _u = int(float(_r.get("pdp_uv")))
+                except (TypeError, ValueError):
+                    continue
+                if _d and _h and _u > 0:
+                    _ly_by.setdefault(_h, {})[_d] = _ly_by.setdefault(_h, {}).get(_d, 0) + _u
+                    _ly_sty.add(str(_r.get("style_no") or _r.get("goods_no") or ""))
+            if _ly_by:
+                _ly_by["전체"] = {}
+                for _h, _v in list(_ly_by.items()):
+                    if _h == "전체":
+                        continue
+                    for _d, _u in _v.items():
+                        _ly_by["전체"][_d] = _ly_by["전체"].get(_d, 0) + _u
+
+                def _ly_key(_d):
+                    _y, _m, _dd = _d.split("-")
+                    return f"{int(_y) - 1}-{_m}-{_dd}" if (_m, _dd) != ("02", "29") else f"{int(_y) - 1}-02-28"
+                _series_ly = {h: [(_ly_by.get(h) or {}).get(_ly_key(d), 0) for d in _pdp_dates] for h in _order}
+                # ★like-for-like 분자 — 올해 유입 중 **전년에도 유입이 있던 품번**만. 그냥 올해 전량을 쓰면
+                #   신규 품번(커브드·리커버리 등)이 분자에만 들어가 전체 전년비가 부푼다(▲116% 로 나왔다).
+                _lfl_by = {}
+                for _r in _pdp_rows:
+                    if str(_r.get("style_no") or _r.get("goods_no") or "") not in _ly_sty:
+                        continue
+                    _d = str(_r.get("date") or "")[:10]
+                    _h = _pdp_h_of(_r.get("style_no"), _r.get("goods_no")) if _pdp_h_of else ""
+                    try:
+                        _u = int(float(_r.get("pdp_uv")))
+                    except (TypeError, ValueError):
+                        continue
+                    if _d and _h and _u > 0:
+                        for _k in (_h, "전체"):
+                            _lfl_by.setdefault(_k, {})[_d] = _lfl_by.setdefault(_k, {}).get(_d, 0) + _u
+                _series_lfl = {h: [(_lfl_by.get(h) or {}).get(d, 0) for d in _pdp_dates] for h in _order}
+                print(f"PDP일별전년: 히어로 {len(_ly_by) - 1} · 전체 {sum(_ly_by['전체'].values()):,} UV")
+        except Exception as _ely:
+            print(f"[주의] PDP일별전년 읽기 실패 — 전년 대비 미표시: {type(_ely).__name__}: {_ely}")
         _grade = {}                                                       # 26FW 등급(S/A/E)
         for h in _order[1:]:
             g = _FW_GRADE.get(h) or next((v for k, v in _FW_GRADE.items()
@@ -2866,7 +2913,7 @@ try:
         _pdp_lag = (TODAY - datetime.date.fromisoformat(_pdp_last)).days
         _pdp_obj = {"as_of": _pdp_last, "gen_at": TODAY.isoformat(), "lag_days": _pdp_lag,
                     "sample": False, "dates": _pdp_dates,
-                    "series": _series, "heroes": _order, "grade": _grade, "actions": _acts}
+                    "series": _series, **({"series_ly": _series_ly, "series_lfl": _series_lfl} if _series_ly else {}), "heroes": _order, "grade": _grade, "actions": _acts}
         if _pdp_lag > 2:      # 전일(=1) 또는 이틀 전(=2)까진 원천 적재 지연으로 정상
             _HEALTH.append(f"PDP 일별 유입 원천 지연 {_pdp_lag}일(마지막 {_pdp_last}) — 트렌드 꼬리 확인")
         html2, npdp = re.subn(r"window\.__PDP_DAILY = [^\n]*?;",
