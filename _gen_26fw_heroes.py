@@ -878,6 +878,16 @@ try:
     #    ★발매스케줄(상품MAP)은 stale STY(슬랙스 옛 20FW품번을 26FW신규로 오기 등)가 섞여 있어 폐기.
     #    무탠 26FW 발매일 있는 히어로 STY만(등급 HERO/HERO SUB) 정확일자로 매핑.
     _rel_skip = 0
+    # ★지난 발매는 계획일이 아니라 시스템 기록(판매중 전환 시각)으로 표시한다(사용자 지시 2026-10-13).
+    #   원천·규칙은 soo/hero_ops/release_log.py. 못 읽으면 종전처럼 계획일로만 표시하고 경고를 올린다.
+    _REL_LOG, _n_act = {}, 0
+    try:
+        from soo.hero_ops import release_log as _RLOG
+        _REL_LOG = _RLOG.fetch(sheets)
+        print(f"판매중 전환 로그: {len(_REL_LOG):,} goods")
+    except Exception as _rx:
+        print(f"[주의] 판매중 전환 로그 못 읽음 — 지난 발매도 계획일로 표시: {type(_rx).__name__}: {str(_rx)[:200]}")
+        _HEALTH.append(f"실제 발매(판매중 전환) 로그 못 읽음 — IMC 지난 발매가 계획일로 표시됨({type(_rx).__name__})")
     for _ser, _h in _MUTAN_REL.get("heroes", {}).items():
         for _e in _h.get("events", []):
             # ★HERO STY 품번(B열 HERO/HERO SUB)만 발매 대상. 대표품번이 그 집합에 없으면 제외
@@ -885,7 +895,17 @@ try:
             if _FW_STY_NUMS is not None and _e["style"] not in _FW_STY_NUMS:
                 _rel_skip += 1
                 continue
-            _add("발매", "발매", _e["release"].isoformat(), _e["name"], f"{_ser}/{_e.get('grade', 'HERO')}")
+            _plan = _e["release"]
+            _date, _sub = _plan, f"{_ser}/{_e.get('grade', 'HERO')}"
+            if _REL_LOG and _plan <= TODAY:
+                _act = _RLOG.actual_release(_e.get("uids"), _plan, _REL_LOG)
+                if _act:
+                    _date = _act.date()
+                    _sub += f" · 판매중 전환 {_act:%m/%d %H:%M}" + ("" if _date == _plan else f" (계획 {_plan.month}/{_plan.day})")
+                    _n_act += 1
+            _add("발매", "발매", _date.isoformat(), _e["name"], _sub)
+    if _REL_LOG:
+        print(f"발매: 판매중 전환 기록으로 표시 {_n_act}건")
     if _rel_skip:
         print(f"발매 필터: HERO STY 외 {_rel_skip}건 제외")
     # (캠페인/오프라인/발매이슈/기획전은 기존 소스 유지)

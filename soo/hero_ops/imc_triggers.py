@@ -160,12 +160,15 @@ def load_mutan_release_dates(sheets) -> dict:
     mv = sheets.spreadsheets().values().get(
         spreadsheetId=MUTAN_SHEET, range=f"'{MUTAN_TAB}'!B12:H30000").execute().get("values", [])
     rep_first: dict[str, datetime.date] = {}
+    rep_uids: dict[str, set] = {}      # 대표품번 → UID(goods_no) 전 컬러 — 실제 발매(판매중 전환) 대조용(release_log)
     heroes: dict[str, dict] = {}
     for r in mv:
         def c(i): return str(r[i]).strip() if i < len(r) and r[i] is not None else ""
         rel = _mutan_date(c(0)); season = c(6); rep = c(3); name = c(5)   # B발매·H시즌·E대표·G품명
         if not rel or not season.startswith("26FW") or not rep:
             continue
+        if c(1):
+            rep_uids.setdefault(rep, set()).add(c(1))   # C열 UID
         if rep not in rep_first or rel < rep_first[rep]:
             rep_first[rep] = rel
         ser = rep_series.get(rep)
@@ -188,7 +191,8 @@ def load_mutan_release_dates(sheets) -> dict:
         carry = len(h["reps"]) - new
         out[ser] = {
             "dates": sorted(h["dates"]), "reps": h["reps"], "new": new, "carry": carry,
-            "events": sorted(h["events"].values(), key=lambda e: (e["release"], e["style"])),
+            "events": sorted(({**e, "uids": sorted(rep_uids.get(e["style"], ()))} for e in h["events"].values()),
+                             key=lambda e: (e["release"], e["style"])),
         }
     return {"rep_first": rep_first, "heroes": out}
 
