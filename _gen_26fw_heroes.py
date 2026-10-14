@@ -2444,6 +2444,24 @@ for _sea in ("27SS", "27FW"):
     except Exception as e:
         print(f"[주의] {_sea} 진척 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
+# ── 27FW 보드 (★ MS_27FW_작업의뢰 기획시트 → PLM_DATA_27FW · STY_SCHED_27FW) ──
+# ★2026-10-14 (사용자 지시) `히어로 핵심 상품` = 'HERO' 인 STY 를 27FW 보드에 자동 등록. 27SS 와 같은 로더.
+#   판매시즌이 비어 있어 트랙은 MAIN. MDP 베이스라인은 27SS 용이라 끄고 STY 목표일만 기준.
+try:
+    from soo.hero_ops.sched_27ss import load_27ss_heroes as _lh27, load_27ss_sched as _ls27
+    _h27f = _lh27(sheets, _src("req_27fw"), hero_mark="HERO", default_track="MAIN")
+    if not _h27f:
+        raise ValueError("27FW HERO 0건 — 기존값 유지")
+    _s27f, _w27f = _ls27(sheets, _src("req_27fw"), today=TODAY, only=set(_h27f),
+                         tracks=None, use_baseline=False, default_track="MAIN")
+    for _nm, _obj in (("PLM_DATA_27FW", _h27f), ("STY_SCHED_27FW", _s27f)):
+        _blk = f"const {_nm} = " + json.dumps(_obj, ensure_ascii=False, indent=2) + ";"
+        html2, _n = re.subn(r"const " + _nm + r" = \{.*?\n\};", lambda _m: _blk, html2, count=1, flags=re.DOTALL)
+        assert _n == 1, f"{_nm} 교체 실패 (matched {_n})"
+    print(f"27FW 보드: HERO {len(_h27f)}종 · 스케줄 {len(_s27f)}종")
+except Exception as _e27f:
+    print(f"[주의] 27FW 보드 주입 실패 — 기존값 유지: {type(_e27f).__name__}: {_e27f}")
+
 # ── 27SS 보드 단계 스케줄 주입 (★ MS_27SS_작업의뢰 기획시트 → STY_SCHED_27SS) ──
 # STY별 stages/dates(14칸)에 '기준 YYYY-MM-DD'를 심어 26FW와 같은 원리로 D+ 지연을 띄운다.
 # 스펙·안전규칙 = hero-master-app/docs/27ss-schedule-targets.md

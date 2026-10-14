@@ -227,7 +227,8 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
     return stages, dates
 
 
-def load_27ss_heroes(sheets, sheet_id: str | None = None) -> dict:
+def load_27ss_heroes(sheets, sheet_id: str | None = None,
+                     hero_mark: str = HERO_MARK, default_track: str = "") -> dict:
     """작업의뢰 기획시트 → 27SS 히어로 후보 {신품번: {heroName, category, track, colors, ownerMD, ownerDesigner}}.
 
     ★대상 = `히어로 핵심 상품` 열이 정확히 '히어로' 인 행(‘핵심상품’은 제외 — 사용자 확정 2026-08-26).
@@ -257,7 +258,7 @@ def load_27ss_heroes(sheets, sheet_id: str | None = None) -> dict:
         def get(c):
             i = H.get(c)
             return str(r[i]).strip() if i is not None and len(r) > i else ""
-        if get(HERO_COL) != HERO_MARK:
+        if get(HERO_COL) != hero_mark:                 # 27SS='히어로' · 27FW='HERO'
             continue
         sty = get(KEY_COL)
         if not sty:
@@ -268,6 +269,8 @@ def load_27ss_heroes(sheets, sheet_id: str | None = None) -> dict:
                                ("track", TRACK_COL), ("ownerMD", "MD"), ("ownerDesigner", "DS")):
             if not e[field]:
                 e[field] = get(colname)
+        if not e["track"]:
+            e["track"] = default_track
         c = get("컬러 국문")
         if c and c not in e["colors"]:
             e["colors"].append(c)
@@ -277,7 +280,9 @@ def load_27ss_heroes(sheets, sheet_id: str | None = None) -> dict:
 def load_27ss_sched(sheets, sheet_id: str | None = None,
                     today: dt.date | None = None,
                     only: set[str] | None = None,
-                    plm_actuals: dict[str, dict[int, str]] | None = None) -> tuple[dict, list[str]]:
+                    plm_actuals: dict[str, dict[int, str]] | None = None,
+                    tracks: set[str] | None = TRACKS, use_baseline: bool = True,
+                    default_track: str = "") -> tuple[dict, list[str]]:
     """작업의뢰 시트 → {신품번: {'stages': [...], 'dates': [...], 'track': '간절기'}}, warnings.
 
     only 를 주면 그 신품번만(앱 PLM_DATA 후보와 교집합). 실패는 호출부가 가드 —
@@ -297,7 +302,8 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
         raise ValueError(f"작업의뢰 헤더 불일치 — 없는 컬럼: {missing}")
 
     warns: list[str] = []
-    base_by_track = load_mdp_baseline(sheets, warns=warns)
+    # 27FW 는 MDP 트랙 베이스라인(27SS 봄/여름 행)이 맞지 않아 끈다 — STY 목표일(원단·APP·입고)만 기준
+    base_by_track = load_mdp_baseline(sheets, warns=warns) if use_baseline else {}
     _src_stat: dict[str, int] = {}
     out: dict[str, dict] = {}
     # ★SKU 여러 행 → STY 단위로 묶는다. 진행 컬럼은 **전 SKU 가 끝나야 완료**(날짜=가장 늦은 날),
@@ -319,8 +325,8 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
     for sty, rs in _rows_by.items():
         r = rs[0]
         get = lambda c: (r[H[c]].strip() if c in H and len(r) > H[c] else "")   # noqa: E731
-        track = get(TRACK_COL)
-        if track not in TRACKS:
+        track = get(TRACK_COL) or default_track
+        if tracks and track not in tracks:
             warns.append(f"{sty}: 판매시즌 '{track}' 미인식 — 스킵")
             continue
         row = {c: get(c) for c in H}
