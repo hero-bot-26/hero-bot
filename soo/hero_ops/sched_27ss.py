@@ -83,7 +83,8 @@ def _norm_date(raw: str) -> dt.date | None:
     s = (raw or "").strip()
     if not s or s in NOT_DONE:
         return None
-    m = re.match(r"^(\d{2}|\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$", s)
+    # 구분자 반복 허용 — 원천에 '26-04--28' 같은 오타가 있다(2026-10-14)
+    m = re.match(r"^(\d{2}|\d{4})[-/.]+(\d{1,2})[-/.]+(\d{1,2})$", s)
     if not m:
         return None
     y, mo, d = (int(x) for x in m.groups())
