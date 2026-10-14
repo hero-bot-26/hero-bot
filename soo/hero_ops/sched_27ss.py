@@ -23,12 +23,14 @@ import re
 DEFAULT_SHEET_ID = "1NshiEIK3o8Kczi5Zg746cz2I3-Q-lq0eGNOe0YTuibI"
 TAB = "기획시트"
 HEADER_ROW = 5          # 라벨 행(A5:..). 데이터는 6행부터.
-RANGE = f"'{TAB}'!A{HEADER_ROW}:FZ2000"
+# ★무한범위 — FZ2000 상한일 때 원천이 2,210행으로 자라 뒤쪽 STY 가 조용히 잘렸다(2026-10-14).
+RANGE = f"'{TAB}'!A{HEADER_ROW}:FZ"
 
 # 27SS 일정이 놓일 수 있는 창. 밖이면 원천 오류로 보고 버린다.
 WINDOW = (dt.date(2026, 1, 1), dt.date(2027, 12, 31))
 
 NOT_DONE = {"미완료", "누락", "-", "N/A", "#N/A", "미정"}
+DONE_MARK = "완료"
 
 # 히어로 후보 판정 — L열 `히어로 핵심 상품`. '핵심상품'도 같은 열에 오지만 대상 아님.
 HERO_COL = "히어로 핵심 상품"
@@ -166,14 +168,14 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
     baseline = baseline or {}
     for n in sorted(set(STAGE_COLS) | set(baseline) | set(plm_actual or {})):
         done_col, target_col = STAGE_COLS.get(n, (None, None))
-        # ★실적은 PLM 우선, 없으면 기획시트 진행 컬럼(폴백)
-        actual = _norm_date((plm_actual or {}).get(n, ""))
-        if actual:
-            if src_stat is not None:
-                src_stat["plm"] = src_stat.get("plm", 0) + 1
-        elif done_col:
-            actual = _norm_date(row.get(done_col, ""))
-            if actual and src_stat is not None:
+        # ★2026-10-14 (사용자 지시) 실적도 기획시트만 — PLM 실적일이 부정확하다는 현업 의견.
+        #   '완료'(날짜 없이 글자만)도 완료로 친다 — 전엔 날짜가 아니라서 '미완료→지연'으로 떴다.
+        actual, done_nodate = None, False
+        if done_col:
+            _raw = (row.get(done_col, "") or "").strip()
+            actual = _norm_date(_raw)
+            done_nodate = (actual is None and _raw == DONE_MARK)
+            if (actual or done_nodate) and src_stat is not None:
                 src_stat["sheet"] = src_stat.get("sheet", 0) + 1
         if target_col == "MD입고 목표일":
             target = in_goal
@@ -190,7 +192,10 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
         if target is None and n in baseline:
             target = baseline[n]
 
-        if actual and _in_window(actual):
+        if done_nodate:
+            stages[n] = "done"
+            dates[n] = "완료 (날짜 미기록)"
+        elif actual and _in_window(actual):
             if target:
                 diff = (actual - target).days
                 dates[n] = f"{_fmt(actual)} (기준 {_fmt(target)}, {'+' if diff >= 0 else ''}{diff}일)"
@@ -282,16 +287,32 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
     base_by_track = load_mdp_baseline(sheets, warns=warns)
     _src_stat: dict[str, int] = {}
     out: dict[str, dict] = {}
+    # ★SKU 여러 행 → STY 단위로 묶는다. 진행 컬럼은 **전 SKU 가 끝나야 완료**(날짜=가장 늦은 날),
+    #   하나라도 미완료면 미완료. 전엔 첫 행만 봐서 다른 컬러가 안 끝나도 완료로 떴다(2026-10-14).
+    _done_cols = {c for c, _ in STAGE_COLS.values()}
+    _rows_by: dict[str, list] = {}
     for r in vals[1:]:
+        k = (r[H[KEY_COL]].strip() if len(r) > H[KEY_COL] else "")
+        if k and not (only and k not in only):
+            _rows_by.setdefault(k, []).append(r)
+
+    def _merge_done(raws: list[str]) -> str:
+        ds = [_norm_date(x) for x in raws]
+        if not raws or any(d is None and (x or "").strip() != DONE_MARK for d, x in zip(ds, raws)):
+            return "미완료"
+        ds = [d for d in ds if d]
+        return _fmt(max(ds)) if ds else DONE_MARK
+
+    for sty, rs in _rows_by.items():
+        r = rs[0]
         get = lambda c: (r[H[c]].strip() if c in H and len(r) > H[c] else "")   # noqa: E731
-        sty = get(KEY_COL)
-        if not sty or (only and sty not in only) or sty in out:
-            continue                                     # SKU 여러 행 → STY 첫 행만(스케줄은 STY 단위)
         track = get(TRACK_COL)
         if track not in TRACKS:
             warns.append(f"{sty}: 판매시즌 '{track}' 미인식 — 스킵")
             continue
         row = {c: get(c) for c in H}
+        for c in _done_cols:
+            row[c] = _merge_done([(x[H[c]].strip() if len(x) > H[c] else "") for x in rs])
         _bl = base_by_track.get(TRACK_TO_MDP.get(track, ""), {})
         stages, dates = build_sty_dates(row, today, sty, warns, baseline=_bl,
                                         plm_actual=(plm_actuals or {}).get(sty),
@@ -301,6 +322,5 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
         out[sty] = {"stages": stages, "dates": dates, "track": track,
                     "strat": get(STRAT_COL)}
     if _src_stat:
-        print(f"  · 27SS 완료 판정 출처 — PLM {_src_stat.get('plm', 0)}칸 "
-              f"· 기획시트 폴백 {_src_stat.get('sheet', 0)}칸")
+        print(f"  · 27SS 완료 판정 — 기획시트 {_src_stat.get('sheet', 0)}칸 (PLM 미사용)")
     return out, warns
