@@ -77,6 +77,9 @@ jobs:
         env:
           DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_PAT:           ${{ secrets.DATABRICKS_PAT }}
+          # 2026-10-14 데이터플랫폼팀 공지(개인 PAT 의 SQL Warehouse 직접 조회 제한) 대응 —
+          # ASN 쿼리는 DBX 중계 잡(673490245750768)만 쓴다. 중계가 없거나 낡으면 직접 조회로 넘어가지 않고 실패한다.
+          DBX_RELAY_MODE:           only
           GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
