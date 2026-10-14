@@ -31,6 +31,7 @@ WINDOW = (dt.date(2026, 1, 1), dt.date(2027, 12, 31))
 
 NOT_DONE = {"미완료", "누락", "-", "N/A", "#N/A", "미정"}
 DONE_MARK = "완료"
+FABRIC_ORDER_COL = "원단 발주"   # 단계 매핑은 없고 원단 확정 바닥선 근거로만 쓴다
 
 # 히어로 후보 판정 — L열 `히어로 핵심 상품`. '핵심상품'도 같은 열에 오지만 대상 아님.
 HERO_COL = "히어로 핵심 상품"
@@ -166,6 +167,15 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
     ceilings = {10: in_goal, 13: rel_goal}
 
     baseline = baseline or {}
+    # ★완료 바닥선(2026-10-14) — 현업은 뒤 칸만 채우고 앞 칸을 '미완료'로 둔다(PO 발행됐는데 원단 확정
+    #   '미완료'가 히어로 73종 중 51종). 원단을 안 정하고 PO 가 나갈 수 없으므로 후속 완료 → 선행 완료 추정.
+    #   26FW 보드의 규칙 A 와 같은 원리. APP 는 PO 와 순서가 섞일 수 있어 바닥선 근거로 안 쓴다.
+    _isdone = lambda c: bool(_norm_date(row.get(c, ""))) or (row.get(c, "") or "").strip() == DONE_MARK  # noqa: E731
+    implied: dict[int, str] = {}
+    if _isdone("PO 발행 (작지투입)"):
+        implied[6] = implied[7] = "PO 발행 완료"
+    elif _isdone(FABRIC_ORDER_COL):
+        implied[7] = "원단 발주 완료"
     for n in sorted(set(STAGE_COLS) | set(baseline) | set(plm_actual or {})):
         done_col, target_col = STAGE_COLS.get(n, (None, None))
         # ★2026-10-14 (사용자 지시) 실적도 기획시트만 — PLM 실적일이 부정확하다는 현업 의견.
@@ -195,6 +205,9 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
         if done_nodate:
             stages[n] = "done"
             dates[n] = "완료 (날짜 미기록)"
+        elif not actual and n in implied:
+            stages[n] = "done"
+            dates[n] = f"완료 추정 — {implied[n]} (날짜 미기록)"
         elif actual and _in_window(actual):
             if target:
                 diff = (actual - target).days
@@ -289,7 +302,7 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
     out: dict[str, dict] = {}
     # ★SKU 여러 행 → STY 단위로 묶는다. 진행 컬럼은 **전 SKU 가 끝나야 완료**(날짜=가장 늦은 날),
     #   하나라도 미완료면 미완료. 전엔 첫 행만 봐서 다른 컬러가 안 끝나도 완료로 떴다(2026-10-14).
-    _done_cols = {c for c, _ in STAGE_COLS.values()}
+    _done_cols = {c for c, _ in STAGE_COLS.values()} | ({FABRIC_ORDER_COL} & set(H))
     _rows_by: dict[str, list] = {}
     for r in vals[1:]:
         k = (r[H[KEY_COL]].strip() if len(r) > H[KEY_COL] else "")
