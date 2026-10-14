@@ -360,7 +360,10 @@ _MDP_BL = _load_mdp_baseline_26fw(sheets)
 if _MDP_BL:
     BASELINE = _MDP_BL
 
-# ★2026-10-14 (사용자 지시) 26FW 신호등 실적 = MS_26FW_작업의뢰(PLM 부정확). 작업의뢰에 없는 STY 중
+# ★2026-10-14 혼합 판정(사용자 결정): 완료 = 작업의뢰 OR PLM 실적일, 날짜는 PLM 우선.
+#   실측 — PLM 완료·시트 미완 칸의 대부분이 '시트 앞칸 방치'(26FW 54·27SS 34)·'입고 미기입'(26FW 23)이고
+#   PLM 이전 시즌 날짜는 0건. PLM 은 틀리게 찍기보다 늦게 찍는다(시트만 완료가 더 많음).
+# ★2026-10-14 (사용자 지시) 26FW 신호등 실적 = MS_26FW_작업의뢰 + PLM. 작업의뢰에 없는 STY 중
 #   캐리오버는 개발 단계 면제로 완료, 나머지만 PLM 폴백. 로드 실패 시 전부 PLM(조용한 0 방지).
 WREQ26: dict = {}
 try:
@@ -413,8 +416,10 @@ for i, series in enumerate(series_order, 1):
             actual = cell.actual if cell else None
             if (row["style"], n) in completions and not (actual and len(actual) == 10):
                 sst.append("done"); sdt.append("완료 (앱 입력)"); continue
-            if wr is not None:                            # ★작업의뢰 기준(PLM 무시)
+            if wr is not None:                            # ★작업의뢰 + PLM 혼합(완료=둘 중 하나, 날짜=PLM 우선)
                 _a = wr.get(n)
+                if actual and len(actual) == 10:
+                    _a = (actual, "PLM")
                 if _a and _a[0]:
                     dd = (_d(_a[0]) - _d(base)).days if base else None
                     tag = f" (기준 {base}, {'+' if (dd or 0) > 0 else ''}{dd}일)" if dd is not None else ""
@@ -2444,6 +2449,21 @@ for _sea in ("27SS", "27FW"):
     except Exception as e:
         print(f"[주의] {_sea} 진척 주입 실패 — 기존값 유지: {type(e).__name__}: {e}")
 
+# ★2026-10-14 혼합 판정(사용자 결정): 완료 = 작업의뢰 OR PLM 실적일, 날짜는 PLM 우선.
+#   실측 — PLM 완료·시트 미완 칸의 대부분이 '시트 앞칸 방치'(26FW 54·27SS 34)·'입고 미기입'(26FW 23)이고
+#   PLM 이전 시즌 날짜는 0건. PLM 은 틀리게 찍기보다 늦게 찍는다(시트만 완료가 더 많음).
+def _plm_actuals_for(styles):
+    """{STY: {단계: 'YYYY-MM-DD'}} — PLM 실적일(날짜 10자리만)."""
+    out = {}
+    for _s in (styles or ()):
+        _r = plm.get(_s)
+        _st = {n: c.actual for n, c in ((_r.stages or {}).items() if _r else ())
+               if c and c.actual and len(c.actual) == 10}
+        if _st:
+            out[_s] = _st
+    return out
+
+
 # ── 27FW 보드 (★ MS_27FW_작업의뢰 기획시트 → PLM_DATA_27FW · STY_SCHED_27FW) ──
 # ★2026-10-14 (사용자 지시) `히어로 핵심 상품` = 'HERO' 인 STY 를 27FW 보드에 자동 등록. 27SS 와 같은 로더.
 #   판매시즌이 비어 있어 트랙은 MAIN. MDP 베이스라인은 27SS 용이라 끄고 STY 목표일만 기준.
@@ -2453,7 +2473,8 @@ try:
     if not _h27f:
         raise ValueError("27FW HERO 0건 — 기존값 유지")
     _s27f, _w27f = _ls27(sheets, _src("req_27fw"), today=TODAY, only=set(_h27f),
-                         tracks=None, use_baseline=False, default_track="MAIN")
+                         tracks=None, use_baseline=False, default_track="MAIN",
+                         plm_actuals=_plm_actuals_for(set(_h27f)))
     for _nm, _obj in (("PLM_DATA_27FW", _h27f), ("STY_SCHED_27FW", _s27f)):
         _blk = f"const {_nm} = " + json.dumps(_obj, ensure_ascii=False, indent=2) + ";"
         html2, _n = re.subn(r"const " + _nm + r" = \{.*?\n\};", lambda _m: _blk, html2, count=1, flags=re.DOTALL)
@@ -2488,7 +2509,8 @@ try:
     _cand = set(json.loads(_m27.group(1)).keys()) if _m27 else None
     # ★2026-10-14 (사용자 지시) 27SS 단계는 완료·지연 모두 **작업의뢰 기획시트만** 본다.
     #   (2026-09-04 엔 완료=PLM 실적일이었으나, PLM 데이터가 부정확하다는 현업 의견으로 폐지)
-    sched27, warns27 = load_27ss_sched(sheets, _src("plm_27ss_req"), today=TODAY, only=_cand)
+    sched27, warns27 = load_27ss_sched(sheets, _src("plm_27ss_req"), today=TODAY, only=_cand,
+                                       plm_actuals=_plm_actuals_for(_cand))
     if not sched27:
         raise ValueError("스케줄 0건 — 조용한 0 덮어쓰기 방지로 기존값 유지")
     try:                                   # 27SS 작업의뢰도 같은 감시(멈추면 단계 진척이 굳는다)

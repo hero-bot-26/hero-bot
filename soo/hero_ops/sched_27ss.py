@@ -180,8 +180,12 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
         done_col, target_col = STAGE_COLS.get(n, (None, None))
         # ★2026-10-14 (사용자 지시) 실적도 기획시트만 — PLM 실적일이 부정확하다는 현업 의견.
         #   '완료'(날짜 없이 글자만)도 완료로 친다 — 전엔 날짜가 아니라서 '미완료→지연'으로 떴다.
-        actual, done_nodate = None, False
-        if done_col:
+        # ★2026-10-14 혼합: PLM 실적일이 있으면 완료(그 날짜) — 없으면 기획시트 진행 칸.
+        actual, done_nodate = _norm_date((plm_actual or {}).get(n, "")), False
+        if actual:
+            if src_stat is not None:
+                src_stat["plm"] = src_stat.get("plm", 0) + 1
+        elif done_col:
             _raw = (row.get(done_col, "") or "").strip()
             actual = _norm_date(_raw)
             done_nodate = (actual is None and _raw == DONE_MARK)
@@ -341,5 +345,5 @@ def load_27ss_sched(sheets, sheet_id: str | None = None,
         out[sty] = {"stages": stages, "dates": dates, "track": track,
                     "strat": get(STRAT_COL)}
     if _src_stat:
-        print(f"  · 27SS 완료 판정 — 기획시트 {_src_stat.get('sheet', 0)}칸 (PLM 미사용)")
+        print(f"  · 완료 판정 — PLM 실적일 {_src_stat.get('plm', 0)}칸 · 기획시트 {_src_stat.get('sheet', 0)}칸")
     return out, warns
