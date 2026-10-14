@@ -58,6 +58,12 @@ DEFAULTS = {
         "id": "1IvQHP-93wxK_WMBEevVcnwyEa-QM529VoB544ojpxD0", "tab": "기획시트", "range": "",
         "expected": ["신품번", "판매 시즌", "컬러 확정", "원단 확정", "PO 발행 (작지투입)",
                      "테크팩 확정 (APP)", "입고 완료", "MD입고 목표일", "APP 목표"]},
+    # ★2026-10-14 26FW·27FW 보드 신호등도 작업의뢰 기준(PLM 부정확 — 사용자 지시). 26FW 는 .xlsx.
+    "req_26fw": {      # MS_26FW_작업의뢰.xlsx '기획시트' — 26FW 보드 단계 실적(work_req.py)
+        "id": "1VXaf7CwgN82GSwKgQlDni9T4ST16xsaC", "tab": "기획시트", "range": "", "expected": []},
+    "req_27fw": {      # ★ MS_27FW_작업의뢰 '기획시트' — 27FW 히어로 후보·단계(STY_SCHED_27FW)
+        "id": "1xL9bEx5zUUTMVyBBrppeY87PSssEb2OfdPFrhuOPjaM", "tab": "기획시트", "range": "",
+        "expected": ["신품번", "히어로 핵심 상품", "컬러 확정", "원단 확정", "PO 발행 (작지투입)"]},
 }
 
 

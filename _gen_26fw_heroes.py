@@ -360,6 +360,18 @@ _MDP_BL = _load_mdp_baseline_26fw(sheets)
 if _MDP_BL:
     BASELINE = _MDP_BL
 
+# ★2026-10-14 (사용자 지시) 26FW 신호등 실적 = MS_26FW_작업의뢰(PLM 부정확). 작업의뢰에 없는 STY 중
+#   캐리오버는 개발 단계 면제로 완료, 나머지만 PLM 폴백. 로드 실패 시 전부 PLM(조용한 0 방지).
+WREQ26: dict = {}
+try:
+    from soo.hero_ops import work_req as _WR
+    _wh, _wrows = _WR.load_rows(sheets, drive, _src("req_26fw"), _src_tab("req_26fw", _WR.TAB))
+    WREQ26 = {k: _WR.stage_actuals(v) for k, v in _WR.by_style(_wh, _wrows).items()}
+    print(f"26FW 작업의뢰: {len(WREQ26)} STY (행 {len(_wrows)})")
+except Exception as _ewr:
+    print(f"[주의] 26FW 작업의뢰 로드 실패 — 신호등 PLM 유지: {type(_ewr).__name__}: {_ewr}")
+_wr_stat = Counter()
+
 heroes = []
 for i, series in enumerate(series_order, 1):
     rows = series_rows[series]
@@ -377,8 +389,9 @@ for i, series in enumerate(series_order, 1):
         rec = plm.get(row["style"])
         track = season_to_track(row.get("season", ""))
         bl = BASELINE[track]
-        unregistered = rec is None                       # 규칙 D: PLM에 코드 없음
-        plm_status = rec.plm_status if rec else "PLM 미등록"
+        wr = WREQ26.get(row["style"]) if WREQ26 else None
+        unregistered = rec is None and wr is None        # 규칙 D: PLM·작업의뢰 어디에도 없음
+        plm_status = rec.plm_status if rec else ("작업의뢰 등록" if wr is not None else "PLM 미등록")
         dropped = (plm_status == "Dropped")
         carry = bool(rec.carryover) if (rec and rec.carryover is not None) else False
         # 완료 바닥선(floor): 이 단계 이하는 날짜 없어도 완료로 간주
@@ -400,6 +413,26 @@ for i, series in enumerate(series_order, 1):
             actual = cell.actual if cell else None
             if (row["style"], n) in completions and not (actual and len(actual) == 10):
                 sst.append("done"); sdt.append("완료 (앱 입력)"); continue
+            if wr is not None:                            # ★작업의뢰 기준(PLM 무시)
+                _a = wr.get(n)
+                if _a and _a[0]:
+                    dd = (_d(_a[0]) - _d(base)).days if base else None
+                    tag = f" (기준 {base}, {'+' if (dd or 0) > 0 else ''}{dd}일)" if dd is not None else ""
+                    sst.append("done"); sdt.append(_a[0] + tag)
+                elif _a:
+                    sst.append("done")
+                    sdt.append(f"{_a[1]} (날짜 미기록)" if _a[1].startswith("완료 추정") else "완료 (날짜 미기록)")
+                elif base and _d(base) and _d(base) < TODAY:
+                    sst.append("delayed"); sdt.append(f"지연! 기준 {base} 경과")
+                else:
+                    sst.append("pending"); sdt.append(f"기준 {base}" if base else "")
+                _wr_stat["작업의뢰"] += 1
+                continue
+            if WREQ26 and carry:                          # 작업의뢰 미대상 캐리오버 = 개발 단계 면제
+                sst.append("done"); sdt.append("완료 — 캐리오버 (작업의뢰 미대상)")
+                _wr_stat["캐리오버"] += 1
+                continue
+            _wr_stat["PLM 폴백"] += 1
             if actual and len(actual) == 10:
                 dd = (_d(actual) - _d(base)).days if base else None
                 tag = f" (기준 {base}, {'+' if (dd or 0) > 0 else ''}{dd}일)" if dd is not None else ""
