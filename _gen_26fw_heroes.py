@@ -393,6 +393,8 @@ for i, series in enumerate(series_order, 1):
         track = season_to_track(row.get("season", ""))
         bl = BASELINE[track]
         wr = WREQ26.get(row["style"]) if WREQ26 else None
+        _bulk = _WR.plm_bulk({n: c.actual for n, c in (rec.stages or {}).items() if c and c.actual}) \
+            if (wr is not None and rec) else set()
         unregistered = rec is None and wr is None        # 규칙 D: PLM·작업의뢰 어디에도 없음
         plm_status = rec.plm_status if rec else ("작업의뢰 등록" if wr is not None else "PLM 미등록")
         dropped = (plm_status == "Dropped")
@@ -419,14 +421,17 @@ for i, series in enumerate(series_order, 1):
             if wr is not None:                            # ★작업의뢰 + PLM 혼합(완료=둘 중 하나, 날짜=PLM 우선)
                 _a = wr.get(n)
                 if actual and len(actual) == 10:
-                    _a = (actual, "PLM")
+                    if n not in _bulk:
+                        _a = (actual, "PLM")
+                    elif not _a:                          # PLM 일괄 처리 — 완료만 인정, 날짜는 버림
+                        _a = (None, "완료 — PLM 일괄 처리")
                 if _a and _a[0]:
                     dd = (_d(_a[0]) - _d(base)).days if base else None
                     tag = f" (기준 {base}, {'+' if (dd or 0) > 0 else ''}{dd}일)" if dd is not None else ""
                     sst.append("done"); sdt.append(_a[0] + tag)
                 elif _a:
                     sst.append("done")
-                    sdt.append(f"{_a[1]} (날짜 미기록)" if _a[1].startswith("완료 추정") else "완료 (날짜 미기록)")
+                    sdt.append(f"{_a[1]} (날짜 미기록)" if _a[1].startswith("완료") else "완료 (날짜 미기록)")
                 elif base and _d(base) and _d(base) < TODAY:
                     sst.append("delayed"); sdt.append(f"지연! 기준 {base} 경과")
                 else:
@@ -2453,12 +2458,15 @@ for _sea in ("27SS", "27FW"):
 #   실측 — PLM 완료·시트 미완 칸의 대부분이 '시트 앞칸 방치'(26FW 54·27SS 34)·'입고 미기입'(26FW 23)이고
 #   PLM 이전 시즌 날짜는 0건. PLM 은 틀리게 찍기보다 늦게 찍는다(시트만 완료가 더 많음).
 def _plm_actuals_for(styles):
-    """{STY: {단계: 'YYYY-MM-DD'}} — PLM 실적일(날짜 10자리만)."""
+    """{STY: {단계: 'YYYY-MM-DD' | '완료'}} — PLM 실적일(날짜 10자리만). 일괄 처리 단계는 '완료'(날짜 버림)."""
+    from soo.hero_ops.work_req import plm_bulk as _pb
     out = {}
     for _s in (styles or ()):
         _r = plm.get(_s)
         _st = {n: c.actual for n, c in ((_r.stages or {}).items() if _r else ())
                if c and c.actual and len(c.actual) == 10}
+        for _n in _pb(_st):
+            _st[_n] = "완료"
         if _st:
             out[_s] = _st
     return out

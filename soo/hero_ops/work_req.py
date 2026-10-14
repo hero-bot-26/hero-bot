@@ -132,6 +132,26 @@ def by_style(hdr: list[str], rows: list[list[str]], only: set[str] | None = None
     return out
 
 
+BULK_WINDOW_DAYS, BULK_MIN_STAGES = 7, 5
+
+
+def plm_bulk(stmap: dict[int, str]) -> set[int]:
+    """PLM 일괄 처리 감지 — 품평~판매가(3~12) 중 **5개 이상 단계가 7일 안에** 몰려 찍혔으면 그 단계들.
+
+    ★2026-10-14 실측: 26FW 보드 PLM 147종 중 84종, 27SS 73종 중 14종이 이 모양(예: 속기모 커브드 데님
+      품평~APP 7단계가 전부 4/28). 완료 자체는 맞지만(이미 판매 중) 날짜는 실제 진행일이 아니다
+      (쿨 코튼 폴로: 시트 품평 7/2 ↔ PLM 8/21 일괄). → 이 단계들은 완료만 인정하고 날짜는 시트를 쓴다.
+    """
+    it = sorted((dt.date.fromisoformat(d), n) for n, d in stmap.items()
+                if 3 <= n <= 12 and d and len(d) == 10)
+    best: set[int] = set()
+    for d0, _ in it:
+        grp = {n for d, n in it if 0 <= (d - d0).days <= BULK_WINDOW_DAYS}
+        if len(grp) > len(best):
+            best = grp
+    return best if len(best) >= BULK_MIN_STAGES else set()
+
+
 def stage_actuals(rec: dict) -> dict[int, tuple[str | None, str]]:
     """STY 1건 → {단계: (실적일 'YYYY-MM-DD' | None, 출처문구)} — 완료인 단계만 담는다."""
     out: dict[int, tuple[str | None, str]] = {}

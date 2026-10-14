@@ -182,7 +182,9 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
         # ★2026-10-14 (사용자 지시) 실적도 기획시트만 — PLM 실적일이 부정확하다는 현업 의견.
         #   '완료'(날짜 없이 글자만)도 완료로 친다 — 전엔 날짜가 아니라서 '미완료→지연'으로 떴다.
         # ★2026-10-14 혼합: PLM 실적일이 있으면 완료(그 날짜) — 없으면 기획시트 진행 칸.
-        actual, done_nodate = _norm_date((plm_actual or {}).get(n, "")), False
+        _pa_raw = (plm_actual or {}).get(n, "")          # 'YYYY-MM-DD' 또는 DONE_MARK(=PLM 일괄 처리)
+        actual, done_nodate = _norm_date(_pa_raw), False
+        nodate_label = "완료 (날짜 미기록)"
         if actual:
             if src_stat is not None:
                 src_stat["plm"] = src_stat.get("plm", 0) + 1
@@ -192,6 +194,8 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
             done_nodate = (actual is None and _raw == DONE_MARK)
             if (actual or done_nodate) and src_stat is not None:
                 src_stat["sheet"] = src_stat.get("sheet", 0) + 1
+        if not actual and not done_nodate and _pa_raw == DONE_MARK:   # PLM 일괄 처리 — 완료만 인정
+            done_nodate, nodate_label = True, "완료 — PLM 일괄 처리 (날짜 미기록)"
         if target_col == "MD입고 목표일":
             target = in_goal
         elif target_col:
@@ -209,7 +213,7 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
 
         if done_nodate:
             stages[n] = "done"
-            dates[n] = "완료 (날짜 미기록)"
+            dates[n] = nodate_label
         elif not actual and n in implied:
             stages[n] = "done"
             dates[n] = f"완료 추정 — {implied[n]} (날짜 미기록)"
