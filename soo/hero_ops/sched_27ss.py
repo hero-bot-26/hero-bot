@@ -170,10 +170,14 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
     baseline = baseline or {}
     # ★완료 바닥선(2026-10-14) — 현업은 뒤 칸만 채우고 앞 칸을 '미완료'로 둔다(PO 발행됐는데 원단 확정
     #   '미완료'가 히어로 73종 중 51종). 원단을 안 정하고 PO 가 나갈 수 없으므로 후속 완료 → 선행 완료 추정.
-    #   26FW 보드의 규칙 A 와 같은 원리. APP 는 PO 와 순서가 섞일 수 있어 바닥선 근거로 안 쓴다.
+    #   26FW 보드의 규칙 A 와 같은 원리. (APP 는 처음엔 근거에서 뺐으나 2026-10-15 사용자 결정으로 포함 — 아래)
     _isdone = lambda c: bool(_norm_date(row.get(c, ""))) or (row.get(c, "") or "").strip() == DONE_MARK  # noqa: E731
     implied: dict[int, str] = {}
-    if _isdone("PO 발행 (작지투입)"):
+    # ★2026-10-15 (사용자 결정) QC APP 완료면 앞 단계(1차수량·컬러·원단·PO) 전부 완료로 본다 — QC 는 끝났는데
+    #   컬러 확정 칸만 비어 '지연'으로 뜨던 27SS 8종. 실적은 기획시트 칸 또는 PLM 실적일(혼합 판정과 같은 기준).
+    if _isdone(STAGE_COLS[10][0]) or (plm_actual or {}).get(10):
+        implied.update({n: "QC APP 완료" for n in (5, 6, 7, 8, 9)})
+    elif _isdone("PO 발행 (작지투입)"):
         implied[6] = implied[7] = "PO 발행 완료"
     elif _isdone(FABRIC_ORDER_COL):
         implied[7] = "원단 발주 완료"
