@@ -427,6 +427,10 @@ def summarize(grid: list[list], today: datetime.date) -> str:
             + f" · WMS 연결 {linked}/{aged}행(유예 {DUP_GRACE_DAYS}일 지난 통보)")
 
 
+# DBX 중계 잡(673490245750768) 휴지 시간대 — 마지막 19:35 결과가 2h 를 넘는 21시부터 첫 07:35 결과를 읽는 08시 전까지.
+RELAY_IDLE_FROM, RELAY_IDLE_UNTIL = 21, 8
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="시트에 기입(기본은 드라이런)")
@@ -445,7 +449,17 @@ def main() -> None:
     except Exception as e:                 # 목록 갱신 실패가 수집을 막지 않게 — 다음 실행에서 다시 올린다
         print(f"[relay] ⚠ 품번 목록 갱신 실패: {type(e).__name__}: {e}")
     dbx_relay.configure(sheets, "asn", max_age_h=2)
-    rows = fetch_asn(sorted(p2h), args.days)
+    try:
+        rows = fetch_asn(sorted(p2h), args.days)
+    except dbx_relay.RelayStale as e:
+        # ★2026-10-16 중계 잡은 07~19시(매시 :35)만 돌고 이 잡은 매시 돈다 — 21시~익일 08시엔
+        #   결과가 2h 를 넘는 게 정상이라, 그 창에선 실패가 아니라 '건너뜀'으로 끝낸다(시트는 그대로 둔다).
+        #   10/14~15 이틀 밤 매시 실패 알림이 이것이었다. 낮에 낡으면 중계 잡 고장이니 그대로 실패시킨다.
+        h = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)).hour
+        if h >= RELAY_IDLE_FROM or h < RELAY_IDLE_UNTIL:
+            print(f"[_ASN] 건너뜀 — 중계 휴지 시간대({h}시 KST, 중계 07~19시): {e}")
+            return
+        raise
     today = _kst_today()
     grid = mark_duplicates(to_grid(rows, p2h), today)
     # ★KST 로 못박는다 — `datetime.now()` 는 CI 러너(UTC)와 로컬(KST)에서 9시간 다르게 찍혀

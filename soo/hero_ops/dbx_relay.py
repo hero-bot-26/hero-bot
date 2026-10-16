@@ -36,6 +36,14 @@ class Miss(Exception):
     """중계 결과가 없다/낡았다 — 호출부가 직접 조회로 넘어갈지 정한다."""
 
 
+class Stale(Miss):
+    """중계 결과는 있는데 허용 나이를 넘었다 — 중계 잡이 쉬는 시간대(밤)엔 정상이다."""
+
+
+class RelayStale(RuntimeError):
+    """only 모드에서 Stale 이 난 것 — 호출부가 '중계 휴지 시간대면 건너뛴다'를 가를 수 있게 따로 둔다."""
+
+
 def mode() -> str:
     return (os.environ.get("DBX_RELAY_MODE") or "prefer").strip().lower()
 
@@ -118,7 +126,7 @@ def statement(sql: str, log=print) -> dict:
         raise Miss(f"중계에 이 SQL 결과가 없다(key {k}, spec {_cfg['spec']})")
     age = _age_h(row[6])
     if age > _cfg["max_age_h"]:
-        raise Miss(f"중계 결과가 낡았다 — {age:.1f}h 전({row[6]}) > 허용 {_cfg['max_age_h']}h")
+        raise Stale(f"중계 결과가 낡았다 — {age:.1f}h 전({row[6]}) > 허용 {_cfg['max_age_h']}h")
     cols, rows = _read(row)
     log(f"[relay] 중계 사용 · {len(rows):,}행 · {row[6]} 적재 · key {k}")
     return {"statement_id": "relay:" + k, "status": {"state": "SUCCEEDED"},
@@ -144,6 +152,8 @@ def by_alias(alias: str, max_age_h: float | None = None) -> tuple[list[dict], li
 def fallback(e: Exception, what: str, log=print) -> None:
     """중계 실패 시 직접 조회로 넘어가도 되는지. only 모드면 여기서 실패로 올린다."""
     if mode() == "only":
+        if isinstance(e, Stale):
+            raise RelayStale(f"[relay] {what}: {e}") from e
         raise RuntimeError(f"[relay] {what}: 중계 결과 없음 + DBX_RELAY_MODE=only → 직접 조회 금지. {e}")
     log(f"[relay] ⚠ {what}: {e} → 직접 조회(로컬 SQL Warehouse 접근 — 제한 예정)")
 
