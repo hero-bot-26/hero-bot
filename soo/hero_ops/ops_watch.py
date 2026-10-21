@@ -557,6 +557,69 @@ def check_dept_dashboard(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
         f"상류 「[데이터] 브랜드부문 대시보드」의 raw 적재부터 확인할 것.", lvl)]
 
 
+# dash-agg 러너 하트비트(`_dash_state` E5:H6 — kind | last_seen | last_rc | runner). dash-agg/soo/state.py
+DEPT_HB_RANGE = "'_dash_state'!E5:H6"
+DEPT_CI_SLOTS = [(9, 20)] + [(h, 20) for h in range(11, 18)]     # dash_agg.yml cron (KST)
+
+
+def check_dept_runners(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
+    """부문 대시보드 집계 러너(CI·로컬)가 살아 있나 — 정적탭 기준일 점검의 짝.
+
+    근거: 2026-09-28~10-21 dash-agg CI 가 Secret 미등록으로 46회 전부 인증 단계에서 죽었는데,
+          로컬 러너가 대신 만들어 **화면 기준일은 멀쩡했다** → DEPT_STATIC_STALE 로는 원리상 못 잡는다.
+          dash-agg 는 비공개 레포라 이 워크플로의 GITHUB_TOKEN 으로 런 목록을 못 읽는다 → 러너가
+          대시보드 숨김 탭에 남기는 하트비트를 본다. 인증부터 죽으면 하트비트가 낡는다.
+
+    판정
+      · CI 하트비트가 '지금 기준 마지막 슬롯 − 2h' 보다 낡음 → 심각 (슬롯 하나 드롭은 허용)
+      · 러너의 마지막 결과가 1(오류)                         → 경고
+      · 'running' 인 채 45분 넘음                             → 경고 (도중에 죽음)
+      로컬은 PC 가 꺼지면 안 도는 게 정상이라 낡음은 안 본다 — 결과 오류만.
+    """
+    try:
+        rows = sheets.spreadsheets().values().get(
+            spreadsheetId=DEPT_DASH_SHEET, range=DEPT_HB_RANGE).execute().get("values", [])
+    except Exception as e:
+        print(f"[dept-hb] 하트비트 조회 실패 — 판단 보류: {type(e).__name__}: {e}")
+        return []
+    hb = {}
+    for r in rows:
+        if len(r) >= 3 and str(r[0]).strip():
+            try:
+                seen = dt.datetime.fromisoformat(str(r[1])).replace(tzinfo=None)   # KST
+            except ValueError:
+                continue
+            hb[str(r[0]).strip()] = (seen, str(r[2]).strip(), r[3] if len(r) > 3 else "")
+    out: list[Finding] = []
+    nm = {"ci": "CI(GitHub Actions dash-agg)", "local": "로컬 작업 스케줄러"}
+
+    past = [now.replace(hour=h, minute=m, second=0, microsecond=0) for h, m in DEPT_CI_SLOTS]
+    past = [s for s in past if s <= now - dt.timedelta(minutes=30)]
+    if (not gate or now.hour >= 12) and past:
+        need = past[-1] - dt.timedelta(hours=2)
+        ci = hb.get("ci")
+        if ci is None:
+            out.append(Finding("DEPT_CI_NOHB", "부문대시보드",
+                               "CI 러너 하트비트가 한 번도 없다 — dash-agg Secret `GOOGLE_OAUTH_TOKEN` 미등록이거나 "
+                               "schedule 이 꺼져 있다. 로컬 러너만 도는 중.", "경고"))
+        elif ci[0] < need:
+            out.append(Finding("DEPT_CI_STALE", "부문대시보드",
+                               f"CI 러너가 {ci[0]:%m/%d %H:%M} 이후 안 깼다(기대 {need:%H:%M} 이후). "
+                               f"Secret `GOOGLE_OAUTH_TOKEN` 만료·schedule 드롭·빌링 차단을 의심 — "
+                               f"https://github.com/hero-bot-26/dash-agg/actions", "심각"))
+    for kind, (seen, rc, runner) in hb.items():
+        if rc == "1":
+            out.append(Finding(f"DEPT_RUN_ERR_{kind}", "부문대시보드",
+                               f"{nm.get(kind, kind)} 마지막 실행이 오류로 끝났다 — {seen:%m/%d %H:%M} ({runner}). "
+                               + ("Actions 로그 확인." if kind == "ci" else "SooBot/logs/dash_watch_<날짜>.log 확인."),
+                               "경고"))
+        elif rc == "running" and now - seen > dt.timedelta(minutes=45):
+            out.append(Finding(f"DEPT_RUN_HUNG_{kind}", "부문대시보드",
+                               f"{nm.get(kind, kind)} 가 {seen:%m/%d %H:%M} 시작 후 끝난 기록이 없다(도중에 죽음) — {runner}.",
+                               "경고"))
+    return out
+
+
 def check_mutan_report(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
     """[Report] Mutan 상품 주간 raw 3탭 — 잡 성패가 아니라 **시트에 닿은 기간**과 **리포트의 연결**을 본다.
 
@@ -684,6 +747,7 @@ def run(dry_run: bool = False, force: bool = False, gate: bool = True) -> int:
             ("랭킹 산출물", lambda: check_ranking_output(sheets, now, gate)),
             ("시트 신선도", lambda: check_sheet_freshness(sheets, now, gate)),
             ("부문 대시보드", lambda: check_dept_dashboard(sheets, now, gate)),
+            ("부문 대시보드 러너", lambda: check_dept_runners(sheets, now, gate)),
             ("입하 통보(ASN)", lambda: check_asn(sheets, now, gate)),
             ("Mutan 리포트", lambda: check_mutan_report(sheets, now, gate)),
         ]
