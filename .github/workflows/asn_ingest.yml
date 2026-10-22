@@ -88,6 +88,31 @@ jobs:
           if [ "${{ github.event.inputs.dry_run }}" != "true" ]; then ARGS="$ARGS --apply"; fi
           python -m soo.hero_ops.asn_ingest $ARGS
 
+      # 입고-발매 대시보드(/ops) 온라인 발매 탭 — 아이템마스터 계획일 vs 판매중 전환(중계 spec 'release').
+      # ★ASN 과 무관한 화면이라 실패해도 ASN 수집·알림을 막지 않는다 → continue-on-error + 아래 outcome 알림.
+      - name: 온라인 발매 → 앱 시트 _OPS_LAUNCH
+        id: launch
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        continue-on-error: true
+        env:
+          DBX_RELAY_MODE:           only
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: python -m soo.hero_ops.launch_board --apply
+
+      - name: 온라인 발매 실패 알림
+        if: ${{ steps.launch.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 입고-발매 대시보드 온라인 발매(launch_board) 갱신 실패 ($(TZ=Asia/Seoul date '+%m/%d %H:%M') KST) —
+          /ops 온라인 발매 탭이 직전 값에 머문다. ASN 수집은 별개로 진행됐다.
+          예외부터 볼 것: '중계 결과가 낡았다'면 중계 잡 830821317955071(08:20·10:20) 실행 이력,
+          '발매 행 < 300'이면 아이템마스터('무탠' 탭) 구조 변경."
+
       # ── 알림 시각 게이트 ────────────────────────────────────────
       # 체인이 매시 돌기 때문에 게이트 없이는 새벽에도 DM 이 나간다.
       # 수집은 매시 하되(화면은 항상 최신), 발송은 KST 08~20 시에만.
