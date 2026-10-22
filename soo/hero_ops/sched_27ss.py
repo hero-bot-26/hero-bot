@@ -19,8 +19,9 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-# ★ MS_27SS_작업의뢰 (최신본). 소스 레지스트리 키 `plm_27ss_req`로 교체 가능.
-DEFAULT_SHEET_ID = "1NshiEIK3o8Kczi5Zg746cz2I3-Q-lq0eGNOe0YTuibI"
+# ★ MS_27SS_작업의뢰(링크변경) — 레지스트리 키 `plm_27ss_req` 가 우선, 이 값은 폴백.
+#   ★2026-10-22 옛 사본(1NshiE…, 8/11 이후 정지)을 가리키고 있어 레지스트리를 못 읽는 날엔 조용히 낡은 값을 읽을 뻔했다.
+DEFAULT_SHEET_ID = "1IvQHP-93wxK_WMBEevVcnwyEa-QM529VoB544ojpxD0"
 TAB = "기획시트"
 HEADER_ROW = 5          # 라벨 행(A5:..). 데이터는 6행부터.
 # ★무한범위 — FZ2000 상한일 때 원천이 2,210행으로 자라 뒤쪽 STY 가 조용히 잘렸다(2026-10-14).
@@ -241,10 +242,13 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
 
 
 def load_27ss_heroes(sheets, sheet_id: str | None = None,
-                     hero_mark: str = HERO_MARK, default_track: str = "") -> dict:
+                     hero_mark: str = HERO_MARK, default_track: str = "",
+                     contains: bool = False) -> dict:
     """작업의뢰 기획시트 → 27SS 히어로 후보 {신품번: {heroName, category, track, colors, ownerMD, ownerDesigner}}.
 
     ★대상 = `히어로 핵심 상품` 열이 정확히 '히어로' 인 행(‘핵심상품’은 제외 — 사용자 확정 2026-08-26).
+      contains=True 면 hero_mark 가 **포함**된 행 전부(27SS — 2026-10-22 사용자 지시
+      "히어로라는 단어가 들어가는 순간 넣는다": 히어로 서브·여성히어로·여성히어로 서브 등. '핵심상품'은 여전히 제외).
       앱 `PLM_DATA`(27SS STY 입력 화면의 후보 목록)를 이걸로 만든다. 전엔 앱에 28개가 손으로
       박혀 있어 MD가 기획시트에서 히어로를 늘려도 앱엔 영영 안 붙었다.
     ★헤더는 **첫 매치**로 인덱싱한다 — '아이템'이 두 번 나오는데(H=Coat/Outer… , V=한 글자 코드)
@@ -271,7 +275,8 @@ def load_27ss_heroes(sheets, sheet_id: str | None = None,
         def get(c):
             i = H.get(c)
             return str(r[i]).strip() if i is not None and len(r) > i else ""
-        if get(HERO_COL) != hero_mark:                 # 27SS='히어로' · 27FW='HERO'
+        _mk = get(HERO_COL)
+        if not ((hero_mark in _mk) if contains else (_mk == hero_mark)):   # 27SS='히어로' 포함 · 27FW='HERO'
             continue
         sty = get(KEY_COL)
         if not sty:

@@ -39,8 +39,12 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
+# ★2026-10-22 sys.stdout 을 새 래퍼로 갈아끼우지 말 것 — 이 모듈은 asn_ingest 경유로 생성기가 import 하는데,
+#   교체 순간 옛 래퍼 버퍼에 쌓인 출력이 버려져 CI 로그에서 27SS·IMC 블록 출력이 통째로 사라졌다. 제자리 재설정만.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+except Exception:
+    pass
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 KST = timezone(timedelta(hours=9))

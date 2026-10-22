@@ -5,6 +5,11 @@ import datetime
 from pathlib import Path
 from collections import defaultdict, Counter
 import sys
+# ★2026-10-22 줄 단위 flush — 중간에 import 되는 모듈이 stdout 을 갈아끼워도 그 전 출력이 CI 로그에서 사라지지 않게.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 from soo.auth import get_credentials, build_services
 from soo.hero_ops.plm_ingest import (
     parse_milestone_dbx, parse_milestone_dbx_from_drive, parse_milestone_dbx_from_sheet,
@@ -2502,7 +2507,7 @@ try:
     #   → 사람이 이미 유지하는 상태(L열 표시)를 설정으로 쓴다. 코드에 목록을 박지 않는다.
     #   0건이면 주입하지 않고 기존값을 유지한다(조용한 0 덮어쓰기 방지).
     try:
-        _h27 = load_27ss_heroes(sheets, _src("plm_27ss_req"))
+        _h27 = load_27ss_heroes(sheets, _src("plm_27ss_req"), contains=True)   # ★10/22 '히어로' 포함 전부
     except Exception as _eh27:
         _h27 = {}
         print(f"[주의] 27SS 히어로 후보 로드 실패 — 기존 PLM_DATA 유지: {type(_eh27).__name__}: {_eh27}")
