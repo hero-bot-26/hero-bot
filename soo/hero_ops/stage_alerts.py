@@ -18,6 +18,8 @@ STAGE_LABEL = {
     5: "1차 수량", 6: "컬러 확정", 7: "원단 확정", 8: "PO 전송", 9: "PO 작성",
     10: "QC APP", 11: "사후원가", 12: "판매가", 13: "입고",
 }
+# ★운영에서 뺀 단계 — 알람도 안 보낸다(1차 수량 결정, 사용자 확정 2026-07-31 · 재확인 2026-10-22).
+EXCLUDED_STAGES = {5}
 _TARGET_RE = re.compile(r"기준\s*(\d{4}-\d{2}-\d{2})")
 MAX_LINES = 12          # 슬랙 메시지가 길어지면 읽히지 않음 — 단계별 요약 + 상위만
 
@@ -41,7 +43,7 @@ def collect(board: dict, today: dt.date, season: str) -> list[dict]:
     for key, v in (board or {}).items():
         stages, dates = v.get("stages") or [], v.get("dates") or []
         for n, st in enumerate(stages):
-            if st != "delayed":
+            if st != "delayed" or n in EXCLUDED_STAGES:
                 continue
             dd = _overdue_days(dates[n] if n < len(dates) else "", today)
             if dd is None or dd <= 0:
