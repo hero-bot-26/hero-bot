@@ -2478,11 +2478,11 @@ def _plm_actuals_for(styles):
 
 
 # ── 27FW 보드 (★ MS_27FW_작업의뢰 기획시트 → PLM_DATA_27FW · STY_SCHED_27FW) ──
-# ★2026-10-14 (사용자 지시) `히어로 핵심 상품` = 'HERO' 인 STY 를 27FW 보드에 자동 등록. 27SS 와 같은 로더.
+# ★2026-10-14 (사용자 지시) 27FW 보드 자동 등록. 27SS 와 같은 로더 — ★10/22 대상 규칙은 is_hero_mark('히어로'/'HERO' 포함 전부).
 #   판매시즌이 비어 있어 트랙은 MAIN. MDP 베이스라인은 27SS 용이라 끄고 STY 목표일만 기준.
 try:
     from soo.hero_ops.sched_27ss import load_27ss_heroes as _lh27, load_27ss_sched as _ls27
-    _h27f = _lh27(sheets, _src("req_27fw"), hero_mark="HERO", default_track="MAIN")
+    _h27f = _lh27(sheets, _src("req_27fw"), default_track="MAIN")
     if not _h27f:
         raise ValueError("27FW HERO 0건 — 기존값 유지")
     _s27f, _w27f = _ls27(sheets, _src("req_27fw"), today=TODAY, only=set(_h27f),
@@ -2507,7 +2507,7 @@ try:
     #   → 사람이 이미 유지하는 상태(L열 표시)를 설정으로 쓴다. 코드에 목록을 박지 않는다.
     #   0건이면 주입하지 않고 기존값을 유지한다(조용한 0 덮어쓰기 방지).
     try:
-        _h27 = load_27ss_heroes(sheets, _src("plm_27ss_req"), contains=True)   # ★10/22 '히어로' 포함 전부
+        _h27 = load_27ss_heroes(sheets, _src("plm_27ss_req"))   # ★10/22 '히어로'/'HERO' 포함 전부(is_hero_mark)
     except Exception as _eh27:
         _h27 = {}
         print(f"[주의] 27SS 히어로 후보 로드 실패 — 기존 PLM_DATA 유지: {type(_eh27).__name__}: {_eh27}")

@@ -38,6 +38,14 @@ FABRIC_ORDER_COL = "원단 발주"   # 단계 매핑은 없고 원단 확정 바
 HERO_COL = "히어로 핵심 상품"
 HERO_MARK = "히어로"
 
+
+def is_hero_mark(mark: str) -> bool:
+    """★사용자 규칙(2026-10-22): `히어로 핵심 상품` 값에 '히어로' 또는 'HERO'(대소문자 무관)가 들어가면 전부 대상.
+    히어로 서브·여성히어로·공통 히어로·HERO SUB 다 포함, '핵심상품'·'에센셜'·빈칸은 제외. 원천에서 빠지면 빠진다.
+    시즌마다 표기가 달라도(27SS '히어로' / 27FW 'HERO'·'공통 히어로') 코드 수정 없이 붙게 한 곳에 둔다."""
+    m = (mark or "").strip()
+    return HERO_MARK in m or "HERO" in m.upper()
+
 # 앱 14단계 → (진행 컬럼, 타겟 컬럼). 타겟 없는 단계는 None.
 #   9 'PO 작성'(PLM 'PO발송')은 작업의뢰에 대응 컬럼이 없어 미매핑(정직하게 비움).
 #   11 사후원가·12 판매가는 원천이 금액 컬럼뿐이라 날짜 없음.
@@ -242,13 +250,12 @@ def build_sty_dates(row: dict, today: dt.date, sty: str,
 
 
 def load_27ss_heroes(sheets, sheet_id: str | None = None,
-                     hero_mark: str = HERO_MARK, default_track: str = "",
-                     contains: bool = False) -> dict:
+                     default_track: str = "") -> dict:
     """작업의뢰 기획시트 → 27SS 히어로 후보 {신품번: {heroName, category, track, colors, ownerMD, ownerDesigner}}.
 
-    ★대상 = `히어로 핵심 상품` 열이 정확히 '히어로' 인 행(‘핵심상품’은 제외 — 사용자 확정 2026-08-26).
-      contains=True 면 hero_mark 가 **포함**된 행 전부(27SS — 2026-10-22 사용자 지시
-      "히어로라는 단어가 들어가는 순간 넣는다": 히어로 서브·여성히어로·여성히어로 서브 등. '핵심상품'은 여전히 제외).
+    ★대상 = `히어로 핵심 상품` 값이 is_hero_mark() 인 행 전부(2026-10-22 사용자 지시 — 원천 링크가 붙으면
+      '히어로'/'HERO' 들어간 건 그대로 다 긁고, 빠지면 빠진다). 전엔 정확히 '히어로'(27SS)·'HERO'(27FW)만 받아
+      히어로 서브 등이 보드에서 빠졌다.
       앱 `PLM_DATA`(27SS STY 입력 화면의 후보 목록)를 이걸로 만든다. 전엔 앱에 28개가 손으로
       박혀 있어 MD가 기획시트에서 히어로를 늘려도 앱엔 영영 안 붙었다.
     ★헤더는 **첫 매치**로 인덱싱한다 — '아이템'이 두 번 나오는데(H=Coat/Outer… , V=한 글자 코드)
@@ -275,8 +282,7 @@ def load_27ss_heroes(sheets, sheet_id: str | None = None,
         def get(c):
             i = H.get(c)
             return str(r[i]).strip() if i is not None and len(r) > i else ""
-        _mk = get(HERO_COL)
-        if not ((hero_mark in _mk) if contains else (_mk == hero_mark)):   # 27SS='히어로' 포함 · 27FW='HERO'
+        if not is_hero_mark(get(HERO_COL)):
             continue
         sty = get(KEY_COL)
         if not sty:
