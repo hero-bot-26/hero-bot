@@ -114,6 +114,46 @@ MUTAN_CTE = f"""mutan AS (
 """
 
 
+# ★입고-발매 대시보드 발매 파이프라인용 — 무탠 전 상품 ASN 을 **품번 × 납품예정일**로 접은 가벼운 집계(240일).
+#   `_OPS_ASN`(화면용, 45일·ASN×컬러)로는 6~8월 입고가 창 밖이라 작업의뢰 수기 실입고일로 메우고 있었다 —
+#   사용자가 수기 상태를 빼라고 해서(2026-10-22) 시즌 전체를 WMS 기록으로 덮는다. 10/22 실측 5,563행 · 2,094품번.
+#   취소 ASN 은 빼고, 확정 = 그 ASN 번호로 잡힌 WMS 실입고(fetch_asn 과 같은 매칭). 중복 등록 판정은 안 한다(통보량만 영향).
+#   중계 spec 'asn_style' 이 이 상수를 글자 그대로 돌린다 — 고치면 dash_audit/dbx_relay/deploy.py --apply.
+ASN_STYLE_DAYS = 240
+ASN_STYLE_SQL = f"""
+WITH {MUTAN_CTE}asn AS (
+  SELECT DELVNO, substr(ZZ_BARCODE,1,9) style, concat(substr(ZZ_BARCODE,1,9),'-',substr(ZZ_BARCODE,10,2)) sku,
+         EINDT, sum(EINQTY) qty
+  FROM pbo.moms.iif_bam_asn
+  WHERE substr(ZZ_BARCODE,1,9) IN (SELECT sty FROM mutan)
+    AND EINDT >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {ASN_STYLE_DAYS}), 'yyyyMMdd')
+  GROUP BY 1, 2, 3, 4
+),
+canc AS (
+  SELECT DISTINCT asn_no, substr(style_no, 1, 9) style
+  FROM pbo.erp.supplier_order_asn
+  WHERE date = (SELECT max(date) FROM pbo.erp.supplier_order_asn)
+    AND upper(coalesce(delete_flag, '')) = 'X'
+),
+wms AS (
+  SELECT ORD_OPT_NO asn_no, concat(substr(GDS_CD,1,9),'-',substr(GDS_CD,10,2)) sku,
+         sum(CASE WHEN ORD_STATUS NOT IN ('출고취소','입고취소','입고대기') THEN ACT_QTY ELSE 0 END) qty,
+         max(CASE WHEN ORD_STATUS NOT IN ('출고취소','입고취소','입고대기') AND ACT_QTY > 0 THEN ACT_DATE END) last_dt
+  FROM pbo.moms.ui_grreport_detail
+  WHERE PLN_DATE >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {ASN_STYLE_DAYS + 30}), 'yyyyMMdd')
+    AND ORD_OPT_NO IN (SELECT DISTINCT DELVNO FROM asn)
+  GROUP BY 1, 2
+)
+SELECT a.style, a.EINDT AS eindt, CAST(sum(a.qty) AS BIGINT) AS asn_qty,
+       CAST(sum(coalesce(w.qty, 0)) AS BIGINT) AS recv_qty, max(w.last_dt) AS recv_last
+FROM asn a
+LEFT JOIN canc c ON c.asn_no = a.DELVNO AND c.style = a.style
+LEFT JOIN wms w ON w.asn_no = a.DELVNO AND w.sku = a.sku
+WHERE c.asn_no IS NULL
+GROUP BY 1, 2
+"""
+
+
 def fetch_asn(styles: list[str], lookback: int = LOOKBACK_DAYS, all_brand: bool = False) -> list[list]:
     """히어로 품번의 ASN + 그 ASN 번호로 잡힌 WMS 실입고를 한 번에 읽는다(상단 주석 참조).
 

@@ -11,19 +11,22 @@
   발매 계획 = 레지스트리 `launch_<시즌>` (source_registry DEFAULTS · 앱 '소스' 탭에서 교체). 시즌이 늘면 키만 추가.
     헤더는 두 줄(묶음 라벨 + 세부 라벨)을 **라벨로** 찾는다 — 26FW 는 8행·히어로/디자인실/bizest재고 열이 더 있고
     27SS 는 7행이라 같은 항목도 열이 밀려 있다([[CLAUDE 1-1]]). '예정일' 이 두 번(촬샘입고·상품입고) 나오므로 묶음 라벨로 가른다.
-  입고 = 앱 시트 `_OPS_ASN`(asn_board, 무탠 전 상품 ASN 45일) 품번 합 + 작업의뢰 '실 입고일'(수기)
+  입고 = asn_ingest.ASN_STYLE_SQL(무탠 전 상품 ASN 240일 · 품번×납품일, 중계 spec 'asn_style') — 시즌 전체를 WMS 기록으로 덮는다
+         ★작업의뢰 '실 입고일'(수기)은 상태 판정에서 뺐다(사용자 지시 2026-10-22). 45일짜리 `_OPS_ASN` 을 쓰던 땐 6~8월 입고를
+           그 수기 칸으로 메우고 있었다.
   온라인 = release_log 판매중(40) 전환 — 품번 → UID 는 아이템마스터 '무탠' 탭(E 대표품번 · C UID)
   분배 = 앱 시트 `_OPS_DIST`·`_OPS_STORES`(dist_board, 매장 기준 = 부문 대시보드 '오프라인' 탭)
   ★이 셋은 같은 CI 런에서 앞 스텝이 방금 쓴 탭을 읽는다 — 워크플로에서 asn_board·dist_board 뒤에 둘 것.
 
 판정 (그레인 = 시즌 × 발매일 × 스타일)
-  입고  : WMS 확정(recv>0) > ASN 통보만 > 작업의뢰 실입고일 수기 > 없음
+  입고  : WMS 확정(recv>0) > ASN 통보만 > 입고 전
   온라인: 발매일 −7일 이후 첫 판매중 전환(launch_board 와 같은 규칙). 오프라인전용은 판정 제외
   분배  : 목록 매장 중 받은 매장 수(컬러 합집합). 온라인전용은 판정 제외
   위험  : 발매 D-3 이내인데 입고 흔적 없음 / 발매일 지났는데 판매중 전환 없음
           ★'매장 0곳'은 위험으로 안 본다 — 모든 상품이 매장에 가지 않는데 작업의뢰엔 오프라인 계획 칸이 없어
             판매중인데 출고 0 인 스타일이 9~10월에만 86건(10/22). 상태(미분배)로만 보인다.
-  창    : 입고·출고는 발매일 앞뒤 창 안의 것만(캐리오버 품번 오귀속 방지), 45일보다 오래된 발매는 '기록 창 밖' 
+  창    : 입고·출고는 발매일 앞뒤 창 안의 것만(캐리오버 품번 오귀속 방지). 원천 보관 기간보다 오래된 발매는 '기록 없음'
+  상태명: '대기' 대신 입고 전·출고 전(사용자 지시 — '대기'는 쓰지 않는다)
 
 사용법
   python -m soo.hero_ops.launch_plan            # 드라이런
@@ -49,7 +52,8 @@ INBOUND_RISK_DAYS = 3    # 발매 D-3 이내인데 입고 흔적이 없으면 �
 #   창이 없으면 27SS 12월 발매에 26FW 입고가 '확정'으로 붙었다(10/22 실측 27SS 12~1월 '확정' 18건).
 ASN_WINDOW = (-75, 30)   # 납품예정일이 발매일 −75~+30일
 DIST_FROM = -14          # 매장 출고는 발매일 −14일 이후
-DATA_DAYS = 40           # 전 상품 ASN·분배 원천은 최근 45일 — 이보다 오래된 발매는 '기록 창 밖'
+DATA_DAYS = 40           # 분배 원천은 최근 45일 — 이보다 오래된 발매의 분배는 '기록 없음'
+INB_DATA_DAYS = 160      # 입고 원천(ASN_STYLE_SQL)은 240일 — 발매 −75일 창을 빼면 160일 전 발매까지 온전하다
 MIN_ROWS = 200           # 시즌 하나당 실측 700행대 — 이보다 적으면 탭을 반쯤 읽은 것
 
 HEADER = ["season", "plan", "style", "line", "item", "type", "hero", "name", "sku", "plan_qty",
@@ -165,16 +169,20 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             raise RuntimeError(f"[{season}] 발매1 {len(rows)}행 < {MIN_ROWS} — 탭을 반쯤 읽은 것으로 보고 쓰지 않는다")
         plans += rows
 
-    # 입고 — 전 상품 ASN 을 품번(9)으로 합산
-    asn = collections.defaultdict(list)          # 품번 → [(납품예정일, 통보−중복, 확정, 확정일들)]
-    for a in _read_tab(sheets, "_OPS_ASN"):
-        if str(a.get("cancelled", "")).upper() == "Y":
-            continue
-        e = work_req.norm_date(_ymd(a.get("eindt")))
+    # 입고 — 전 상품 ASN 품번×납품일 집계(240일, 중계)
+    from soo.hero_ops import asn_ingest, dbx_relay
+    dbx_relay.configure(sheets, "asn_style", max_age_h=30)
+    try:
+        arows = dbx_relay.rows(asn_ingest.ASN_STYLE_SQL, print)
+    finally:
+        dbx_relay._cfg["sheets"] = None
+    if len(arows) < 1000:
+        raise RuntimeError(f"품번별 ASN {len(arows)}행 < 1000 — 부분 결과 의심")
+    asn = collections.defaultdict(list)          # 품번 → [(납품예정일, 통보, 확정, 최근 확정일)]
+    for sty_, eindt, aq, rq, rlast in arows:
+        e = work_req.norm_date(_ymd(eindt))
         if e:
-            asn[str(a.get("style", "")).strip()].append(
-                (e, _num(a.get("qty")) - _num(a.get("dup_qty")), _num(a.get("recv_qty")),
-                 [d.strip() for d in str(a.get("recv_dates", "")).split(",") if d.strip()]))
+            asn[str(sty_ or "").strip()].append((e, _num(aq), _num(rq), [_ymd(rlast)] if rlast else []))
     # 분배 — 품번-컬러 요약을 품번으로 접는다(받은 매장은 컬러 합집합)
     stores = {str(s["shop_no"]): s for s in _read_tab(sheets, "_OPS_STORES")}
     in_list = {k for k, s in stores.items() if s.get("in_list") == "Y"}
@@ -193,6 +201,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         sty, plan = p["style"], p["plan"]
         offline_only, online_only = "오프라인전용" in p["type"], "온라인전용" in p["type"]
         old = bool(plan) and plan < today - _dt.timedelta(days=DATA_DAYS)
+        old_inb = bool(plan) and plan < today - _dt.timedelta(days=INB_DATA_DAYS)
         lo_a = plan + _dt.timedelta(days=ASN_WINDOW[0]) if plan else None
         hi_a = plan + _dt.timedelta(days=ASN_WINDOW[1]) if plan else None
         xs = [x for x in asn.get(sty, ()) if plan and lo_a <= x[0] <= hi_a]
@@ -203,12 +212,10 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             inb = "확정"
         elif a["q"] > 0:
             inb = "ASN 통보"
-        elif p["inb_manual"]:
-            inb = "실입고(수기)"
-        elif old:
-            inb = "기록 창 밖"
+        elif old_inb:
+            inb = "기록 없음"
         else:
-            inb = "대기"
+            inb = "입고 전"
         # 온라인 — 발매일 −7 이후 첫 판매중 전환
         u = sorted(uids.get(sty, ()))
         at = None
@@ -237,15 +244,15 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         elif n_sh > 0:
             ds = "진행"
         elif old:
-            ds = "기록 창 밖"
+            ds = "기록 없음"
         elif plan and plan <= today:
             ds = "미분배"
         else:
-            ds = "대기"
+            ds = "출고 전"
         risk = []
         if plan:
             dleft = (plan - today).days
-            if 0 <= dleft <= INBOUND_RISK_DAYS and inb == "대기":
+            if 0 <= dleft <= INBOUND_RISK_DAYS and inb == "입고 전":
                 risk.append(f"입고 흔적 없음 D-{dleft}")
             if dleft < 0 and on in ("미전환",):
                 risk.append(f"발매일 지났는데 미전환 D+{-dleft}")
