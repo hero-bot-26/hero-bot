@@ -98,9 +98,29 @@ def _col(n: int) -> str:
 LAST_COL = _col(len(HEADER))     # 범위는 HEADER 에서 유도한다(열이 늘 때 뒤 열이 잘리던 사고 2회)
 
 
-def fetch_asn(styles: list[str], lookback: int = LOOKBACK_DAYS) -> list[list]:
-    """히어로 품번의 ASN + 그 ASN 번호로 잡힌 WMS 실입고를 한 번에 읽는다(상단 주석 참조)."""
-    if not styles:
+# ★전 상품 모드(입고-발매 대시보드 `/ops`, 2026-10-22)의 무탠 판정 — 26FW 히어로 실적 노트북(잡 971710339901758)
+#   입고·재고 쿼리와 **같은 기준**으로 맞춘다(사용자 지시): datamart.goods 의 brand_nm 7종 · 중고/이벤트/사입 com_id 제외.
+#   ★품번 접두로는 못 가른다 — MM·MW·MK 외에 MC(뷰티)·SM(지비지에이치)·바코드형(88…)이 무탠이고,
+#     같은 M 접두라도 MD·MS 는 무탠이 아니었다(10/22 실측, 최근 45일).
+MUTAN_BRANDS = ("'무신사 스탠다드','무신사 스탠다드 우먼','무신사 스탠다드 홈','무신사 스탠다드 키즈',"
+                "'무신사 스탠다드 뷰티','무신사 스탠다드 스포츠','무신사스탠다드 지비지에이치'")
+MUTAN_CTE = f"""mutan AS (
+  -- 무탠 품번(9자) — 26FW 히어로 실적 노트북 입고·재고 쿼리와 같은 브랜드 기준
+  SELECT DISTINCT substr(style_no, 1, 9) sty
+  FROM datamart.datamart.goods
+  WHERE com_id NOT IN ('musinsa_used','musinsa_event','musinsa')
+    AND brand_nm IN ({MUTAN_BRANDS})
+),
+"""
+
+
+def fetch_asn(styles: list[str], lookback: int = LOOKBACK_DAYS, all_brand: bool = False) -> list[list]:
+    """히어로 품번의 ASN + 그 ASN 번호로 잡힌 WMS 실입고를 한 번에 읽는다(상단 주석 참조).
+
+    all_brand=True 면 품번 목록 대신 **무탠 전 상품**(MUTAN_CTE)으로 거른다 — 입고-발매 대시보드용.
+    ★히어로 모드 SQL 은 이 분기와 무관하게 글자 그대로다(중계 키 = SQL sha1 이라 바뀌면 히어로 알림이 멈춘다).
+    """
+    if not styles and not all_brand:
         raise RuntimeError("히어로 품번이 비었다 — HERO STY 매핑부터 확인할 것")
     in_styles = ",".join(f"'{s}'" for s in styles)
     sql = f"""
@@ -197,6 +217,11 @@ ORDER BY a.EINDT DESC, a.ins_at DESC, a.sku
     #   줄만 선다(포기할 땐 여전히 취소한다 — launch_report.dbx_sql).
     #   47분 + 다음 hourly 런(concurrency 로 이어서 대기)이면 1시간 창이 사실상 끊김 없이 덮인다.
     #   ★잡 timeout 을 같이 안 늘리면 GH 하드 타임아웃에 걸려 **잘린 로그**만 남는다(yml 과 짝).
+    if all_brand:
+        # 히어로 SQL 의 품번 목록 자리 두 곳(asn·canc)을 무탠 CTE 로 갈아 끼운다 — 나머지 로직은 공유.
+        assert sql.count(f"IN ({in_styles})") == 2 and sql.count("WITH asn AS (") == 1
+        sql = sql.replace(f"IN ({in_styles})", "IN (SELECT sty FROM mutan)")
+        sql = sql.replace("WITH asn AS (", "WITH " + MUTAN_CTE + "asn AS (", 1)
     rows = dbx_sql(sql, wait=900, attempts=3)
     if not rows:
         # 조용한 0 금지 — 빈 결과는 실패로 올린다([[CLAUDE 2-6]]).
