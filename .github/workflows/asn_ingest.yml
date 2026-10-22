@@ -101,6 +101,30 @@ jobs:
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
         run: python -m soo.hero_ops.launch_board --apply
 
+      # 입고-발매 대시보드 오프라인 분배 탭 — WMS 출고 M06(중계 spec 'dist', 09:50·14:50 적재). 독립 스텝.
+      - name: 오프라인 분배 → 앱 시트 _OPS_DIST
+        id: dist
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        continue-on-error: true
+        env:
+          DBX_RELAY_MODE:           only
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: python -m soo.hero_ops.dist_board --apply
+
+      - name: 오프라인 분배 실패 알림
+        if: ${{ steps.dist.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 입고-발매 대시보드 오프라인 분배(dist_board) 갱신 실패 ($(TZ=Asia/Seoul date '+%m/%d %H:%M') KST) —
+          /ops 오프라인 분배 탭이 직전 값에 머문다. ASN 수집은 별개로 진행됐다.
+          예외부터 볼 것: '중계 결과가 낡았다'면 중계 잡 1004056774096936(09:50·14:50) 실행 이력,
+          '매장 표 헤더를 못 찾음'이면 부문 대시보드 '오프라인' 탭 구조 변경."
+
       - name: 온라인 발매 실패 알림
         if: ${{ steps.launch.outcome == 'failure' }}
         continue-on-error: true
