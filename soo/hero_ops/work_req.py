@@ -70,8 +70,9 @@ def _is_done(raw: str) -> bool:
     return bool(norm_date(raw)) or (raw or "").strip() == DONE_MARK
 
 
-def load_rows(sheets, drive, file_id: str, tab: str = TAB) -> tuple[list[str], list[list[str]]]:
-    """작업의뢰 기획시트 → (헤더, 데이터행). 구글시트·xlsx 자동 판별. 헤더는 라벨로 찾는다."""
+def load_grid(sheets, drive, file_id: str, tab: str) -> list[list[str]]:
+    """작업의뢰 파일의 한 탭 → 문자열 그리드(헤더 탐지 전). 구글시트·xlsx 자동 판별.
+    ★발매1 탭(입고-발매 대시보드 launch_plan.py)도 이걸 쓴다 — 다운로드·셀 정규화 규칙을 두 벌로 두지 않게."""
     mime = drive.files().get(fileId=file_id, fields="mimeType",
                              supportsAllDrives=True).execute().get("mimeType", "")
     if mime == "application/vnd.google-apps.spreadsheet":
@@ -90,6 +91,12 @@ def load_rows(sheets, drive, file_id: str, tab: str = TAB) -> tuple[list[str], l
         buf.seek(0)
         wb = openpyxl.load_workbook(buf, read_only=True, data_only=True)
         grid = [[_cell_str(x) for x in r] for r in wb[tab].iter_rows(values_only=True)]
+    return grid
+
+
+def load_rows(sheets, drive, file_id: str, tab: str = TAB) -> tuple[list[str], list[list[str]]]:
+    """작업의뢰 기획시트 → (헤더, 데이터행). 구글시트·xlsx 자동 판별. 헤더는 라벨로 찾는다."""
+    grid = load_grid(sheets, drive, file_id, tab)
     hi = next((i for i, r in enumerate(grid[:15]) if KEY_COL in r and "원단 확정" in r), None)
     if hi is None:
         raise ValueError(f"작업의뢰 '{tab}' 헤더(신품번·원단 확정) 못 찾음")

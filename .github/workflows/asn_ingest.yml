@@ -137,6 +137,31 @@ jobs:
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
         run: python -m soo.hero_ops.dist_board --apply
 
+      # 입고-발매 대시보드 메인(발매 파이프라인·발매 캘린더) — 시즌 작업의뢰 '발매1' + 위 두 스텝이 쓴 탭을 합친다.
+      # ★반드시 전 상품 ASN·오프라인 분배 스텝 **뒤**(그 탭들을 읽는다). 26FW 작업의뢰는 30MB xlsx 라 1분 남짓.
+      - name: 발매 파이프라인 → 앱 시트 _OPS_PLAN
+        id: plan
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        continue-on-error: true
+        env:
+          DBX_RELAY_MODE:           only
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: python -m soo.hero_ops.launch_plan --apply
+
+      - name: 발매 파이프라인 실패 알림
+        if: ${{ steps.plan.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 입고-발매 대시보드 발매 파이프라인(launch_plan) 갱신 실패 ($(TZ=Asia/Seoul date '+%m/%d %H:%M') KST) —
+          /ops 메인·발매 캘린더가 직전 값에 머문다.
+          예외부터 볼 것: '발매1 헤더 못 찾음'·'필수 열 없음'이면 작업의뢰 발매1 탭 구조 변경(시즌 파일 교체는 소스 탭 launch_<시즌>),
+          '탭이 비었다'면 앞 스텝(전 상품 ASN·분배) 실패."
+
       - name: 오프라인 분배 실패 알림
         if: ${{ steps.dist.outcome == 'failure' }}
         continue-on-error: true

@@ -61,6 +61,12 @@ DEFAULTS = {
     # ★2026-10-14 26FW·27FW 보드 신호등도 작업의뢰 기준(PLM 부정확 — 사용자 지시). 26FW 는 .xlsx.
     "req_26fw": {      # MS_26FW_작업의뢰.xlsx '기획시트' — 26FW 보드 단계 실적(work_req.py)
         "id": "1VXaf7CwgN82GSwKgQlDni9T4ST16xsaC", "tab": "기획시트", "range": "", "expected": []},
+    # ★2026-10-22 입고-발매 대시보드 발매 일정 = 시즌 작업의뢰 '발매1' 탭(사용자 지시 — 아이템마스터는
+    #   "발매 완료 상품만 업데이트"라 미래가 비어 있다). launch_<시즌> 키를 추가하면 launch_plan.py 가 자동으로 읽는다.
+    "launch_26fw": {   # MS_26FW_작업의뢰.xlsx '발매1'
+        "id": "1VXaf7CwgN82GSwKgQlDni9T4ST16xsaC", "tab": "발매1", "range": "", "expected": []},
+    "launch_27ss": {   # ★ MS_27SS_작업의뢰 '발매1'
+        "id": "1IvQHP-93wxK_WMBEevVcnwyEa-QM529VoB544ojpxD0", "tab": "발매1", "range": "", "expected": []},
     "req_27fw": {      # ★ MS_27FW_작업의뢰 '기획시트' — 27FW 히어로 후보·단계(STY_SCHED_27FW)
         "id": "1xL9bEx5zUUTMVyBBrppeY87PSssEb2OfdPFrhuOPjaM", "tab": "기획시트", "range": "",
         "expected": ["신품번", "히어로 핵심 상품", "컬러 확정", "원단 확정", "PO 발행 (작지투입)"]},
