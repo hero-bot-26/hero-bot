@@ -19,7 +19,7 @@
   ★이 셋은 같은 CI 런에서 앞 스텝이 방금 쓴 탭을 읽는다 — 워크플로에서 asn_board·dist_board 뒤에 둘 것.
 
 판정 (그레인 = 시즌 × 발매일 × 스타일)
-  입고  : WMS 확정(recv>0) > ASN 통보만 > 입고 전
+  입고  : WMS 업체 입고확정(품번 직접, ASN 무관) > ASN 통보만 > 입고 전
   온라인: 발매일 −7일 이후 첫 판매중 전환(launch_board 와 같은 규칙). 오프라인전용은 판정 제외
   분배  : 목록 매장 중 받은 매장 수(컬러 합집합). 온라인전용은 판정 제외
   위험  : 발매 D-3 이내인데 입고 흔적 없음 / 발매일 지났는데 판매중 전환 없음
@@ -178,11 +178,12 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         dbx_relay._cfg["sheets"] = None
     if len(arows) < 1000:
         raise RuntimeError(f"품번별 ASN {len(arows)}행 < 1000 — 부분 결과 의심")
-    asn = collections.defaultdict(list)          # 품번 → [(납품예정일, 통보, 확정, 최근 확정일)]
-    for sty_, eindt, aq, rq, rlast in arows:
-        e = work_req.norm_date(_ymd(eindt))
+    asn = collections.defaultdict(list)          # 품번 → [(납품예정일, 통보량)]
+    wms = collections.defaultdict(list)          # 품번 → [(입고확정일, 확정량)] — WMS 업체 입고를 품번으로 바로(ASN 무관)
+    for kind, sty_, d_, q_ in arows:
+        e = work_req.norm_date(_ymd(d_))
         if e:
-            asn[str(sty_ or "").strip()].append((e, _num(aq), _num(rq), [_ymd(rlast)] if rlast else []))
+            (wms if kind == "wms" else asn)[str(sty_ or "").strip()].append((e, _num(q_)))
     # 분배 — 품번-컬러 요약을 품번으로 접는다(받은 매장은 컬러 합집합)
     stores = {str(s["shop_no"]): s for s in _read_tab(sheets, "_OPS_STORES")}
     in_list = {k for k, s in stores.items() if s.get("in_list") == "Y"}
@@ -205,9 +206,10 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         lo_a = plan + _dt.timedelta(days=ASN_WINDOW[0]) if plan else None
         hi_a = plan + _dt.timedelta(days=ASN_WINDOW[1]) if plan else None
         xs = [x for x in asn.get(sty, ()) if plan and lo_a <= x[0] <= hi_a]
-        a = {"q": sum(x[1] for x in xs), "r": sum(x[2] for x in xs),
+        ws = [x for x in wms.get(sty, ()) if plan and lo_a <= x[0] <= hi_a]
+        a = {"q": sum(x[1] for x in xs), "r": sum(x[1] for x in ws),
              "last": max((x[0].isoformat() for x in xs), default=""),
-             "rlast": max((d for x in xs for d in x[3]), default="")}
+             "rlast": max((x[0].isoformat() for x in ws), default="")}
         if a["r"] > 0:
             inb = "확정"
         elif a["q"] > 0:
