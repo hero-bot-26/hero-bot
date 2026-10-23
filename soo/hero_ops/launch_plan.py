@@ -22,7 +22,7 @@
   입고  : 입고 완료(WMS 업체 입고, 품번 직접·ASN 무관) > ASN 통보만 > 입고 전
   온라인: 발매일 −7일 이후 첫 판매중 전환(launch_board 와 같은 규칙). 오프라인전용은 판정 제외
   분배  : 목록 매장 중 받은 매장 수(컬러 합집합). 온라인전용은 판정 제외
-  위험  : 발매 D-3 이내인데 입고 흔적 없음 / 발매일 지났는데 판매중 전환 없음
+  위험  : 발매 D-3 이내인데 입고 흔적 없음 / 발매 D-1·당일인데 상세페이지 미등록 컬러 / 발매일 지났는데 판매중 전환 없음
           ★'매장 0곳'은 위험으로 안 본다 — 모든 상품이 매장에 가지 않는데 작업의뢰엔 오프라인 계획 칸이 없어
             판매중인데 출고 0 인 스타일이 9~10월에만 86건(10/22). 상태(미분배)로만 보인다.
   창    : 입고·출고는 발매일 앞뒤 창 안의 것만(캐리오버 품번 오귀속 방지). 원천 보관 기간보다 오래된 발매는 '기록 없음'
@@ -52,6 +52,7 @@ INBOUND_RISK_DAYS = 3    # 발매 D-3 이내인데 입고 흔적이 없으면 �
 #   창이 없으면 27SS 12월 발매에 26FW 입고가 '확정'으로 붙었다(10/22 실측 27SS 12~1월 '확정' 18건).
 ASN_WINDOW = (-75, 30)   # 납품예정일이 발매일 −75~+30일
 DIST_FROM = -14          # 매장 출고는 발매일 −14일 이후
+DETAIL_RISK_DAYS = 1     # 발매 D-1·당일인데 상세페이지 미등록 컬러가 있으면 위험(사용자 지시 2026-10-23)
 DATA_DAYS = 40           # 분배 원천은 최근 45일 — 이보다 오래된 발매의 분배는 '기록 없음'
 INB_DATA_DAYS = 160      # 입고 원천(ASN_STYLE_SQL)은 240일 — 발매 −75일 창을 빼면 160일 전 발매까지 온전하다
 MIN_ROWS = 200           # 시즌 하나당 실측 700행대 — 이보다 적으면 탭을 반쯤 읽은 것
@@ -60,7 +61,7 @@ HEADER = ["season", "plan", "style", "line", "item", "type", "hero", "name", "sk
           "inb_plan", "inb_manual", "asn_qty", "recv_qty", "asn_last", "recv_last",
           "online_at", "online_diff", "uids", "dist_qty", "dist_shops", "dist_total", "dist_last",
           "inb_state", "online_state", "dist_state", "risk", "issue", "sourcing", "row_note", "hero_series",
-          "recv_first", "preorder", "preorder_src", "preorder_ship"]
+          "recv_first", "preorder", "preorder_src", "preorder_ship", "detail_state", "detail_done", "detail_total", "detail_missing"]
 
 # 헤더 (묶음 라벨, 세부 라벨) → 필드. 묶음이 None 이면 세부 라벨만 본다. 같은 라벨이 여럿이면 **첫 것**.
 COLS = {
@@ -144,8 +145,11 @@ def _read_tab(sheets, tab: str) -> list[dict]:
     return [{k: (r[i] if i < len(r) else "") for i, k in enumerate(h)} for r in v[2:]]
 
 
+UID_COLOR: dict[str, str] = {}      # load_uids 가 채운다 — UID → 컬러코드(운영품번 '품번-컬러' 의 뒤)
+
+
 def load_uids(sheets) -> dict[str, set]:
-    """아이템마스터 → {대표품번: {UID…}} (전 컬러)."""
+    """아이템마스터 → {대표품번: {UID…}} (전 컬러). 부수로 UID_COLOR 를 채운다."""
     v = sheets.spreadsheets().values().get(spreadsheetId=MUTAN_SHEET, range=f"'{MUTAN_TAB}'!C12:E30000").execute().get("values", [])
     out: dict[str, set] = collections.defaultdict(set)
     for r in v:
@@ -155,6 +159,8 @@ def load_uids(sheets) -> dict[str, set]:
         if uid.isdigit():
             for k in {rep, op[:9]} - {""}:
                 out[k].add(uid)
+            if "-" in op:
+                UID_COLOR.setdefault(uid, op.split("-", 1)[1])
     return out
 
 
@@ -196,6 +202,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             (work_req.norm_date(_ymd(d.get("last_dt"))), _num(d.get("done_qty")), sh))
     log = release_log.fetch(sheets)
     pre_log = release_log.fetch_preorder(sheets)
+    detail = release_log.fetch_detail(sheets)
     uids = load_uids(sheets)
     # 히어로 이름 — 화면 딱지 '히어로 · 라이트다운'(사용자 지시 2026-10-23 "MAIN 말고 히어로라고").
     #   작업의뢰 '히어로' 칸(MAIN/SUB)은 26FW 에만 있어 HERO STY 매핑으로 보강한다(27SS 에도 붙게).
@@ -218,15 +225,22 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         #   WMS 확정일 지연·컬러추가(기존 컬러 재고)·신발(WMS 밖 입고) 때문에 시스템 설정과 어긋났다.
         mark = "예발" in p["preorder"]
         ships = []
+        pre_by_color = {}
         if plan:
             lo_p, hi_p = plan - _dt.timedelta(days=30), plan + _dt.timedelta(days=14)
             ships = sorted({sd for x in u for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd})
+            # ★컬러별로 — 스타일 단위로만 보이면 '9/1 입고인데 왜 예약?'(기존 컬러 입고 · 새 컬러만 예약)이 된다(사용자 지적 MWFTL8A05)
+            pre_by_color = {}
+            for x in u:
+                hits = [sd for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd]
+                if hits:
+                    pre_by_color[UID_COLOR.get(x, x)] = hits[-1]          # 그 컬러의 마지막 예약 설정 = 현재 예약 출고일
             sysp = any(lo_p <= ts.date() <= hi_p for x in u for (ts, _) in pre_log.get(x, ()))
         else:
             sysp = False
         pre = "Y" if sysp else ""
         pre_src = ("비제스트+작업의뢰" if mark else "비제스트") if sysp else ("작업의뢰만(비제스트 설정 없음)" if mark else "")
-        pre_ship = (ships[0][4:6] + "/" + ships[0][6:8]) if ships else ""
+        pre_ship = " · ".join(f"{c} {d[4:6]}/{d[6:8]}" for c, d in sorted(pre_by_color.items())) if plan and ships else ""
         old = bool(plan) and plan < today - _dt.timedelta(days=DATA_DAYS)
         old_inb = bool(plan) and plan < today - _dt.timedelta(days=INB_DATA_DAYS)
         lo_a = plan + _dt.timedelta(days=ASN_WINDOW[0]) if plan else None
@@ -283,9 +297,24 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             ds = "미분배"
         else:
             ds = "출고 전"
+        # 상세페이지 — 스타일 UID(컬러) 중 비제스트 상세 본문이 등록된 수. UID 가 아예 없으면 상품 자체가 미등록.
+        d_done = sum(1 for x in u if detail.get(x))
+        d_missing = " · ".join(sorted(UID_COLOR.get(x, x) for x in u if not detail.get(x)))
+        if offline_only:
+            dst = "제외"
+        elif not u:
+            dst = "상품 미등록"
+        elif d_done >= len(u):
+            dst = "완료"
+        elif d_done == 0:
+            dst = "작업 전"
+        else:
+            dst = "진행"
         risk = []
         if plan:
             dleft = (plan - today).days
+            if 0 <= dleft <= DETAIL_RISK_DAYS and dst in ("작업 전", "진행", "상품 미등록"):
+                risk.append(f"상세페이지 미등록({d_missing or '상품 코드 없음'}) D-{dleft}")
             if 0 <= dleft <= INBOUND_RISK_DAYS and inb == "입고 전":
                 risk.append(f"입고 흔적 없음 D-{dleft}")
             if dleft < 0 and on in ("미전환",):
@@ -302,7 +331,8 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                      at.strftime("%Y-%m-%d %H:%M") if at else "", str((at.date() - plan).days) if at and plan else "",
                      len(u), int(dd["q"]), n_sh, len(in_list), dd["last"],
                      inb, on, ds, " · ".join(risk), p["issue"][:200], p["sourcing"], p["note"],
-                     p2h.get(sty, ""), a["rfirst"].isoformat() if a["rfirst"] else "", pre, pre_src, pre_ship])
+                     p2h.get(sty, ""), a["rfirst"].isoformat() if a["rfirst"] else "", pre, pre_src, pre_ship,
+                     dst, d_done, len(u), d_missing])
     return grid, cnt
 
 
