@@ -59,7 +59,7 @@ MIN_ROWS = 200           # 시즌 하나당 실측 700행대 — 이보다 적�
 HEADER = ["season", "plan", "style", "line", "item", "type", "hero", "name", "sku", "plan_qty",
           "inb_plan", "inb_manual", "asn_qty", "recv_qty", "asn_last", "recv_last",
           "online_at", "online_diff", "uids", "dist_qty", "dist_shops", "dist_total", "dist_last",
-          "inb_state", "online_state", "dist_state", "risk", "issue", "sourcing", "row_note"]
+          "inb_state", "online_state", "dist_state", "risk", "issue", "sourcing", "row_note", "hero_series"]
 
 # 헤더 (묶음 라벨, 세부 라벨) → 필드. 묶음이 None 이면 세부 라벨만 본다. 같은 라벨이 여럿이면 **첫 것**.
 COLS = {
@@ -195,6 +195,14 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             (work_req.norm_date(_ymd(d.get("last_dt"))), _num(d.get("done_qty")), sh))
     log = release_log.fetch(sheets)
     uids = load_uids(sheets)
+    # 히어로 이름 — 화면 딱지 '히어로 · 라이트다운'(사용자 지시 2026-10-23 "MAIN 말고 히어로라고").
+    #   작업의뢰 '히어로' 칸(MAIN/SUB)은 26FW 에만 있어 HERO STY 매핑으로 보강한다(27SS 에도 붙게).
+    from soo.hero_ops.inbound_board import build_pumbon2hero
+    try:
+        p2h = build_pumbon2hero(sheets)
+    except Exception as e:                 # 딱지만 빠질 뿐 파이프라인은 계속
+        print(f"[plan] ⚠ 히어로 매핑 실패 — 딱지 없이 진행: {type(e).__name__}: {e}")
+        p2h = {}
 
     cnt = collections.Counter()
     grid = []
@@ -267,7 +275,8 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                      int(a["q"]), int(a["r"]), a["last"], a["rlast"],
                      at.strftime("%Y-%m-%d %H:%M") if at else "", str((at.date() - plan).days) if at and plan else "",
                      len(u), int(dd["q"]), n_sh, len(in_list), dd["last"],
-                     inb, on, ds, " · ".join(risk), p["issue"][:200], p["sourcing"], p["note"]])
+                     inb, on, ds, " · ".join(risk), p["issue"][:200], p["sourcing"], p["note"],
+                     p2h.get(sty, "")])
     return grid, cnt
 
 
