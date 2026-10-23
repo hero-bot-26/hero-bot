@@ -356,7 +356,8 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             dleft = (plan - today).days
             if 0 <= dleft <= DETAIL_RISK_DAYS and dst in ("작업 전", "진행", "상품 미등록"):
                 risk.append(f"상세페이지 미등록({d_missing or '상품 코드 없음'}) D-{dleft}")
-            if 0 <= dleft <= INBOUND_RISK_DAYS and inb == "입고 전":
+            # ★예약발매(이번 발매 컬러 전부 예약)는 물건이 나중에 오는 게 정상 — 입고 위험에서 뺀다(사용자 지시 2026-10-23)
+            if 0 <= dleft <= INBOUND_RISK_DAYS and inb == "입고 전" and pre != "Y":
                 risk.append(f"입고 흔적 없음 D-{dleft}")
             if dleft < 0 and on in ("미전환",):
                 risk.append(f"발매일 지났는데 미전환 D+{-dleft}")
