@@ -62,7 +62,7 @@ HEADER = ["season", "plan", "style", "line", "item", "type", "hero", "name", "sk
           "online_at", "online_diff", "uids", "dist_qty", "dist_shops", "dist_total", "dist_last",
           "inb_state", "online_state", "dist_state", "risk", "issue", "sourcing", "row_note", "hero_series",
           "recv_first", "preorder", "preorder_src", "preorder_ship", "detail_state", "detail_done", "detail_total", "detail_missing",
-          "launch_colors"]
+          "launch_colors", "inb_missing"]
 
 # 헤더 (묶음 라벨, 세부 라벨) → 필드. 묶음이 None 이면 세부 라벨만 본다. 같은 라벨이 여럿이면 **첫 것**.
 COLS = {
@@ -247,19 +247,25 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             ships = sorted({sd for x in u for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd})
             # ★컬러별로 — 스타일 단위로만 보이면 '9/1 입고인데 왜 예약?'(기존 컬러 입고 · 새 컬러만 예약)이 된다(사용자 지적 MWFTL8A05)
             pre_by_color = {}
-            for x in u:
+            for x in launch_u:                                              # 이번 발매 컬러만
                 hits = [sd for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd]
                 if hits:
-                    pre_by_color[UID_COLOR.get(x, x)] = hits[-1]          # 그 컬러의 마지막 예약 설정 = 현재 예약 출고일
-            sysp = any(lo_p <= ts.date() <= hi_p for x in u for (ts, _) in pre_log.get(x, ()))
+                    pre_by_color[UID_COLOR.get(x, '통합')] = hits[-1]          # 그 컬러의 마지막 예약 설정 = 현재 예약 출고일
+            n_pre = sum(1 for x in launch_u if any(lo_p <= ts.date() <= hi_p for (ts, _) in pre_log.get(x, ())))
+            sysp = n_pre > 0
         else:
-            sysp = False
-        pre = "Y" if sysp else ""
+            sysp, n_pre = False, 0
+        # ★전 컬러 예약일 때만 '예약발매'(Y). 일부만 예약이면 'P' — 화면은 딱지 대신 'WH 예약 배송 11/02' 한 줄.
+        pre = ("Y" if n_pre >= len(launch_u) else "P") if sysp else ""
         pre_src = ("비제스트+작업의뢰" if mark else "비제스트") if sysp else ("작업의뢰만(비제스트 설정 없음)" if mark else "")
         pre_ship = " · ".join(f"{c} {d[4:6]}/{d[6:8]}" for c, d in sorted(pre_by_color.items())) if plan and ships else ""
         old = bool(plan) and plan < today - _dt.timedelta(days=DATA_DAYS)
         old_inb = bool(plan) and plan < today - _dt.timedelta(days=INB_DATA_DAYS)
         lo_a = plan + _dt.timedelta(days=ASN_WINDOW[0]) if plan else None
+        # ★작업의뢰 상품입고 예정일이 창보다 앞서면 그 2주 전까지 넓힌다 — 발매 117일 전에 들어온 컬러추가
+        #   (MEEFP9A07 BE 6/5 입고 · 9/30 발매)가 '입고 전'으로 보였다(사용자 지적 2026-10-23). 컬러 단위라 섞일 위험은 작다.
+        if plan and p["inb_plan"] and p["inb_plan"] - _dt.timedelta(days=14) < lo_a:
+            lo_a = p["inb_plan"] - _dt.timedelta(days=14)
         hi_a = plan + _dt.timedelta(days=ASN_WINDOW[1]) if plan else None
         # ★예약발매는 판매를 먼저 켜고 물건이 나중에 온다 — 발매 +30일 창이면 예약 출고일이 늦은 건(10/21 발매·11/24 출고)이
         #   입고가 들어와도 영영 '입고 전'으로 남는다(사용자 지적 2026-10-23). 예약 출고일 +30일까지 늘린다. 딱지는 그대로.
@@ -273,7 +279,16 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
              "rlast": max((x[0].isoformat() for x in ws), default=""),
              "rfirst": min((x[0] for x in ws), default=None),
              "afirst": min((x[0] for x in xs), default=None)}
-        if a["r"] > 0:
+        inb_missing = ""
+        if lcols:
+            got = {x[2] for x in ws}
+            miss = sorted(c for c in lcols if c not in got)
+            inb_missing = " · ".join(miss)
+        else:
+            miss = []
+        if a["r"] > 0 and miss:
+            inb = "일부 입고"
+        elif a["r"] > 0:
             inb = "입고 완료"
         elif a["q"] > 0:
             inb = "ASN 통보"
@@ -320,7 +335,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             d_missing = "" if integrated[sty] else "통합 UID"
         else:
             d_done, d_total = sum(1 for x in launch_u if x not in no_detail), len(launch_u)
-            d_missing = " · ".join(sorted(UID_COLOR.get(x, x) for x in launch_u if x in no_detail))
+            d_missing = " · ".join(sorted(UID_COLOR.get(x, '통합') for x in launch_u if x in no_detail))
         if offline_only:
             dst = "제외"
         elif not u and sty not in integrated:
@@ -353,7 +368,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                      len(u), int(dd["q"]), n_sh, len(in_list), dd["last"],
                      inb, on, ds, " · ".join(risk), p["issue"][:200], p["sourcing"], p["note"],
                      p2h.get(sty, ""), a["rfirst"].isoformat() if a["rfirst"] else "", pre, pre_src, pre_ship,
-                     dst, d_done, d_total, d_missing, " · ".join(sorted(lcols)) if lcols else ""])
+                     dst, d_done, d_total, d_missing, " · ".join(sorted(lcols)) if lcols else "", inb_missing])
     return grid, cnt
 
 
