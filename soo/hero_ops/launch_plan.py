@@ -308,8 +308,8 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
 
 # ── 발매일 변경 감지(사용자 지시 2026-10-23 "발매일이 변경되면 알람") ─────────────────────────────
 #   매 실행 (시즌, 품번) → 발매일 목록 스냅샷을 `_OPS_PLAN_SNAP` 에 두고, 직전 스냅샷과 비교한 차이를 `_OPS_PLAN_CHG` 원장에 남긴다.
-#   한 품번이 여러 발매 행(컬러추가·재발매)을 가지므로 날짜 **집합**으로 비교: 빠진 날 ↔ 생긴 날을 순서대로 짝지어 '변경',
-#   남는 건 '추가'/'삭제'. 스냅샷에 없던 시즌은 통째로 새로 생긴 것이라 기록하지 않는다(새 시즌 시트 = 추가 수백 건).
+#   한 품번이 여러 발매 행(컬러추가·재발매)을 가지므로 날짜 **집합**으로 비교: 빠진 날 ↔ 생긴 날을 순서대로 짝지어 '변경'.
+#   짝이 안 맞는 추가·삭제는 기록하지 않는다(사용자 지시 — 기존 일정이 바뀐 것만 알림). 스냅샷에 없던 시즌도 무시.
 #   ★반쯤 읽힌 시트가 '대량 변경'으로 보이지 않게 — 변경이 품번의 10%(최소 30건)를 넘으면 기록·스냅샷 갱신 없이 경고만.
 #   알림 = 수영님 DM(notify.DEFAULT_TARGET), KST 08~20시에만 — 밤에 감지된 건 원장에 쌓였다가 아침 첫 실행에 나간다.
 SNAP_TAB = "_OPS_PLAN_SNAP"
@@ -364,12 +364,10 @@ def track_changes(sheets, grid: list[list], now: _dt.datetime, notify: bool = Tr
             add = [d for d in b if d not in a or b.count(d) > a.count(d)]
             rem, add = sorted(set(rem)), sorted(set(add))
             name = (cur.get(k) or prev.get(k) or {}).get("name", "")
+            # ★'변경'만 기록한다(사용자 지시 2026-10-23 "원래 적혀 있던 일정이 바뀌었을 때만") — 새 발매 행 추가(컬러추가 등)·
+            #   행 삭제·미정→날짜 확정은 알림 대상이 아니다. 빠진 날 ↔ 생긴 날이 짝을 이룰 때만 = 기존 일정이 옮겨진 것.
             for o_, n_ in zip(rem, add):
                 events.append([stamp, season, sty, name, "변경", o_, n_, ""])
-            for o_ in rem[len(add):]:
-                events.append([stamp, season, sty, name, "삭제", o_, "", ""])
-            for n_ in add[len(rem):]:
-                events.append([stamp, season, sty, name, "추가", "", n_, ""])
         limit = max(30, int(len(cur) * 0.1))
         if len(events) > limit:
             print(f"[plan] ⚠ 발매일 변화 {len(events)}건 > 한도 {limit} — 시트를 반쯤 읽은 것으로 보고 기록·스냅샷 갱신을 건너뛴다")
