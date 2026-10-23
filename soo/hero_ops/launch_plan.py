@@ -247,16 +247,21 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             ships = sorted({sd for x in u for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd})
             # ★컬러별로 — 스타일 단위로만 보이면 '9/1 입고인데 왜 예약?'(기존 컬러 입고 · 새 컬러만 예약)이 된다(사용자 지적 MWFTL8A05)
             pre_by_color = {}
-            for x in launch_u:                                              # 이번 발매 컬러만
+            for x in u:                                                     # 스타일 전 컬러
                 hits = [sd for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd]
                 if hits:
                     pre_by_color[UID_COLOR.get(x, '통합')] = hits[-1]          # 그 컬러의 마지막 예약 설정 = 현재 예약 출고일
-            n_pre = sum(1 for x in launch_u if any(lo_p <= ts.date() <= hi_p for (ts, _) in pre_log.get(x, ())))
-            sysp = n_pre > 0
+            # ★예약발매 딱지(Y)는 **스타일 전 컬러**가 예약일 때만(사용자 지시 2026-10-23 — MWFTL8A05 는 4컬러 중 WH 만
+            #   예약이라 딱지를 빼야 한다. '이번 발매 컬러 전부'로 봤더니 WH 1컬러 발매 행에 딱지가 남았다).
+            #   통합 UID 품번은 온라인 상품 = 통합 UID 라 그것만 센다(컬러별 UID 는 늘 대기라 예약 설정이 없다).
+            base = [x for x in u if x not in UID_COLOR] if sty in integrated else u
+            base = base or u
+            n_pre = sum(1 for x in base if any(lo_p <= ts.date() <= hi_p for (ts, _) in pre_log.get(x, ())))
+            sysp = any(lo_p <= ts.date() <= hi_p for x in u for (ts, _) in pre_log.get(x, ()))
         else:
-            sysp, n_pre = False, 0
-        # ★전 컬러 예약일 때만 '예약발매'(Y). 일부만 예약이면 'P' — 화면은 딱지 대신 'WH 예약 배송 11/02' 한 줄.
-        pre = ("Y" if n_pre >= len(launch_u) else "P") if sysp else ""
+            sysp, n_pre, base = False, 0, u
+        # 일부만 예약이면 'P' — 화면은 딱지 대신 'WH 예약 배송 11/02' 한 줄.
+        pre = ("Y" if base and n_pre >= len(base) else "P") if sysp else ""
         pre_src = ("비제스트+작업의뢰" if mark else "비제스트") if sysp else ("작업의뢰만(비제스트 설정 없음)" if mark else "")
         pre_ship = " · ".join(f"{c} {d[4:6]}/{d[6:8]}" for c, d in sorted(pre_by_color.items())) if plan and ships else ""
         old = bool(plan) and plan < today - _dt.timedelta(days=DATA_DAYS)
