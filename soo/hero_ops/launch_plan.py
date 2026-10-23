@@ -306,6 +306,118 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
     return grid, cnt
 
 
+# ── 발매일 변경 감지(사용자 지시 2026-10-23 "발매일이 변경되면 알람") ─────────────────────────────
+#   매 실행 (시즌, 품번) → 발매일 목록 스냅샷을 `_OPS_PLAN_SNAP` 에 두고, 직전 스냅샷과 비교한 차이를 `_OPS_PLAN_CHG` 원장에 남긴다.
+#   한 품번이 여러 발매 행(컬러추가·재발매)을 가지므로 날짜 **집합**으로 비교: 빠진 날 ↔ 생긴 날을 순서대로 짝지어 '변경',
+#   남는 건 '추가'/'삭제'. 스냅샷에 없던 시즌은 통째로 새로 생긴 것이라 기록하지 않는다(새 시즌 시트 = 추가 수백 건).
+#   ★반쯤 읽힌 시트가 '대량 변경'으로 보이지 않게 — 변경이 품번의 10%(최소 30건)를 넘으면 기록·스냅샷 갱신 없이 경고만.
+#   알림 = 수영님 DM(notify.DEFAULT_TARGET), KST 08~20시에만 — 밤에 감지된 건 원장에 쌓였다가 아침 첫 실행에 나간다.
+SNAP_TAB = "_OPS_PLAN_SNAP"
+CHG_TAB = "_OPS_PLAN_CHG"
+CHG_HEADER = ["detected_at", "season", "style", "name", "kind", "old", "new", "notified"]
+
+
+def _snapshot(grid: list[list]) -> dict[str, dict]:
+    ix = {h: i for i, h in enumerate(HEADER)}
+    out: dict[str, dict] = {}
+    for r in grid:
+        k = f"{r[ix['season']]}|{r[ix['style']]}"
+        e = out.setdefault(k, {"dates": [], "name": r[ix["name"]]})
+        if r[ix["plan"]]:
+            e["dates"].append(r[ix["plan"]])
+    for e in out.values():
+        e["dates"].sort()
+    return out
+
+
+def _ensure(sheets, tab: str, header: list) -> list[list]:
+    meta = sheets.spreadsheets().get(spreadsheetId=APP_SHEET_ID, fields="sheets.properties(title)").execute()
+    if not any(x["properties"]["title"] == tab for x in meta["sheets"]):
+        sheets.spreadsheets().batchUpdate(spreadsheetId=APP_SHEET_ID, body={"requests": [{"addSheet": {"properties": {
+            "title": tab, "hidden": True, "gridProperties": {"rowCount": 3000, "columnCount": len(header)}}}}]}).execute()
+        sheets.spreadsheets().values().update(spreadsheetId=APP_SHEET_ID, range=f"'{tab}'!A1", valueInputOption="RAW",
+                                              body={"values": [header]}).execute()
+        return []
+    return sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{tab}'!A2:{_col(len(header))}").execute().get("values", [])
+
+
+def track_changes(sheets, grid: list[list], now: _dt.datetime, notify: bool = True) -> list[list]:
+    """스냅샷 비교 → 변경 원장 append + 스냅샷 교체 + (시간대면) 미발송분 DM. 새로 기록한 변경 행을 돌려준다."""
+    cur = _snapshot(grid)
+    prev_rows = _ensure(sheets, SNAP_TAB, ["key", "name", "dates"])
+    prev = {r[0]: {"name": r[1] if len(r) > 1 else "", "dates": [d for d in (r[2] if len(r) > 2 else "").split(",") if d]}
+            for r in prev_rows if r}
+    stamp = now.strftime("%Y-%m-%d %H:%M")
+    events: list[list] = []
+    if prev:
+        prev_seasons = {k.split("|", 1)[0] for k in prev}
+        for k in sorted(set(cur) | set(prev)):
+            season, sty = k.split("|", 1)
+            if season not in prev_seasons:
+                continue
+            a = list(prev.get(k, {}).get("dates", []))
+            b = list(cur.get(k, {}).get("dates", []))
+            rem = [d for d in a if d not in b or a.count(d) > b.count(d)]
+            add = [d for d in b if d not in a or b.count(d) > a.count(d)]
+            rem, add = sorted(set(rem)), sorted(set(add))
+            name = (cur.get(k) or prev.get(k) or {}).get("name", "")
+            for o_, n_ in zip(rem, add):
+                events.append([stamp, season, sty, name, "변경", o_, n_, ""])
+            for o_ in rem[len(add):]:
+                events.append([stamp, season, sty, name, "삭제", o_, "", ""])
+            for n_ in add[len(rem):]:
+                events.append([stamp, season, sty, name, "추가", "", n_, ""])
+        limit = max(30, int(len(cur) * 0.1))
+        if len(events) > limit:
+            print(f"[plan] ⚠ 발매일 변화 {len(events)}건 > 한도 {limit} — 시트를 반쯤 읽은 것으로 보고 기록·스냅샷 갱신을 건너뛴다")
+            return []
+    else:
+        print(f"[plan] 발매일 스냅샷 첫 생성 — 변경 비교는 다음 실행부터 ({len(cur):,}품번)")
+    if events:
+        _ensure(sheets, CHG_TAB, CHG_HEADER)
+        sheets.spreadsheets().values().append(   # ★OVERWRITE — INSERT_ROWS 는 다른 탭 참조를 민다([[CLAUDE 1-6]])
+            spreadsheetId=APP_SHEET_ID, range=f"'{CHG_TAB}'!A1", valueInputOption="RAW",
+            insertDataOption="OVERWRITE", body={"values": events}).execute()
+        print(f"[plan] 발매일 변화 {len(events)}건 기록 — " + " · ".join(f"{e[2]} {e[4]} {e[5] or '-'}→{e[6] or '-'}" for e in events[:8]))
+    snap = [["key", "name", "dates"]] + [[k, v["name"], ",".join(v["dates"])] for k, v in sorted(cur.items())]
+    sheets.spreadsheets().values().clear(spreadsheetId=APP_SHEET_ID, range=f"'{SNAP_TAB}'!A1:C", body={}).execute()
+    meta = sheets.spreadsheets().get(spreadsheetId=APP_SHEET_ID, fields="sheets.properties(title,sheetId,gridProperties)").execute()
+    sp = next(x["properties"] for x in meta["sheets"] if x["properties"]["title"] == SNAP_TAB)
+    if sp["gridProperties"]["rowCount"] < len(snap) + 100:
+        sheets.spreadsheets().batchUpdate(spreadsheetId=APP_SHEET_ID, body={"requests": [{"updateSheetProperties": {
+            "properties": {"sheetId": sp["sheetId"], "gridProperties": {"rowCount": len(snap) + 500}},
+            "fields": "gridProperties.rowCount"}}]}).execute()
+    sheets.spreadsheets().values().update(spreadsheetId=APP_SHEET_ID, range=f"'{SNAP_TAB}'!A1", valueInputOption="RAW",
+                                          body={"values": snap}).execute()
+    if notify and 8 <= now.hour < 20:
+        _notify_pending(sheets, now)
+    return events
+
+
+def _notify_pending(sheets, now: _dt.datetime) -> None:
+    _ensure(sheets, CHG_TAB, CHG_HEADER)            # 변경이 한 번도 없었으면 원장 탭이 아직 없다
+    rows = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{CHG_TAB}'!A2:H").execute().get("values", [])
+    todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 5 and not (r[7] if len(r) > 7 else "").strip()]
+    if not todo:
+        return
+    md = lambda x: f"{int(x[5:7])}/{int(x[8:10])}" if x else "-"
+    lines = []
+    for _, r in todo[:30]:
+        old, new = (r[5] if len(r) > 5 else ""), (r[6] if len(r) > 6 else "")
+        verb = {"변경": f"{md(old)} → {md(new)}", "추가": f"{md(new)} 발매 추가", "삭제": f"{md(old)} 발매 빠짐"}.get(r[4], r[4])
+        lines.append(f"• [{r[1]}] {r[2]} {r[3][:30]} — {verb}")
+    msg = (f"발매일 변경 {len(todo)}건 (작업의뢰 발매시트 · {now:%m/%d %H:%M} 감지)\n" + "\n".join(lines)
+           + ("" if len(todo) <= 30 else f"\n… 외 {len(todo) - 30}건")
+           + "\n→ https://hero-master-app.vercel.app/ops?tab=cal")
+    from soo.hero_ops import notify as N
+    N.send(msg)
+    sent = now.strftime("%Y-%m-%d %H:%M")
+    data = [{"range": f"'{CHG_TAB}'!H{i + 2}", "values": [[sent]]} for i, _ in todo]
+    sheets.spreadsheets().values().batchUpdate(spreadsheetId=APP_SHEET_ID,
+                                               body={"valueInputOption": "RAW", "data": data}).execute()
+    print(f"[plan] 발매일 변경 알림 {len(todo)}건 발송")
+
+
 def write(sheets, grid: list[list], label: str) -> None:
     meta = sheets.spreadsheets().get(spreadsheetId=APP_SHEET_ID, fields="sheets.properties(title,sheetId,gridProperties)").execute()
     hit = next((s["properties"] for s in meta["sheets"] if s["properties"]["title"] == TAB), None)
@@ -336,8 +448,10 @@ def main() -> None:
     grid, cnt = build(svc["sheets"], svc["drive"], now.date())
     print("[plan] " + " · ".join(f"{k} {v:,}" for k, v in sorted(cnt.items())))
     if a.apply:
-        write(svc["sheets"], grid, f"발매 파이프라인 · 발매일=시즌 작업의뢰 '발매1' · 입고=전 상품 ASN·작업의뢰 실입고일 "
+        # 변경 감지는 화면 기입 **뒤에** — 실패하면 예외로 스텝을 실패시켜 워크플로 실패 알림이 오게 한다(조용히 삼키지 않는다).
+        write(svc["sheets"], grid, f"발매 파이프라인 · 발매일=시즌 작업의뢰 '발매1' · 입고=WMS 업체 입고(품번) · 예약발매=비제스트 예약 배송 이력 "
                                    f"· 온라인=판매중 전환 · 분배=매장 출고(부문 대시보드 매장 기준) · 생성 {now:%Y-%m-%d %H:%M} KST")
+        track_changes(svc["sheets"], grid, now)
     else:
         print("(드라이런 — --apply 로 기입)")
 
