@@ -80,6 +80,33 @@ def fetch_preorder(sheets, log=print) -> dict[str, list[tuple[_dt.datetime, str]
     return out
 
 
+# ★상세페이지 등록 여부(2026-10-23, 사용자 지시 "발매 D-1 전인데 등록 안 된 게 하나라도 있으면 띄워 줘")
+#   = 비제스트 상품 마스터 `goods_cont`(상품설명 = 상세 본문) 가 비어 있지 않은가. UID(컬러) 단위 현재값.
+#   10/23 실측: 10/28 발매 3스타일의 새 컬러 6개가 전부 등록대기(5)·본문 0자·상세 이미지 0장(기존 컬러만 완료).
+#   범위 = 최근 300일 등록 + 등록/판매 대기 상품(5.3만 건, 두 칸이라 가볍다). 중계 spec 'detail'.
+DETAIL_SQL = """
+SELECT CAST(goods_no AS STRING) AS goods_no,
+       CASE WHEN length(coalesce(goods_cont, '')) > 0 THEN 'Y' ELSE '' END AS has_detail
+FROM musinsa.bizest.goods
+WHERE brand LIKE 'musinsastandard%'
+  AND (reg_dm >= date_sub(current_date(), 300) OR sale_stat_cl IN ('5', '10', '15'))
+"""
+DETAIL_MIN_ROWS = 10000
+
+
+def fetch_detail(sheets, log=print) -> dict[str, bool]:
+    """goods_no → 상세 본문 등록 여부."""
+    from soo.hero_ops import dbx_relay
+    dbx_relay.configure(sheets, "detail", max_age_h=30)
+    try:
+        rows = dbx_relay.rows(DETAIL_SQL, log)
+    finally:
+        dbx_relay._cfg["sheets"] = None
+    if len(rows) < DETAIL_MIN_ROWS:
+        raise RuntimeError(f"상세 등록 여부 {len(rows)}행 < {DETAIL_MIN_ROWS} — 부분 결과 의심")
+    return {str(g).strip(): str(f or "") == "Y" for g, f in rows}
+
+
 MIN_ROWS = 1000   # 실측 ~1만 행(240일) — 이보다 적으면 부분 결과로 보고 쓰지 않는다
 
 
