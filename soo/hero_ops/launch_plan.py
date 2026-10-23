@@ -19,7 +19,7 @@
   ★이 셋은 같은 CI 런에서 앞 스텝이 방금 쓴 탭을 읽는다 — 워크플로에서 asn_board·dist_board 뒤에 둘 것.
 
 판정 (그레인 = 시즌 × 발매일 × 스타일)
-  입고  : WMS 업체 입고확정(품번 직접, ASN 무관) > ASN 통보만 > 입고 전
+  입고  : 입고 완료(WMS 업체 입고, 품번 직접·ASN 무관) > ASN 통보만 > 입고 전
   온라인: 발매일 −7일 이후 첫 판매중 전환(launch_board 와 같은 규칙). 오프라인전용은 판정 제외
   분배  : 목록 매장 중 받은 매장 수(컬러 합집합). 온라인전용은 판정 제외
   위험  : 발매 D-3 이내인데 입고 흔적 없음 / 발매일 지났는데 판매중 전환 없음
@@ -211,10 +211,31 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
     for p in sorted(plans, key=lambda x: (x["plan"] or _dt.date(2100, 1, 1), x["style"])):
         sty, plan = p["style"], p["plan"]
         offline_only, online_only = "오프라인전용" in p["type"], "온라인전용" in p["type"]
+        u = sorted(uids.get(sty, ()))
+        # ★예약발매(사용자 지시 2026-10-23) = **비제스트 '출고예정 구분 → 예약 배송' 설정 이력**(release_log.PREORDER_SQL).
+        #   그 스타일 UID(컬러) 중 하나라도 발매일 −30~+14일 안에 예약 배송으로 설정됐으면 예약발매, 예약 출고일도 함께.
+        #   작업의뢰 '예발여부'는 보조 근거(src 표기만). ★'판매 시작이 입고보다 먼저'로 추정하던 규칙은 버렸다 —
+        #   WMS 확정일 지연·컬러추가(기존 컬러 재고)·신발(WMS 밖 입고) 때문에 시스템 설정과 어긋났다.
+        mark = "예발" in p["preorder"]
+        ships = []
+        if plan:
+            lo_p, hi_p = plan - _dt.timedelta(days=30), plan + _dt.timedelta(days=14)
+            ships = sorted({sd for x in u for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd})
+            sysp = any(lo_p <= ts.date() <= hi_p for x in u for (ts, _) in pre_log.get(x, ()))
+        else:
+            sysp = False
+        pre = "Y" if sysp else ""
+        pre_src = ("비제스트+작업의뢰" if mark else "비제스트") if sysp else ("작업의뢰만(비제스트 설정 없음)" if mark else "")
+        pre_ship = (ships[0][4:6] + "/" + ships[0][6:8]) if ships else ""
         old = bool(plan) and plan < today - _dt.timedelta(days=DATA_DAYS)
         old_inb = bool(plan) and plan < today - _dt.timedelta(days=INB_DATA_DAYS)
         lo_a = plan + _dt.timedelta(days=ASN_WINDOW[0]) if plan else None
         hi_a = plan + _dt.timedelta(days=ASN_WINDOW[1]) if plan else None
+        # ★예약발매는 판매를 먼저 켜고 물건이 나중에 온다 — 발매 +30일 창이면 예약 출고일이 늦은 건(10/21 발매·11/24 출고)이
+        #   입고가 들어와도 영영 '입고 전'으로 남는다(사용자 지적 2026-10-23). 예약 출고일 +30일까지 늘린다. 딱지는 그대로.
+        if plan and ships:
+            last_ship = max(_dt.datetime.strptime(x, "%Y%m%d").date() for x in ships)
+            hi_a = max(hi_a, last_ship + _dt.timedelta(days=ASN_WINDOW[1]))
         xs = [x for x in asn.get(sty, ()) if plan and lo_a <= x[0] <= hi_a]
         ws = [x for x in wms.get(sty, ()) if plan and lo_a <= x[0] <= hi_a]
         a = {"q": sum(x[1] for x in xs), "r": sum(x[1] for x in ws),
@@ -223,7 +244,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
              "rfirst": min((x[0] for x in ws), default=None),
              "afirst": min((x[0] for x in xs), default=None)}
         if a["r"] > 0:
-            inb = "확정"
+            inb = "입고 완료"
         elif a["q"] > 0:
             inb = "ASN 통보"
         elif old_inb:
@@ -231,7 +252,6 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         else:
             inb = "입고 전"
         # 온라인 — 발매일 −7 이후 첫 판매중 전환
-        u = sorted(uids.get(sty, ()))
         at = None
         if plan:
             lo = plan - _dt.timedelta(days=EARLY_DAYS)
@@ -270,21 +290,6 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                 risk.append(f"입고 흔적 없음 D-{dleft}")
             if dleft < 0 and on in ("미전환",):
                 risk.append(f"발매일 지났는데 미전환 D+{-dleft}")
-        # ★예약발매(사용자 지시 2026-10-23) = **비제스트 '출고예정 구분 → 예약 배송' 설정 이력**(release_log.PREORDER_SQL).
-        #   그 스타일 UID(컬러) 중 하나라도 발매일 −30~+14일 안에 예약 배송으로 설정됐으면 예약발매, 예약 출고일도 함께.
-        #   작업의뢰 '예발여부'는 보조 근거(src 표기만). ★'판매 시작이 입고보다 먼저'로 추정하던 규칙은 버렸다 —
-        #   WMS 확정일 지연·컬러추가(기존 컬러 재고)·신발(WMS 밖 입고) 때문에 시스템 설정과 어긋났다.
-        mark = "예발" in p["preorder"]
-        ships = []
-        if plan:
-            lo_p, hi_p = plan - _dt.timedelta(days=30), plan + _dt.timedelta(days=14)
-            ships = sorted({sd for x in u for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd})
-            sysp = any(lo_p <= ts.date() <= hi_p for x in u for (ts, _) in pre_log.get(x, ()))
-        else:
-            sysp = False
-        pre = "Y" if sysp else ""
-        pre_src = ("비제스트+작업의뢰" if mark else "비제스트") if sysp else ("작업의뢰만(비제스트 설정 없음)" if mark else "")
-        pre_ship = (ships[0][4:6] + "/" + ships[0][6:8]) if ships else ""
         if pre_src:
             cnt["preorder:" + pre_src] += 1
         for r_ in risk:
