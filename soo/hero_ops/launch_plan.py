@@ -147,16 +147,22 @@ def _read_tab(sheets, tab: str) -> list[dict]:
 
 
 UID_COLOR: dict[str, str] = {}      # load_uids 가 채운다 — UID → 컬러코드(운영품번 '품번-컬러' 의 뒤)
+UID_PLAN: dict[str, _dt.date] = {}  # load_uids 가 채운다 — UID → 아이템마스터 컬러별 발매일정(B열)
 
 
 def load_uids(sheets) -> dict[str, set]:
     """아이템마스터 → {대표품번: {UID…}} (전 컬러). 부수로 UID_COLOR 를 채운다."""
-    v = sheets.spreadsheets().values().get(spreadsheetId=MUTAN_SHEET, range=f"'{MUTAN_TAB}'!C12:E30000").execute().get("values", [])
+    v = sheets.spreadsheets().values().get(spreadsheetId=MUTAN_SHEET, range=f"'{MUTAN_TAB}'!B12:E30000").execute().get("values", [])
     out: dict[str, set] = collections.defaultdict(set)
+    from soo.hero_ops.imc_triggers import _mutan_date
     for r in v:
-        uid = str(r[0]).strip() if r else ""
-        rep = str(r[2]).strip() if len(r) > 2 else ""
-        op = str(r[1]).strip() if len(r) > 1 else ""
+        uid = str(r[1]).strip() if len(r) > 1 else ""
+        rep = str(r[3]).strip() if len(r) > 3 else ""
+        op = str(r[2]).strip() if len(r) > 2 else ""
+        if uid.isdigit():
+            d = _mutan_date(r[0] if r else "")
+            if d:
+                UID_PLAN.setdefault(uid, d)
         if uid.isdigit():
             for k in {rep, op[:9]} - {""}:
                 out[k].add(uid)
@@ -224,13 +230,18 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         #   이미 판매중: 발매일 −7일 이전엔 판매중 전환이 없고 −7~+30일에 전환된 UID. 아직 발매 전: 등록/판매 대기 UID.
         #   못 가르면(같은 UID 재발매 등) 전 컬러. 입고·상세·분배는 이 컬러만 본다.
         launch_u = []
+        # ①아이템마스터 컬러별 발매일(B열)이 이 발매일 ±7일인 컬러 — 기획MD팀이 컬러마다 적는 값이라 가장 정확하다
+        #   (사용자 지적 2026-10-23 MEFSC0A26: 10/7 행에 11/4 발매 컬러 ET·NN 이 섞여 '상세 미등록'으로 보였다).
         if plan:
+            launch_u = [x for x in u if x in UID_PLAN and abs((UID_PLAN[x] - plan).days) <= EARLY_DAYS]
+        # ②없으면 비제스트로 추정 — 대기 컬러는 **아직 안 지난 발매**에만 넣는다(지난 발매엔 다음 발매 대기분이 섞인다)
+        if plan and not launch_u:
             for x in u:
                 tr = log.get(x, [])
                 before = any(t.date() < plan - _dt.timedelta(days=EARLY_DAYS) for t in tr)
                 near = any(plan - _dt.timedelta(days=EARLY_DAYS) <= t.date() <= plan + _dt.timedelta(days=30) for t in tr)
                 # 통합 UID 품번은 컬러별 UID 가 늘 대기 상태라 '대기 = 이번 발매' 로 보면 안 된다
-                if (near and not before) or (x in pending and sty not in integrated):
+                if (near and not before) or (x in pending and sty not in integrated and plan >= today):
                     launch_u.append(x)
         launch_u = launch_u or u
         lcols = {UID_COLOR.get(x) for x in launch_u}
