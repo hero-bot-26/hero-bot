@@ -15,7 +15,7 @@ concurrency:
 jobs:
   capture:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15   # 10/23 러너 apt 미러 지연으로 Playwright 설치 7~8분 -> 8분 제한에 4회 연속 취소
     steps:
       - uses: actions/checkout@v4
 
