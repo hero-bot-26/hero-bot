@@ -108,22 +108,6 @@ def fetch_detail(sheets, log=print) -> set[str]:
     return {str(r[0]).strip() for r in rows}
 
 
-MIN_ROWS = 10000
-
-
-def fetch_detail(sheets, log=print) -> dict[str, bool]:
-    """goods_no → 상세 본문 등록 여부."""
-    from soo.hero_ops import dbx_relay
-    dbx_relay.configure(sheets, "detail", max_age_h=30)
-    try:
-        rows = dbx_relay.rows(DETAIL_SQL, log)
-    finally:
-        dbx_relay._cfg["sheets"] = None
-    if len(rows) < DETAIL_MIN_ROWS:
-        raise RuntimeError(f"상세 등록 여부 {len(rows)}행 < {DETAIL_MIN_ROWS} — 부분 결과 의심")
-    return {str(g).strip(): str(f or "") == "Y" for g, f in rows}
-
-
 MIN_ROWS = 1000   # 실측 ~1만 행(240일) — 이보다 적으면 부분 결과로 보고 쓰지 않는다
 
 
