@@ -59,6 +59,7 @@ DBX_JOBS = {
     "521844836309470": ("Mutan리포트", "[중계] Mutan 세부상품 쿼리 (월 08:10)"),
     "1004056774096936": ("입고-발매", "[중계] 오프라인 분배 출고 (09:50·14:50)"),
     "107819331466343": ("입고-발매", "[중계] 전 상품 ASN 쿼리 (매시 :45, 07~19시)"),
+    "384899660228250": ("입하통보", "[중계] ASN 사본 누락 대조 (10:50·14:50)"),
 }
 # 주 1회 도는 잡 = {잡ID: (실행 요일 0=월, 첫 정기 실행일)}. 여기 없는 잡은 매일 도는 것으로 본다.
 DBX_WEEKLY = {"1053608725145257": (0, dt.date(2026, 10, 5)),
@@ -465,6 +466,42 @@ def check_asn(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
 
 
 # ── ⑤ 앱 배포(app.html) ──────────────────────────────────────────────────────
+def check_asn_gap(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
+    """ERP 원본엔 있는데 ASN 사본(수집기 원천)에 빠진 **히어로** ASN — 그 건은 화면·담당자 알림 둘 다 안 나간다.
+
+    원천 = 중계 spec 'asn_gap'(asn_ingest.ASN_GAP_SQL, 10:50·14:50). 등록 하루 안 된 건은 동기화 지연일 수 있어 뺀다.
+    ★2026-10-22 사용자 지시로 신설 — 7/30 히어로 2건(스웨트팬츠·라이트다운)이 사본에 빠진 채였다(알림 개시 전이라 무해).
+    히어로 아닌 무탠 누락은 건수만 함께 적는다(입고-발매 대시보드 입고 탭에서 빠진다).
+    """
+    if gate and now.hour < 11:          # 중계 첫 적재(10:50) 이후에만
+        return []
+    from soo.hero_ops import asn_ingest, dbx_relay
+    from soo.hero_ops.inbound_board import build_pumbon2hero
+    dbx_relay.configure(sheets, "asn_gap", max_age_h=30)
+    try:
+        rows = dbx_relay.rows(asn_ingest.ASN_GAP_SQL, print)
+    except dbx_relay.Miss as e:
+        return [Finding("ASN_GAP_READ", "입하통보",
+                        f"ASN 사본 누락 대조 결과를 못 읽었다 — 중계 잡 `asn_gap` 실행 이력을 볼 것. {e}", "경고")]
+    finally:
+        dbx_relay._cfg["sheets"] = None
+    p2h = build_pumbon2hero(sheets)
+    cut = (now - dt.timedelta(days=1)).strftime("%Y%m%d")
+    old = [r for r in rows if str(r[3] or "")[:8] <= cut]
+    hero = [r for r in old if str(r[1]) in p2h]
+    if not hero:
+        print(f"    ASN 사본 누락: 히어로 0건 · 무탠 전체 {len(old)}건(하루 지난 것)")
+        return []
+    asns = sorted({str(r[0]) for r in hero})
+    lines = [f"  · {r[0]} {p2h.get(str(r[1]))}({r[1]}) {int(float(r[2] or 0)):,}장 · 등록 {r[3]} · 납품 {r[4]}"
+             for r in sorted(hero, key=lambda r: str(r[3]))]
+    return [Finding(
+        "ASN_GAP:" + ",".join(asns), "입하통보",
+        f"ERP 원본엔 있는데 ASN 사본(pbo.moms.iif_bam_asn)에 빠진 히어로 ASN {len(asns)}건 — "
+        "이 건은 앱 ASN 화면에도, 담당자 슬랙 알림에도 안 나갔다." + chr(10) + chr(10).join(lines[:10])
+        + chr(10) + f"  (히어로 아닌 무탠 누락 {len(old) - len(hero)}건 별도) · 사본 적재 담당(데이터플랫폼)에 해당 ASN 재적재 요청", "심각")]
+
+
 def check_app_deploy(now: dt.datetime, gate: bool) -> list[Finding]:
     """app.html 이 실제로 새로 커밋됐는지 — CI 는 성공했는데 push 가 rejected 된 사고 대비.
 
@@ -751,6 +788,7 @@ def run(dry_run: bool = False, force: bool = False, gate: bool = True) -> int:
             ("부문 대시보드", lambda: check_dept_dashboard(sheets, now, gate)),
             ("부문 대시보드 러너", lambda: check_dept_runners(sheets, now, gate)),
             ("입하 통보(ASN)", lambda: check_asn(sheets, now, gate)),
+            ("ASN 사본 누락", lambda: check_asn_gap(sheets, now, gate)),
             ("Mutan 리포트", lambda: check_mutan_report(sheets, now, gate)),
         ]
     for name, fn in steps:
