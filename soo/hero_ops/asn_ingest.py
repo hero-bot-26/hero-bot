@@ -120,6 +120,7 @@ MUTAN_CTE = f"""mutan AS (
 #                ASN 경유 매칭은 ASN 없이 들어온 입고(10/22 실측 0.3%·92품번)를 놓쳤다. 센터 간 이동(CTC)·반품은 신규 입고가 아니라 뺀다.
 #   kind='asn' = 업체 ASN 통보(취소 제외) — '확정 전' 단계 표시용.
 #   10/22 실측: wms 5,705행·2,186품번·1,608만 장 / asn 5,563행·2,094품번·1,923만 장.
+#   ★10/23 '품번-컬러' 단위로 — 컬러추가 발매(새 컬러)에 기존 컬러 입고가 붙어 '9/1 입고'로 보였다(사용자 지적 MWFTL8A05).
 #   중계 spec 'asn_style' 이 이 상수를 글자 그대로 돌린다 — 고치면 dash_audit/dbx_relay/deploy.py --apply.
 ASN_STYLE_DAYS = 240
 ASN_STYLE_SQL = f"""
@@ -130,25 +131,25 @@ WITH {MUTAN_CTE}canc AS (
     AND upper(coalesce(delete_flag, '')) = 'X'
 ),
 asn AS (
-  SELECT substr(ZZ_BARCODE,1,9) style, EINDT d, sum(EINQTY) q
+  SELECT substr(ZZ_BARCODE,1,9) style, substr(ZZ_BARCODE,10,2) color, EINDT d, sum(EINQTY) q
   FROM pbo.moms.iif_bam_asn
   WHERE substr(ZZ_BARCODE,1,9) IN (SELECT sty FROM mutan)
     AND EINDT >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {ASN_STYLE_DAYS}), 'yyyyMMdd')
     AND DELVNO NOT IN (SELECT asn_no FROM canc)
-  GROUP BY 1, 2
+  GROUP BY 1, 2, 3
 ),
 wms AS (
-  SELECT substr(GDS_CD,1,9) style, ACT_DATE d, sum(ACT_QTY) q
+  SELECT substr(GDS_CD,1,9) style, substr(GDS_CD,10,2) color, ACT_DATE d, sum(ACT_QTY) q
   FROM pbo.moms.ui_grreport_detail
   WHERE ACT_DATE >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {ASN_STYLE_DAYS}), 'yyyyMMdd')
     AND ORD_TYPE = '일반' AND SPR_NM = 'MUSINSA'
     AND ORD_STATUS NOT IN ('출고취소','입고취소','입고대기') AND ACT_QTY > 0
     AND substr(GDS_CD,1,9) IN (SELECT sty FROM mutan)
-  GROUP BY 1, 2
+  GROUP BY 1, 2, 3
 )
-SELECT 'asn' AS kind, style, d, CAST(q AS BIGINT) AS qty FROM asn
+SELECT 'asn' AS kind, style, color, d, CAST(q AS BIGINT) AS qty FROM asn
 UNION ALL
-SELECT 'wms' AS kind, style, d, CAST(q AS BIGINT) AS qty FROM wms
+SELECT 'wms' AS kind, style, color, d, CAST(q AS BIGINT) AS qty FROM wms
 """
 
 

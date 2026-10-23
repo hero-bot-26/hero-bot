@@ -61,7 +61,8 @@ HEADER = ["season", "plan", "style", "line", "item", "type", "hero", "name", "sk
           "inb_plan", "inb_manual", "asn_qty", "recv_qty", "asn_last", "recv_last",
           "online_at", "online_diff", "uids", "dist_qty", "dist_shops", "dist_total", "dist_last",
           "inb_state", "online_state", "dist_state", "risk", "issue", "sourcing", "row_note", "hero_series",
-          "recv_first", "preorder", "preorder_src", "preorder_ship", "detail_state", "detail_done", "detail_total", "detail_missing"]
+          "recv_first", "preorder", "preorder_src", "preorder_ship", "detail_state", "detail_done", "detail_total", "detail_missing",
+          "launch_colors"]
 
 # 헤더 (묶음 라벨, 세부 라벨) → 필드. 묶음이 None 이면 세부 라벨만 본다. 같은 라벨이 여럿이면 **첫 것**.
 COLS = {
@@ -187,10 +188,10 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         raise RuntimeError(f"품번별 ASN {len(arows)}행 < 1000 — 부분 결과 의심")
     asn = collections.defaultdict(list)          # 품번 → [(납품예정일, 통보량)]
     wms = collections.defaultdict(list)          # 품번 → [(입고확정일, 확정량)] — WMS 업체 입고를 품번으로 바로(ASN 무관)
-    for kind, sty_, d_, q_ in arows:
+    for kind, sty_, col_, d_, q_ in arows:
         e = work_req.norm_date(_ymd(d_))
         if e:
-            (wms if kind == "wms" else asn)[str(sty_ or "").strip()].append((e, _num(q_)))
+            (wms if kind == "wms" else asn)[str(sty_ or "").strip()].append((e, _num(q_), str(col_ or "").strip()))
     # 분배 — 품번-컬러 요약을 품번으로 접는다(받은 매장은 컬러 합집합)
     stores = {str(s["shop_no"]): s for s in _read_tab(sheets, "_OPS_STORES")}
     in_list = {k for k, s in stores.items() if s.get("in_list") == "Y"}
@@ -199,10 +200,10 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         sh = {p[0] for p in (x.split(":") for x in str(d.get("shops", "")).split(","))
               if len(p) >= 2 and _num(p[1]) > 0 and p[0] in in_list}
         dist[str(d.get("style", "")).strip()].append(
-            (work_req.norm_date(_ymd(d.get("last_dt"))), _num(d.get("done_qty")), sh))
+            (work_req.norm_date(_ymd(d.get("last_dt"))), _num(d.get("done_qty")), sh, str(d.get("color", "")).strip()))
     log = release_log.fetch(sheets)
     pre_log = release_log.fetch_preorder(sheets)
-    no_detail = release_log.fetch_detail(sheets)      # 상세 본문이 빈 UID
+    no_detail, pending = release_log.fetch_detail(sheets)      # 상세 본문이 빈 UID · 등록/판매 대기 UID
     uids = load_uids(sheets)
     # 히어로 이름 — 화면 딱지 '히어로 · 라이트다운'(사용자 지시 2026-10-23 "MAIN 말고 히어로라고").
     #   작업의뢰 '히어로' 칸(MAIN/SUB)은 26FW 에만 있어 HERO STY 매핑으로 보강한다(27SS 에도 붙게).
@@ -219,6 +220,20 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         sty, plan = p["style"], p["plan"]
         offline_only, online_only = "오프라인전용" in p["type"], "온라인전용" in p["type"]
         u = sorted(uids.get(sty, ()))
+        # ★이번 발매 컬러(사용자 지적 2026-10-23 MWFTL8A05 — 10/21 은 새 컬러 WH 발매인데 기존 컬러 9/1 입고가 붙었다).
+        #   이미 판매중: 발매일 −7일 이전엔 판매중 전환이 없고 −7~+30일에 전환된 UID. 아직 발매 전: 등록/판매 대기 UID.
+        #   못 가르면(같은 UID 재발매 등) 전 컬러. 입고·상세·분배는 이 컬러만 본다.
+        launch_u = []
+        if plan:
+            for x in u:
+                tr = log.get(x, [])
+                before = any(t.date() < plan - _dt.timedelta(days=EARLY_DAYS) for t in tr)
+                near = any(plan - _dt.timedelta(days=EARLY_DAYS) <= t.date() <= plan + _dt.timedelta(days=30) for t in tr)
+                if (near and not before) or x in pending:
+                    launch_u.append(x)
+        launch_u = launch_u or u
+        lcols = {UID_COLOR.get(x) for x in launch_u}
+        lcols = None if (None in lcols or launch_u == u) else lcols      # 컬러를 모르거나 전 컬러면 품번 전체
         # ★예약발매(사용자 지시 2026-10-23) = **비제스트 '출고예정 구분 → 예약 배송' 설정 이력**(release_log.PREORDER_SQL).
         #   그 스타일 UID(컬러) 중 하나라도 발매일 −30~+14일 안에 예약 배송으로 설정됐으면 예약발매, 예약 출고일도 함께.
         #   작업의뢰 '예발여부'는 보조 근거(src 표기만). ★'판매 시작이 입고보다 먼저'로 추정하던 규칙은 버렸다 —
@@ -250,8 +265,8 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         if plan and ships:
             last_ship = max(_dt.datetime.strptime(x, "%Y%m%d").date() for x in ships)
             hi_a = max(hi_a, last_ship + _dt.timedelta(days=ASN_WINDOW[1]))
-        xs = [x for x in asn.get(sty, ()) if plan and lo_a <= x[0] <= hi_a]
-        ws = [x for x in wms.get(sty, ()) if plan and lo_a <= x[0] <= hi_a]
+        xs = [x for x in asn.get(sty, ()) if plan and lo_a <= x[0] <= hi_a and (lcols is None or x[2] in lcols)]
+        ws = [x for x in wms.get(sty, ()) if plan and lo_a <= x[0] <= hi_a and (lcols is None or x[2] in lcols)]
         a = {"q": sum(x[1] for x in xs), "r": sum(x[1] for x in ws),
              "last": max((x[0].isoformat() for x in xs), default=""),
              "rlast": max((x[0].isoformat() for x in ws), default=""),
@@ -281,7 +296,8 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             on = "미전환"
         else:
             on = "예정"
-        ys = [y for y in dist.get(sty, ()) if plan and y[0] and y[0] >= plan + _dt.timedelta(days=DIST_FROM)]
+        ys = [y for y in dist.get(sty, ()) if plan and y[0] and y[0] >= plan + _dt.timedelta(days=DIST_FROM)
+              and (lcols is None or y[3] in lcols)]
         dd = {"q": sum(y[1] for y in ys), "shops": set().union(*[y[2] for y in ys]) if ys else set(),
               "last": max((y[0].isoformat() for y in ys), default="")}
         n_sh = len(dd["shops"])
@@ -298,13 +314,13 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         else:
             ds = "출고 전"
         # 상세페이지 — 스타일 UID(컬러) 중 비제스트 상세 본문이 등록된 수. UID 가 아예 없으면 상품 자체가 미등록.
-        d_done = sum(1 for x in u if x not in no_detail)
-        d_missing = " · ".join(sorted(UID_COLOR.get(x, x) for x in u if x in no_detail))
+        d_done = sum(1 for x in launch_u if x not in no_detail)
+        d_missing = " · ".join(sorted(UID_COLOR.get(x, x) for x in launch_u if x in no_detail))
         if offline_only:
             dst = "제외"
         elif not u:
             dst = "상품 미등록"
-        elif d_done >= len(u):
+        elif d_done >= len(launch_u):
             dst = "완료"
         elif d_done == 0:
             dst = "작업 전"
@@ -332,7 +348,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                      len(u), int(dd["q"]), n_sh, len(in_list), dd["last"],
                      inb, on, ds, " · ".join(risk), p["issue"][:200], p["sourcing"], p["note"],
                      p2h.get(sty, ""), a["rfirst"].isoformat() if a["rfirst"] else "", pre, pre_src, pre_ship,
-                     dst, d_done, len(u), d_missing])
+                     dst, d_done, len(launch_u), d_missing, " · ".join(sorted(lcols)) if lcols else ""])
     return grid, cnt
 
 

@@ -85,18 +85,21 @@ def fetch_preorder(sheets, log=print) -> dict[str, list[tuple[_dt.datetime, str]
 #   ★처음엔 '최근 300일 등록·대기 상품'의 등록 여부를 가져왔는데, 오래전 등록된 판매중 컬러(MWEDC9D55-BK, 본문 475자·
 #     이미지 9장)가 범위 밖이라 '미등록'으로 잡혔다 → 범위를 두지 않고 **빈 것만** 무탠 전체에서 모은다(휴지통 -90 제외).
 #   10/23 실측: 10/28 발매 3스타일의 새 컬러 6개가 전부 등록대기(5)·본문 0자. 중계 spec 'detail'.
+#   ★10/23 등록/판매 대기(5·10·15) 상품도 함께 — 아직 발매 전인 행의 '이번에 발매하는 컬러'를 가리는 데 쓴다.
 DETAIL_SQL = """
-SELECT CAST(goods_no AS STRING) AS goods_no
+SELECT CAST(goods_no AS STRING) AS goods_no,
+       CASE WHEN length(coalesce(goods_cont, '')) > 0 THEN 'Y' ELSE '' END AS has_detail,
+       CAST(sale_stat_cl AS STRING) AS sale_stat_cl
 FROM musinsa.bizest.goods
 WHERE brand LIKE 'musinsastandard%'
-  AND length(coalesce(goods_cont, '')) = 0
+  AND (length(coalesce(goods_cont, '')) = 0 OR sale_stat_cl IN ('5', '10', '15'))
   AND coalesce(sale_stat_cl, '') <> '-90'
 """
 DETAIL_MIN_ROWS = 100
 
 
-def fetch_detail(sheets, log=print) -> set[str]:
-    """상세 본문이 비어 있는 goods_no 집합."""
+def fetch_detail(sheets, log=print) -> tuple[set[str], set[str]]:
+    """→ (상세 본문이 빈 goods_no, 등록/판매 대기 goods_no)."""
     from soo.hero_ops import dbx_relay
     dbx_relay.configure(sheets, "detail", max_age_h=30)
     try:
@@ -105,7 +108,9 @@ def fetch_detail(sheets, log=print) -> set[str]:
         dbx_relay._cfg["sheets"] = None
     if len(rows) < DETAIL_MIN_ROWS:
         raise RuntimeError(f"상세 미등록 목록 {len(rows)}행 < {DETAIL_MIN_ROWS} — 부분 결과 의심")
-    return {str(r[0]).strip() for r in rows}
+    empty = {str(r[0]).strip() for r in rows if str(r[1] or "") != "Y"}
+    pending = {str(r[0]).strip() for r in rows if str(r[2] or "") in ("5", "10", "15")}
+    return empty, pending
 
 
 MIN_ROWS = 1000   # 실측 ~1만 행(240일) — 이보다 적으면 부분 결과로 보고 쓰지 않는다
