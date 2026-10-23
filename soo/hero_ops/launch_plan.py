@@ -247,15 +247,15 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             ships = sorted({sd for x in u for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd})
             # ★컬러별로 — 스타일 단위로만 보이면 '9/1 입고인데 왜 예약?'(기존 컬러 입고 · 새 컬러만 예약)이 된다(사용자 지적 MWFTL8A05)
             pre_by_color = {}
-            for x in u:                                                     # 스타일 전 컬러
+            for x in launch_u:                                              # 이번 발매 컬러
                 hits = [sd for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd]
                 if hits:
                     pre_by_color[UID_COLOR.get(x, '통합')] = hits[-1]          # 그 컬러의 마지막 예약 설정 = 현재 예약 출고일
-            # ★예약발매 딱지(Y)는 **스타일 전 컬러**가 예약일 때만(사용자 지시 2026-10-23 — MWFTL8A05 는 4컬러 중 WH 만
-            #   예약이라 딱지를 빼야 한다. '이번 발매 컬러 전부'로 봤더니 WH 1컬러 발매 행에 딱지가 남았다).
-            #   통합 UID 품번은 온라인 상품 = 통합 UID 라 그것만 센다(컬러별 UID 는 늘 대기라 예약 설정이 없다).
-            base = [x for x in u if x not in UID_COLOR] if sty in integrated else u
-            base = base or u
+            # ★예약발매 딱지(Y)는 **이번 발매 컬러 전부**가 예약일 때만(사용자 확정 2026-10-23 'A안').
+            #   MWFTL8A05 10/21 행 = WH 1컬러 발매(DR·EC·BK 는 8/12 발매)라 WH 예약 → 그 발매는 예약발매가 맞다.
+            #   (한때 '스타일 전 컬러' 기준으로 바꿨다가 되돌림.) 통합 UID 품번은 온라인 상품 = 통합 UID 라 그것만 센다.
+            base = [x for x in u if x not in UID_COLOR] if sty in integrated else launch_u
+            base = base or launch_u
             n_pre = sum(1 for x in base if any(lo_p <= ts.date() <= hi_p for (ts, _) in pre_log.get(x, ())))
             sysp = any(lo_p <= ts.date() <= hi_p for x in u for (ts, _) in pre_log.get(x, ()))
         else:
