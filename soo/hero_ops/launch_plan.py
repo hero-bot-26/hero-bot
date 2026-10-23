@@ -59,14 +59,15 @@ MIN_ROWS = 200           # 시즌 하나당 실측 700행대 — 이보다 적�
 HEADER = ["season", "plan", "style", "line", "item", "type", "hero", "name", "sku", "plan_qty",
           "inb_plan", "inb_manual", "asn_qty", "recv_qty", "asn_last", "recv_last",
           "online_at", "online_diff", "uids", "dist_qty", "dist_shops", "dist_total", "dist_last",
-          "inb_state", "online_state", "dist_state", "risk", "issue", "sourcing", "row_note", "hero_series"]
+          "inb_state", "online_state", "dist_state", "risk", "issue", "sourcing", "row_note", "hero_series",
+          "recv_first", "preorder", "preorder_src", "preorder_ship"]
 
 # 헤더 (묶음 라벨, 세부 라벨) → 필드. 묶음이 None 이면 세부 라벨만 본다. 같은 라벨이 여럿이면 **첫 것**.
 COLS = {
     "plan": (None, "발매일"), "style": (None, "스타일넘버"), "line": (None, "구분"), "item": (None, "아이템"),
     "type": (None, "컬러추가"), "hero": (None, "히어로"), "name": (None, "스타일명"), "sku": (None, "SKU"),
     "plan_qty": (None, "기획수량"), "inb_plan": ("상품입고", "예정일"), "inb_manual": (None, "실 입고일"),
-    "issue": (None, "발매 이슈"), "sourcing": ("소싱담당", None),
+    "issue": (None, "발매 이슈"), "sourcing": ("소싱담당", None), "preorder": (None, "예발여부"),
 }
 REQUIRED = ("plan", "style", "name")
 
@@ -123,7 +124,7 @@ def parse_launch(grid: list[list[str]], season: str) -> list[dict]:
                     "type": c("type"), "hero": c("hero"), "name": c("name"), "sku": c("sku"),
                     "plan_qty": int(_num(c("plan_qty"))), "inb_plan": work_req.norm_date(c("inb_plan")),
                     "inb_manual": work_req.norm_date(c("inb_manual")), "issue": c("issue"),
-                    "sourcing": c("sourcing"), "note": note})
+                    "sourcing": c("sourcing"), "note": note, "preorder": c("preorder")})
     print(f"[plan] {season} 발매1 {len(out):,}행 (헤더 {hi + 1}행 · 열 {ix})")
     return out
 
@@ -194,6 +195,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         dist[str(d.get("style", "")).strip()].append(
             (work_req.norm_date(_ymd(d.get("last_dt"))), _num(d.get("done_qty")), sh))
     log = release_log.fetch(sheets)
+    pre_log = release_log.fetch_preorder(sheets)
     uids = load_uids(sheets)
     # 히어로 이름 — 화면 딱지 '히어로 · 라이트다운'(사용자 지시 2026-10-23 "MAIN 말고 히어로라고").
     #   작업의뢰 '히어로' 칸(MAIN/SUB)은 26FW 에만 있어 HERO STY 매핑으로 보강한다(27SS 에도 붙게).
@@ -217,7 +219,9 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         ws = [x for x in wms.get(sty, ()) if plan and lo_a <= x[0] <= hi_a]
         a = {"q": sum(x[1] for x in xs), "r": sum(x[1] for x in ws),
              "last": max((x[0].isoformat() for x in xs), default=""),
-             "rlast": max((x[0].isoformat() for x in ws), default="")}
+             "rlast": max((x[0].isoformat() for x in ws), default=""),
+             "rfirst": min((x[0] for x in ws), default=None),
+             "afirst": min((x[0] for x in xs), default=None)}
         if a["r"] > 0:
             inb = "확정"
         elif a["q"] > 0:
@@ -266,6 +270,23 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                 risk.append(f"입고 흔적 없음 D-{dleft}")
             if dleft < 0 and on in ("미전환",):
                 risk.append(f"발매일 지났는데 미전환 D+{-dleft}")
+        # ★예약발매(사용자 지시 2026-10-23) = **비제스트 '출고예정 구분 → 예약 배송' 설정 이력**(release_log.PREORDER_SQL).
+        #   그 스타일 UID(컬러) 중 하나라도 발매일 −30~+14일 안에 예약 배송으로 설정됐으면 예약발매, 예약 출고일도 함께.
+        #   작업의뢰 '예발여부'는 보조 근거(src 표기만). ★'판매 시작이 입고보다 먼저'로 추정하던 규칙은 버렸다 —
+        #   WMS 확정일 지연·컬러추가(기존 컬러 재고)·신발(WMS 밖 입고) 때문에 시스템 설정과 어긋났다.
+        mark = "예발" in p["preorder"]
+        ships = []
+        if plan:
+            lo_p, hi_p = plan - _dt.timedelta(days=30), plan + _dt.timedelta(days=14)
+            ships = sorted({sd for x in u for (ts, sd) in pre_log.get(x, ()) if lo_p <= ts.date() <= hi_p and sd})
+            sysp = any(lo_p <= ts.date() <= hi_p for x in u for (ts, _) in pre_log.get(x, ()))
+        else:
+            sysp = False
+        pre = "Y" if sysp else ""
+        pre_src = ("비제스트+작업의뢰" if mark else "비제스트") if sysp else ("작업의뢰만(비제스트 설정 없음)" if mark else "")
+        pre_ship = (ships[0][4:6] + "/" + ships[0][6:8]) if ships else ""
+        if pre_src:
+            cnt["preorder:" + pre_src] += 1
         for r_ in risk:
             cnt["risk:" + r_.split(" D")[0]] += 1
         cnt[p["season"]] += 1
@@ -276,7 +297,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                      at.strftime("%Y-%m-%d %H:%M") if at else "", str((at.date() - plan).days) if at and plan else "",
                      len(u), int(dd["q"]), n_sh, len(in_list), dd["last"],
                      inb, on, ds, " · ".join(risk), p["issue"][:200], p["sourcing"], p["note"],
-                     p2h.get(sty, "")])
+                     p2h.get(sty, ""), a["rfirst"].isoformat() if a["rfirst"] else "", pre, pre_src, pre_ship])
     return grid, cnt
 
 

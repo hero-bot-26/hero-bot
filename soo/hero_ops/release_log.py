@@ -39,6 +39,47 @@ WHERE sale_stat_cl = '40' AND (prev_stat IS NULL OR prev_stat IN ('0', '5', '9',
   AND rt >= date_sub(current_date(), 240)
 """
 
+# ★예약발매 = 비제스트 '출고예정 구분'을 예약 배송으로 바꾼 이력(2026-10-23, 사용자 "시스템상 예약발매 상태를 알 수 있을 텐데").
+#   상품 마스터 `goods.dlv_due_type`(G 일반 · R 예약 · D 지연)은 **현재 값**뿐이라 입고 뒤 일반으로 돌리면 과거 예약이 사라진다
+#   (10/23 현재 R 은 42개뿐). 변경 이력 memo 에는 `출고예정 구분 : 예약 배송 20260910` 처럼 예약 출고일까지 남는다 → 이걸 쓴다.
+#   UID(컬러) 단위라 컬러추가도 컬러별로 정확하다. rt 는 KST(표기만 Z).
+#   중계 spec 'preorder' 가 이 상수를 글자 그대로 돌린다 — 고치면 dash_audit/dbx_relay/deploy.py --apply.
+PREORDER_SQL = """
+WITH g AS (
+  SELECT goods_no FROM musinsa.bizest.goods WHERE brand LIKE 'musinsastandard%'
+)
+SELECT DISTINCT CAST(h.goods_no AS STRING) AS goods_no, date_format(h.rt, 'yyyy-MM-dd HH:mm') AS set_at,
+       regexp_extract(h.memo, '예약 배송 ([0-9]{8})', 1) AS ship_dt
+FROM musinsa.bizest.goods_hist_management h JOIN g ON g.goods_no = h.goods_no
+WHERE h.rt >= date_sub(current_date(), 240)
+  AND h.upd_area LIKE '%출고예정%'
+  AND h.memo LIKE '%예약 배송%'
+"""
+PREORDER_MIN_ROWS = 100
+
+
+def fetch_preorder(sheets, log=print) -> dict[str, list[tuple[_dt.datetime, str]]]:
+    """goods_no → [(예약 설정 시각, 예약 출고일 YYYYMMDD)] (오름차순)."""
+    from soo.hero_ops import dbx_relay
+    dbx_relay.configure(sheets, "preorder", max_age_h=30)
+    try:
+        rows = dbx_relay.rows(PREORDER_SQL, log)
+    finally:
+        dbx_relay._cfg["sheets"] = None
+    if len(rows) < PREORDER_MIN_ROWS:
+        raise RuntimeError(f"예약배송 이력 {len(rows)}행 < {PREORDER_MIN_ROWS} — 부분 결과 의심")
+    out: dict[str, list] = {}
+    for gno, at, ship in rows:
+        try:
+            t = _dt.datetime.strptime(str(at)[:16], "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        out.setdefault(str(gno).strip(), []).append((t, str(ship or "")))
+    for v in out.values():
+        v.sort()
+    return out
+
+
 MIN_ROWS = 1000   # 실측 ~1만 행(240일) — 이보다 적으면 부분 결과로 보고 쓰지 않는다
 
 
