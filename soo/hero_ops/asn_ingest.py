@@ -152,6 +152,32 @@ SELECT 'wms' AS kind, style, d, CAST(q AS BIGINT) AS qty FROM wms
 """
 
 
+# ★ASN 사본 누락 감시(ops_watch.check_asn_gap) — 수집기 원천 `pbo.moms.iif_bam_asn` 은 ERP 원본
+#   `pbo.erp.supplier_order_asn` 의 사본인데 **가끔 건이 빠진다**(2026-10-22 실측: 7/30 등록 무탠 22건 중 4건 누락 —
+#   히어로 스웨트팬츠·라이트다운 포함 · 10/13 `261013-MTBT-CHINA-1F` 41,506장). 빠진 ASN 은 화면에도 알림에도 안 뜬다.
+#   → 최근 14일 등록된 ERP ASN(취소 제외, 무탠) 중 사본에 없는 것. ERP 는 일자별 전체 스냅샷이라 최신 date 하나로 고정.
+#   ★품번 접두(MK)로 거르면 마뗑킴(`MK26…`)이 섞인다 — 무탠 판정은 MUTAN_CTE.
+#   중계 spec 'asn_gap' 이 이 상수를 글자 그대로 돌린다.
+ASN_GAP_SQL = f"""
+WITH {MUTAN_CTE}erp AS (
+  SELECT asn_no, substr(style_no, 1, 9) style, sum(asn_qty) qty, min(reg_date) reg_date, max(delivery_date) delivery_date
+  FROM pbo.erp.supplier_order_asn
+  WHERE date = (SELECT max(date) FROM pbo.erp.supplier_order_asn)
+    AND reg_date >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), 14), 'yyyyMMdd')
+    AND upper(coalesce(delete_flag, '')) <> 'X'
+    AND substr(style_no, 1, 9) IN (SELECT sty FROM mutan)
+  GROUP BY 1, 2
+),
+moms AS (
+  SELECT DISTINCT DELVNO FROM pbo.moms.iif_bam_asn
+  WHERE EINDT >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), 75), 'yyyyMMdd')
+)
+SELECT e.asn_no, e.style, CAST(e.qty AS BIGINT) AS qty, e.reg_date, e.delivery_date
+FROM erp e LEFT JOIN moms m ON m.DELVNO = e.asn_no
+WHERE m.DELVNO IS NULL
+"""
+
+
 def fetch_asn(styles: list[str], lookback: int = LOOKBACK_DAYS, all_brand: bool = False) -> list[list]:
     """히어로 품번의 ASN + 그 ASN 번호로 잡힌 WMS 실입고를 한 번에 읽는다(상단 주석 참조).
 
