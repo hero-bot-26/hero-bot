@@ -404,9 +404,12 @@ def format_changes(rows: list[list], now: _dt.datetime, test: bool = False) -> s
         old, new = (r[5] if len(r) > 5 else ""), (r[6] if len(r) > 6 else "")
         verb = {"변경": f"{md(old)} → {md(new)}", "추가": f"{md(new)} 발매 추가", "삭제": f"{md(old)} 발매 빠짐"}.get(r[4], r[4])
         lines.append(f"• [{r[1]}] {r[2]} {r[3][:30]} — {verb}")
-    msg = ((f"[시험] " if test else "") + f"발매일 변경 {len(todo)}건 (작업의뢰 발매시트 · {now:%m/%d %H:%M} 감지)\n" + "\n".join(lines)
+    # ★문구(사용자 지시 2026-10-23) — 건수·'작업의뢰 발매시트 · 감지' 같은 딱딱한 머리말과 날 URL 은 빼고,
+    #   한 줄 안내 + 담당자 문의 안내 + 슬랙 링크 글자('발매 캘린더 보러가기')로.
+    msg = (("[시험] " if test else "") + "발매일이 변경되었어요!\n" + "\n".join(lines)
            + ("" if len(todo) <= 30 else f"\n… 외 {len(todo) - 30}건")
-           + "\n→ https://hero-master-app.vercel.app/ops?tab=cal")
+           + "\n자세한 사유는 담당자에게 문의 부탁드려요!"
+           + "\n<https://hero-master-app.vercel.app/ops?tab=cal|발매 캘린더 보러가기>")
     return msg
 
 
