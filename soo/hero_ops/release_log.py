@@ -81,17 +81,34 @@ def fetch_preorder(sheets, log=print) -> dict[str, list[tuple[_dt.datetime, str]
 
 
 # ★상세페이지 등록 여부(2026-10-23, 사용자 지시 "발매 D-1 전인데 등록 안 된 게 하나라도 있으면 띄워 줘")
-#   = 비제스트 상품 마스터 `goods_cont`(상품설명 = 상세 본문) 가 비어 있지 않은가. UID(컬러) 단위 현재값.
-#   10/23 실측: 10/28 발매 3스타일의 새 컬러 6개가 전부 등록대기(5)·본문 0자·상세 이미지 0장(기존 컬러만 완료).
-#   범위 = 최근 300일 등록 + 등록/판매 대기 상품(5.3만 건, 두 칸이라 가볍다). 중계 spec 'detail'.
+#   = 비제스트 상품 마스터 `goods_cont`(상품설명 = 상세 본문) 가 비어 있는 상품 목록 — 여기 있으면 미등록, 없으면 등록.
+#   ★처음엔 '최근 300일 등록·대기 상품'의 등록 여부를 가져왔는데, 오래전 등록된 판매중 컬러(MWEDC9D55-BK, 본문 475자·
+#     이미지 9장)가 범위 밖이라 '미등록'으로 잡혔다 → 범위를 두지 않고 **빈 것만** 무탠 전체에서 모은다(휴지통 -90 제외).
+#   10/23 실측: 10/28 발매 3스타일의 새 컬러 6개가 전부 등록대기(5)·본문 0자. 중계 spec 'detail'.
 DETAIL_SQL = """
-SELECT CAST(goods_no AS STRING) AS goods_no,
-       CASE WHEN length(coalesce(goods_cont, '')) > 0 THEN 'Y' ELSE '' END AS has_detail
+SELECT CAST(goods_no AS STRING) AS goods_no
 FROM musinsa.bizest.goods
 WHERE brand LIKE 'musinsastandard%'
-  AND (reg_dm >= date_sub(current_date(), 300) OR sale_stat_cl IN ('5', '10', '15'))
+  AND length(coalesce(goods_cont, '')) = 0
+  AND coalesce(sale_stat_cl, '') <> '-90'
 """
-DETAIL_MIN_ROWS = 10000
+DETAIL_MIN_ROWS = 100
+
+
+def fetch_detail(sheets, log=print) -> set[str]:
+    """상세 본문이 비어 있는 goods_no 집합."""
+    from soo.hero_ops import dbx_relay
+    dbx_relay.configure(sheets, "detail", max_age_h=30)
+    try:
+        rows = dbx_relay.rows(DETAIL_SQL, log)
+    finally:
+        dbx_relay._cfg["sheets"] = None
+    if len(rows) < DETAIL_MIN_ROWS:
+        raise RuntimeError(f"상세 미등록 목록 {len(rows)}행 < {DETAIL_MIN_ROWS} — 부분 결과 의심")
+    return {str(r[0]).strip() for r in rows}
+
+
+MIN_ROWS = 10000
 
 
 def fetch_detail(sheets, log=print) -> dict[str, bool]:

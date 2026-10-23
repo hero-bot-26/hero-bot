@@ -202,7 +202,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             (work_req.norm_date(_ymd(d.get("last_dt"))), _num(d.get("done_qty")), sh))
     log = release_log.fetch(sheets)
     pre_log = release_log.fetch_preorder(sheets)
-    detail = release_log.fetch_detail(sheets)
+    no_detail = release_log.fetch_detail(sheets)      # 상세 본문이 빈 UID
     uids = load_uids(sheets)
     # 히어로 이름 — 화면 딱지 '히어로 · 라이트다운'(사용자 지시 2026-10-23 "MAIN 말고 히어로라고").
     #   작업의뢰 '히어로' 칸(MAIN/SUB)은 26FW 에만 있어 HERO STY 매핑으로 보강한다(27SS 에도 붙게).
@@ -298,8 +298,8 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         else:
             ds = "출고 전"
         # 상세페이지 — 스타일 UID(컬러) 중 비제스트 상세 본문이 등록된 수. UID 가 아예 없으면 상품 자체가 미등록.
-        d_done = sum(1 for x in u if detail.get(x))
-        d_missing = " · ".join(sorted(UID_COLOR.get(x, x) for x in u if not detail.get(x)))
+        d_done = sum(1 for x in u if x not in no_detail)
+        d_missing = " · ".join(sorted(UID_COLOR.get(x, x) for x in u if x in no_detail))
         if offline_only:
             dst = "제외"
         elif not u:
