@@ -54,6 +54,7 @@ TABS = ["커브드팬츠", "라이트다운", "힛탠다드", "빅토리아 울"
         "데님팬츠", "스웨트팬츠", "심리스 브라", "양말", "벨트"]
 COLOR_CODE = re.compile(r"^M[A-Z0-9]{8}-[A-Z0-9]{2,3}$")
 HARDCODED_UID = re.compile(r"!\$B:\$B,(\d{6,9})")     # 수식에 박힌 통합uid (심리스브라 등)
+PREV_UID_LIST = re.compile(r"MAP\(\{([^}]*)\},LAMBDA\(")  # 전년 이전품번 uid 목록 =SUM(MAP({"159…",…},LAMBDA(g,SUMIFS('전년MTD'!…,g))))
 
 
 def _g(row, j):
@@ -255,6 +256,20 @@ def main():
                     pending.append((tab, r, pum, f"통합uid {uid} · 옵션코드 대기(판매 전)"))
         for f in forms:                                  # 수식에 박힌 통합uid 회수
             all_uid.update(int(x) for x in HARDCODED_UID.findall(f or ""))
+
+    # 전년 칸을 리뉴얼 이전품번(작년 uid)에 연결한 수식 — 그 uid 도 필터에 태워야 '전년…' 탭에 실린다.
+    #   열 위치가 탭마다 달라 전 폭을 읽고, '전년' 을 참조하는 MAP 수식에서만 뽑는다(힛탠다드, 2026-10-23).
+    prev_uid = set()
+    for vr in sh.spreadsheets().values().batchGet(
+            spreadsheetId=DASH, ranges=[f"'{t}'!G1:ZZ400" for t in TABS],
+            valueRenderOption="FORMULA").execute()["valueRanges"]:
+        for row in vr.get("values", []):
+            for f in row:
+                if isinstance(f, str) and "전년" in f:
+                    for lst in PREV_UID_LIST.findall(f):
+                        prev_uid.update(int(x) for x in re.findall(r"\d{6,9}", lst))
+    print(f"전년 이전품번 uid {len(prev_uid)}건")
+    all_uid |= prev_uid
 
     print(f"\n★A열 채울 행 {len(fills)}건")
     for t, r, uid, pum, old in fills:
