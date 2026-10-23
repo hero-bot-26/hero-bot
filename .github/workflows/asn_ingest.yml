@@ -148,7 +148,7 @@ jobs:
           GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
           GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
           GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
-          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}   # 발매일 변경 알림(수영님 DM, 08~20시)
+          SLACK_MDP_BOT_TOKEN:      ${{ secrets.SLACK_MDP_BOT_TOKEN }}   # 발매일 변경 알림 = MDP 봇(수영님 DM, 08~20시)
         run: python -m soo.hero_ops.launch_plan --apply
 
       - name: 발매 파이프라인 실패 알림

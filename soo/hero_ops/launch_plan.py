@@ -411,17 +411,23 @@ def format_changes(rows: list[list], now: _dt.datetime, test: bool = False) -> s
 
 
 def send_changes(msg: str) -> int:
-    """CHG_RECIPIENTS 전원에게 DM. 성공 수를 돌려준다(토큰 없으면 0 — 로컬 시험)."""
+    """CHG_RECIPIENTS 전원에게 DM. 성공 수를 돌려준다(토큰 없으면 0 — 로컬 시험).
+
+    ★보내는 봇 = **MUSINSA STANDARD MDP 봇**(사용자 지시 2026-10-23 — 히어로 봇과 분리). 토큰 = Secret SLACK_MDP_BOT_TOKEN
+      (로컬 = hero_bot/secrets.yaml `mdp_bot_token`). 히어로 봇 토큰엔 chat:write.customize 가 없어 이름만 바꾸는 건 불가였다.
+      히어로 봇 토큰으로 폴백하지 않는다 — 조용히 다른 이름으로 나가느니 안 보내고 원장에 남겨 다음 실행에 다시 보낸다.
+    """
     import os
-    tok = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    tok = os.environ.get("SLACK_MDP_BOT_TOKEN", "").strip()
     if not tok:
-        print("[plan] SLACK_BOT_TOKEN 없음 — 발매일 변경 알림 스킵")
+        print("[plan] SLACK_MDP_BOT_TOKEN 없음 — 발매일 변경 알림 스킵(원장엔 미발송으로 남는다)")
         return 0
     from soo import persona
+    mdp = persona.Persona(**{**persona.RANKING_BOT.__dict__, "slack_username": None, "slack_icon_emoji": None, "slack_icon_url": None})
     ok = 0
     for target in CHG_RECIPIENTS:
         try:
-            if persona.send_slack(msg, bot_token=tok, target=target, persona=persona.RANKING_BOT):
+            if persona.send_slack(msg, bot_token=tok, target=target, persona=mdp):
                 ok += 1
         except Exception as e:
             print(f"[plan] 발매일 변경 알림 실패({target}): {type(e).__name__}: {e}")
