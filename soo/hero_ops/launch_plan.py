@@ -315,6 +315,9 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
 SNAP_TAB = "_OPS_PLAN_SNAP"
 CHG_TAB = "_OPS_PLAN_CHG"
 CHG_HEADER = ["detected_at", "season", "style", "name", "kind", "old", "new", "notified"]
+# ★수신자 — 지금은 수영님 DM 한 명(사용자 지시 2026-10-23 "일단 나한테, 나중에 받는 사람을 엄청 늘려야"). 늘릴 땐 여기에
+#   Slack ID 를 더하면 된다(담당자별로 자기 건만 보내려면 _notify_pending 에서 품번 → 담당자 매핑으로 묶을 것 — asn_notify 참조).
+CHG_RECIPIENTS = ["U09BU1F85TR"]
 
 
 def _snapshot(grid: list[list]) -> dict[str, dict]:
@@ -394,23 +397,50 @@ def track_changes(sheets, grid: list[list], now: _dt.datetime, notify: bool = Tr
     return events
 
 
-def _notify_pending(sheets, now: _dt.datetime) -> None:
-    _ensure(sheets, CHG_TAB, CHG_HEADER)            # 변경이 한 번도 없었으면 원장 탭이 아직 없다
-    rows = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{CHG_TAB}'!A2:H").execute().get("values", [])
-    todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 5 and not (r[7] if len(r) > 7 else "").strip()]
-    if not todo:
-        return
+def format_changes(rows: list[list], now: _dt.datetime, test: bool = False) -> str:
+    """원장 행(CHG_HEADER 순서) → 슬랙 본문. 시험 발송·실발송이 같은 함수를 쓴다."""
+    todo = [(i, r) for i, r in enumerate(rows)]
     md = lambda x: f"{int(x[5:7])}/{int(x[8:10])}" if x else "-"
     lines = []
     for _, r in todo[:30]:
         old, new = (r[5] if len(r) > 5 else ""), (r[6] if len(r) > 6 else "")
         verb = {"변경": f"{md(old)} → {md(new)}", "추가": f"{md(new)} 발매 추가", "삭제": f"{md(old)} 발매 빠짐"}.get(r[4], r[4])
         lines.append(f"• [{r[1]}] {r[2]} {r[3][:30]} — {verb}")
-    msg = (f"발매일 변경 {len(todo)}건 (작업의뢰 발매시트 · {now:%m/%d %H:%M} 감지)\n" + "\n".join(lines)
+    msg = ((f"[시험] " if test else "") + f"발매일 변경 {len(todo)}건 (작업의뢰 발매시트 · {now:%m/%d %H:%M} 감지)\n" + "\n".join(lines)
            + ("" if len(todo) <= 30 else f"\n… 외 {len(todo) - 30}건")
            + "\n→ https://hero-master-app.vercel.app/ops?tab=cal")
-    from soo.hero_ops import notify as N
-    N.send(msg)
+    return msg
+
+
+def send_changes(msg: str) -> int:
+    """CHG_RECIPIENTS 전원에게 DM. 성공 수를 돌려준다(토큰 없으면 0 — 로컬 시험)."""
+    import os
+    tok = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    if not tok:
+        print("[plan] SLACK_BOT_TOKEN 없음 — 발매일 변경 알림 스킵")
+        return 0
+    from soo import persona
+    ok = 0
+    for target in CHG_RECIPIENTS:
+        try:
+            if persona.send_slack(msg, bot_token=tok, target=target, persona=persona.RANKING_BOT):
+                ok += 1
+        except Exception as e:
+            print(f"[plan] 발매일 변경 알림 실패({target}): {type(e).__name__}: {e}")
+    print(f"[plan] 발매일 변경 알림 {ok}/{len(CHG_RECIPIENTS)}명")
+    return ok
+
+
+def _notify_pending(sheets, now: _dt.datetime) -> None:
+    _ensure(sheets, CHG_TAB, CHG_HEADER)            # 변경이 한 번도 없었으면 원장 탭이 아직 없다
+    rows = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{CHG_TAB}'!A2:H").execute().get("values", [])
+    todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 5 and not (r[7] if len(r) > 7 else "").strip()]
+    if not todo:
+        return
+    msg = format_changes([r for _, r in todo], now)
+    if send_changes(msg) == 0:           # ★기록은 발송 성공 시에만([[CLAUDE 1-3]]) — 실패분은 다음 실행에 다시 나간다
+        print(f"[plan] 발매일 변경 알림 미발송 {len(todo)}건 — 원장에 '보냄' 표시 안 함")
+        return
     sent = now.strftime("%Y-%m-%d %H:%M")
     data = [{"range": f"'{CHG_TAB}'!H{i + 2}", "values": [[sent]]} for i, _ in todo]
     sheets.spreadsheets().values().batchUpdate(spreadsheetId=APP_SHEET_ID,
