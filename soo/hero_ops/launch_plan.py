@@ -203,7 +203,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
             (work_req.norm_date(_ymd(d.get("last_dt"))), _num(d.get("done_qty")), sh, str(d.get("color", "")).strip()))
     log = release_log.fetch(sheets)
     pre_log = release_log.fetch_preorder(sheets)
-    no_detail, pending = release_log.fetch_detail(sheets)      # 상세 본문이 빈 UID · 등록/판매 대기 UID
+    no_detail, pending, integrated = release_log.fetch_detail(sheets)   # 상세 빈 UID · 대기 UID · 통합 UID 품번
     uids = load_uids(sheets)
     # 히어로 이름 — 화면 딱지 '히어로 · 라이트다운'(사용자 지시 2026-10-23 "MAIN 말고 히어로라고").
     #   작업의뢰 '히어로' 칸(MAIN/SUB)은 26FW 에만 있어 HERO STY 매핑으로 보강한다(27SS 에도 붙게).
@@ -229,7 +229,8 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                 tr = log.get(x, [])
                 before = any(t.date() < plan - _dt.timedelta(days=EARLY_DAYS) for t in tr)
                 near = any(plan - _dt.timedelta(days=EARLY_DAYS) <= t.date() <= plan + _dt.timedelta(days=30) for t in tr)
-                if (near and not before) or x in pending:
+                # 통합 UID 품번은 컬러별 UID 가 늘 대기 상태라 '대기 = 이번 발매' 로 보면 안 된다
+                if (near and not before) or (x in pending and sty not in integrated):
                     launch_u.append(x)
         launch_u = launch_u or u
         lcols = {UID_COLOR.get(x) for x in launch_u}
@@ -314,13 +315,17 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
         else:
             ds = "출고 전"
         # 상세페이지 — 스타일 UID(컬러) 중 비제스트 상세 본문이 등록된 수. UID 가 아예 없으면 상품 자체가 미등록.
-        d_done = sum(1 for x in launch_u if x not in no_detail)
-        d_missing = " · ".join(sorted(UID_COLOR.get(x, x) for x in launch_u if x in no_detail))
+        if sty in integrated:              # 온라인 = 통합 UID 하나 — 그 상세 본문이 기준
+            d_done, d_total = (1 if integrated[sty] else 0), 1
+            d_missing = "" if integrated[sty] else "통합 UID"
+        else:
+            d_done, d_total = sum(1 for x in launch_u if x not in no_detail), len(launch_u)
+            d_missing = " · ".join(sorted(UID_COLOR.get(x, x) for x in launch_u if x in no_detail))
         if offline_only:
             dst = "제외"
-        elif not u:
+        elif not u and sty not in integrated:
             dst = "상품 미등록"
-        elif d_done >= len(launch_u):
+        elif d_done >= d_total:
             dst = "완료"
         elif d_done == 0:
             dst = "작업 전"
@@ -348,7 +353,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                      len(u), int(dd["q"]), n_sh, len(in_list), dd["last"],
                      inb, on, ds, " · ".join(risk), p["issue"][:200], p["sourcing"], p["note"],
                      p2h.get(sty, ""), a["rfirst"].isoformat() if a["rfirst"] else "", pre, pre_src, pre_ship,
-                     dst, d_done, len(launch_u), d_missing, " · ".join(sorted(lcols)) if lcols else ""])
+                     dst, d_done, d_total, d_missing, " · ".join(sorted(lcols)) if lcols else ""])
     return grid, cnt
 
 
