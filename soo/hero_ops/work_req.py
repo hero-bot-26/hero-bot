@@ -80,16 +80,29 @@ def load_grid(sheets, drive, file_id: str, tab: str) -> list[list[str]]:
             spreadsheetId=file_id, range=f"'{tab}'!A1:GZ").execute().get("values", [])
         grid = [[_cell_str(x) for x in r] for r in vals]
     else:
+        import time
+        import zipfile
         import openpyxl
         from googleapiclient.http import MediaIoBaseDownload
-        buf = io.BytesIO()
-        dl = MediaIoBaseDownload(buf, drive.files().get_media(fileId=file_id, supportsAllDrives=True),
-                                 chunksize=8 * 1024 * 1024)
-        done = False
-        while not done:
-            _, done = dl.next_chunk()
-        buf.seek(0)
-        wb = openpyxl.load_workbook(buf, read_only=True, data_only=True)
+        # ★30MB xlsx 라 받는 중 끊기거나 담당자가 저장하는 순간에 받으면 깨진 zip 이 온다(2026-10-23 BadZipFile 실측).
+        #   깨졌으면 잠시 뒤 다시 받는다 — 세 번 다 깨지면 그대로 올린다(호출부가 그 화면만 건너뛴다).
+        wb = None
+        for attempt in range(3):
+            buf = io.BytesIO()
+            dl = MediaIoBaseDownload(buf, drive.files().get_media(fileId=file_id, supportsAllDrives=True),
+                                     chunksize=8 * 1024 * 1024)
+            done = False
+            while not done:
+                _, done = dl.next_chunk()
+            buf.seek(0)
+            try:
+                wb = openpyxl.load_workbook(buf, read_only=True, data_only=True)
+                break
+            except (zipfile.BadZipFile, KeyError, OSError) as e:
+                if attempt == 2:
+                    raise
+                print(f"[work_req] xlsx 깨짐({type(e).__name__}: {e}) — {30 * (attempt + 1)}초 뒤 다시 받는다")
+                time.sleep(30 * (attempt + 1))
         grid = [[_cell_str(x) for x in r] for r in wb[tab].iter_rows(values_only=True)]
     return grid
 
