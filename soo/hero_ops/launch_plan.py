@@ -211,6 +211,18 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
     pre_log = release_log.fetch_preorder(sheets)
     no_detail, pending, integrated = release_log.fetch_detail(sheets)   # 상세 빈 UID · 대기 UID · 통합 UID 품번
     uids = load_uids(sheets)
+    # 작업의뢰 '스타일명' 이 빈 행은 비제스트 상품명으로 채운다(사용자 지시 2026-10-26). 실패해도 이름만 빈 채로 계속.
+    try:
+        bz_names = release_log.fetch_names(sheets)
+    except Exception as e:
+        print(f"[plan] ⚠ 비제스트 상품명 실패 — 빈 이름 그대로 진행: {type(e).__name__}: {e}")
+        bz_names = {}
+    filled = collections.Counter()
+    for p in plans:
+        if not p["name"]:
+            p["name"] = bz_names.get(p["style"], "")
+            filled["비제스트로 채움" if p["name"] else "못 채움"] += 1
+    print("[plan] 빈 스타일명 " + (" · ".join(f"{k} {v}" for k, v in sorted(filled.items())) or "0"))
     # 히어로 이름 — 화면 딱지 '히어로 · 라이트다운'(사용자 지시 2026-10-23 "MAIN 말고 히어로라고").
     #   작업의뢰 '히어로' 칸(MAIN/SUB)은 26FW 에만 있어 HERO STY 매핑으로 보강한다(27SS 에도 붙게).
     from soo.hero_ops.inbound_board import build_pumbon2hero
