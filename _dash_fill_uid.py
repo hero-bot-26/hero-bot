@@ -268,6 +268,14 @@ def main():
                 if isinstance(f, str) and "전년" in f:
                     for lst in PREV_UID_LIST.findall(f):
                         prev_uid.update(int(x) for x in re.findall(r"\d{6,9}", lst))
+    # 10/27~ MAP 수식은 서버 재계산을 멈춰 걷어냈고, 매핑은 숨김 탭 `_전년매핑`(A=작년 uid) 이 정본이다.
+    #   ★이 탭을 안 읽으면 전년 탭에서 이전품번이 빠져 전년 칸이 조용히 0 이 된다(10/26 원복 때 실제로 빠짐).
+    try:
+        for row in sh.spreadsheets().values().get(spreadsheetId=DASH, range="'_전년매핑'!A2:A").execute().get("values", []):
+            if row and re.fullmatch(r"\d{6,9}", str(row[0]).strip()):
+                prev_uid.add(int(row[0]))
+    except Exception as e:                                # 탭이 없으면 MAP 수식 회수분만
+        print(f"⚠ _전년매핑 읽기 실패: {e}")
     print(f"전년 이전품번 uid {len(prev_uid)}건")
     all_uid |= prev_uid
 
