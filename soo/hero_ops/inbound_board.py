@@ -144,7 +144,7 @@ def build_pumbon2hero(sheets):
 # 읽는 열의 6행 머리말 — 열이 밀리면 조용히 틀린 열을 읽지 말고 멈춘다([[CLAUDE 1-1]]).
 PROD_HEADER = {"E": "오더구분", "G": "오더차수", "H": "PO넘버", "I": "품번-컬러", "K": "신품번", "L": "품명",
                "Z": "CL 명", "AA": "발주량", "AK": "금주입고일", "AL": "금주입고량",
-               "AO": "실입고일", "AP": "실입고량"}
+               "AE": "준비시즌", "AO": "실입고일", "AP": "실입고량"}
 
 
 def _read_prod_columns(sheets):
@@ -152,6 +152,7 @@ def _read_prod_columns(sheets):
     ranges = [f"'{PROD_TAB}'!I7:I", f"'{PROD_TAB}'!K7:M",      # I=8 / K:M=10~12
               f"'{PROD_TAB}'!Z7:AA", f"'{PROD_TAB}'!AK7:AL",   # Z:AA=25~26 / AK:AL=36~37
               f"'{PROD_TAB}'!AO7:AP", f"'{PROD_TAB}'!E7:H",    # AO:AP=40~41 / E:H=오더구분·세부·차수·PO
+              f"'{PROD_TAB}'!AE7:AE",                          # AE=준비시즌(2026FW·2027SS)
               f"'{PROD_TAB}'!A6:AP6"]
     res = sheets.spreadsheets().values().batchGet(
         spreadsheetId=PROD_SID, ranges=ranges,
@@ -186,6 +187,7 @@ def _read_prod_columns(sheets):
             "ord_kind": cell(5, ri, 0),               # E 오더구분
             "ord_no": cell(5, ri, 2),                 # G 오더차수
             "po": cell(5, ri, 3),                     # H PO넘버
+            "season": cell(6, ri, 0).replace("20", "", 1) if cell(6, ri, 0)[:2] == "20" else "",   # AE 2026FW → 26FW
         })
     _cap_plans(rows)
     return rows
@@ -304,7 +306,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
             # 예정은 컷오프 뒤인데 실제론 앞서 들어온 차수 — 그 날부터 확정을 읽어야 한다(MMEPK302 3/27 입고·6/1 예정)
             cell["from"] = min(cell.get("from") or _cut0, ad.isoformat())
         if pd and pq:
-            cell["planned"].append({"date": pd.isoformat(), "qty": pq})
+            cell["planned"].append({"date": pd.isoformat(), "qty": pq, "season": r.get("season", "")})
         aq = _num(r["act_qty"])
         if ad and aq:
             cell["actual"].append({"date": ad.isoformat(), "qty": aq})
