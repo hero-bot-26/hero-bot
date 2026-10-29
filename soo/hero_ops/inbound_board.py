@@ -215,7 +215,12 @@ def load_dbx_actuals(sheets, sheet_id=SALES_SHEET_ID, tab="입고일자별"):
     return dict(out)
 
 
-def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, asn=None):
+ALL_GROUP = ""   # all_products=True 일 때 히어로가 아닌 품번이 모이는 묶음
+
+
+def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, asn=None, all_products=False):
+    """all_products=True → 히어로 아닌 품번도 ALL_GROUP("") 묶음으로 싣는다(입고-발매 대시보드 `/ops`, 2026-10-29).
+    판정·FIFO 배분·예정 외 처리는 히어로 보드와 같은 코드를 탄다 — 규칙이 두 벌로 갈리지 않게."""
     as_of = as_of or datetime.date.today()
     p2h = build_pumbon2hero(sheets)
     prod = _read_prod_columns(sheets)
@@ -231,7 +236,9 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
         base = sku.rsplit("-", 1)[0] if "-" in sku else sku
         hero = p2h.get(r["style_k"]) or p2h.get(r["style_m"]) or p2h.get(base)
         if not hero:
-            continue
+            if not all_products:
+                continue
+            hero = ALL_GROUP
         pd, ad = _pdate(r["plan_date"]), _pdate(r["act_date"])
         # 26FW 시즌 관련만: 예정일 또는 실입고일이 컷오프 이후
         if not ((pd and pd >= CUTOFF) or (ad and ad >= CUTOFF)):
@@ -255,7 +262,8 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
     day_act = defaultdict(lambda: {"actual_qty": 0})
     UNPLANNED = []          # (히어로, WMS키, 수량) — 예정에 없던 WMS 입고(아래 블록에서 채움)
 
-    for hero in HERO_ORDER:
+    _hero_styles = {p.split("-")[0] for p in p2h}
+    for hero in HERO_ORDER + ([ALL_GROUP] if all_products else []):
         skus = hero_sku.get(hero, {})
         _cut = CUTOFF.isoformat()
         dbx_keys = set(dbx_actuals) if dbx_actuals is not None else set()
@@ -402,7 +410,12 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
                 if _k in _used:
                     continue
                 _base = _k.split("-")[0]
-                if _base not in _hstyles:
+                if hero == ALL_GROUP:
+                    # 전 상품 묶음 = 히어로 품번이 아닌 무탠 품번 전부(생산관리에 행이 없는 캐리오버 포함).
+                    # 바코드 미파싱(숫자) 키는 품번을 모르니 뺀다 — 아래 _unmapped 로 따로 센다.
+                    if _base in _hero_styles or not re.match(r"^M[A-Z0-9]{8}$", _base):
+                        continue
+                elif _base not in _hstyles:
                     continue
                 _act = sorted([a for a in _arr if a["date"] >= _cut], key=lambda x: x["date"])
                 _t = sum(a["qty"] for a in _act)
@@ -430,7 +443,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
         sku_list.sort(key=lambda s: (srank.get(s["status"], 9), s["next_date"] or "9999"))
         meta = lm.get(hero, {})
         heroes_out.append({
-            "name": hero, "grade": GRADE[hero],
+            "name": hero, "grade": GRADE.get(hero, ""),
             "launch": meta.get("launch"), "hero_status": meta.get("status"),
             "plan_total": h_plan, "actual_total": h_act, "sku_count": len(sku_list),
             "skus": sku_list})

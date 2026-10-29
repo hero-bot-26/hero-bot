@@ -426,7 +426,7 @@ def write_tab(sheets, sheet_id: str, grid: list[list], as_of: str) -> None:
         valueInputOption="RAW", body={"values": body}).execute()
 
 
-def load_asn_from_sheet(sheets, sheet_id: str = APP_SHEET_ID, cutoff: str | None = None) -> dict:
+def load_asn_from_sheet(sheets, sheet_id: str = APP_SHEET_ID, cutoff: str | None = None, tab: str = TAB) -> dict:
     """`_ASN` 탭 → {품번-컬러: {"qty": 통보합, "dates": [납품예정일…], "last_ins": 최근등록}}.
 
     입고 보드 상태 판정에 쓴다 — ASN 이 떠 있으면 '미입고(빨강)' 대신 '확정 대기'.
@@ -437,7 +437,7 @@ def load_asn_from_sheet(sheets, sheet_id: str = APP_SHEET_ID, cutoff: str | None
     """
     try:
         vals = sheets.spreadsheets().values().get(
-            spreadsheetId=sheet_id, range=f"'{TAB}'!A2:{LAST_COL}",
+            spreadsheetId=sheet_id, range=f"'{tab}'!A2:{LAST_COL}",
             valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
     except Exception as e:
         print(f"[_ASN] 읽기 실패 → ASN 게이트 없이 진행: {type(e).__name__}: {e}")

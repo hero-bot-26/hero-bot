@@ -112,6 +112,29 @@ jobs:
           예외부터 볼 것: '중계 결과가 낡았다'면 중계 잡 107819331466343(매시 :45) 실행 이력,
           'WMS 연결률'이면 ORD_OPT_NO·GDS_CD 형식 변경."
 
+      # 입고-발매 대시보드(/ops) 입고 계획 탭 — 오더시트 생산관리 입고예정 vs WMS 입고일자별(전 상품).
+      # ★`_OPS_ASN` 을 ASN 게이트로 읽으니 반드시 위 전 상품 ASN 스텝 **뒤**. 중계 안 탐(시트 원천만).
+      - name: 입고 계획 → 앱 시트 _OPS_INBOUND
+        id: inb_plan
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        continue-on-error: true
+        env:
+          GOOGLE_SA_JSON:           ${{ secrets.GOOGLE_SA_JSON }}
+          GOOGLE_OAUTH_CREDENTIALS: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS }}
+          GOOGLE_OAUTH_TOKEN:       ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+        run: python -m soo.hero_ops.inbound_plan --apply
+
+      - name: 입고 계획 실패 알림
+        if: ${{ steps.inb_plan.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: >-
+          python -m soo.hero_ops.notify
+          "⚠️ 입고-발매 대시보드 입고 계획(inbound_plan) 갱신 실패 ($(TZ=Asia/Seoul date '+%m/%d %H:%M') KST) —
+          /ops 입고 계획 탭이 직전 값에 머문다.
+          예외부터 볼 것: '입고일자별을 못 읽었다'면 히어로 실적 DBX 잡, 'SKU < 1500'이면 오더시트 생산관리 탭 구조 변경."
+
       # 입고-발매 대시보드(/ops) 온라인 발매 탭 — 아이템마스터 계획일 vs 판매중 전환(중계 spec 'release').
       # ★ASN 과 무관한 화면이라 실패해도 ASN 수집·알림을 막지 않는다 → continue-on-error + 아래 outcome 알림.
       - name: 온라인 발매 → 앱 시트 _OPS_LAUNCH
