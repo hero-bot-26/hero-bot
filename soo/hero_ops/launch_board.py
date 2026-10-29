@@ -6,6 +6,7 @@
   입고(ASN→WMS) 다음 단계인 "온라인에 실제로 걸렸나"를 같은 화면에서 본다.
 
 원천
+  발매일 = ★발매 캘린더와 같은 작업의뢰 '발매1'(`_OPS_PLAN`, 사용자 지시 2026-10-29). 작업의뢰에 없는 품번만 아래 아이템마스터 날짜.
   계획 = 무탠본부 아이템마스터 '무탠' 탭(기획MD팀 관리, imc_triggers 와 같은 진실소스)
          B=발매일정 C=UID D=운영품번(신품번) E=대표품번 F=컬러 G=상품명 H=발매시즌 I=팀 J=아이템 M=성별 O=MD
   실제 = release_log.RELEASE_SQL(goods_hist_management 판매중 40 전환, 무탠 전 상품 240일) — DBX 중계 spec 'release'
@@ -44,10 +45,12 @@ PAST_DAYS = 120          # 계획일 창 — 지난 것은 120일, 앞으로는 
 FUTURE_DAYS = 180
 EARLY_DAYS = 7           # 계획보다 이만큼 앞선 전환까지는 '그 발매'로 본다(키즈 전날 전환 등)
 LATE_OK_DAYS = 2         # 이보다 늦으면 지연발매
+SAME_LAUNCH_DAYS = 45    # 작업의뢰 발매일과 이만큼 안이면 같은 발매(옮겨진 일정). 실측 10/29: 옮김은 ±30일 안, 90일+ 는 다른 시즌 재발매
 MIN_ROWS = 300           # 실측 ~1,800행 — 이보다 적으면 원천이 반쯤 읽힌 것으로 보고 쓰지 않는다
 
 HEADER = ["plan", "sku", "style", "color", "name", "season", "team", "item", "gender", "md",
-          "uid", "state", "actual_at", "diff_days", "note"]
+          "uid", "state", "actual_at", "diff_days", "note", "im_plan", "plan_src"]
+PLAN_TAB = "_OPS_PLAN"   # 발매 캘린더(launch_plan) — 작업의뢰 '발매1' 발매일. 매시 CI 에서 한 시간 전 기입분을 읽는다
 
 
 def _col(n: int) -> str:
@@ -89,6 +92,45 @@ def load_plan(sheets) -> list[dict]:
     return out
 
 
+def load_req_plan(sheets) -> dict[str, list[tuple[_dt.date, set | None]]]:
+    """`_OPS_PLAN` → 품번 → [(작업의뢰 발매일, 이번 발매 컬러 집합 | None=전 컬러)]."""
+    v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{PLAN_TAB}'!A1:AZ").execute().get("values", [])
+    hi = next((i for i, r in enumerate(v[:5]) if "plan" in r and "style" in r), None)
+    if hi is None:
+        raise RuntimeError(f"[{PLAN_TAB}] 머리줄(plan·style)을 못 찾음 — 발매 캘린더 탭 구조가 바뀌었다")
+    h = v[hi]
+    ip, ist, ic = h.index("plan"), h.index("style"), h.index("launch_colors") if "launch_colors" in h else None
+    out: dict[str, list] = collections.defaultdict(list)
+    for r in v[hi + 1:]:
+        def c(i): return str(r[i]).strip() if i is not None and i < len(r) else ""
+        try:
+            d = _dt.date.fromisoformat(c(ip)[:10])
+        except ValueError:
+            continue
+        if d.year < 2020:                       # 27SS '1900-01-03' 같은 값 이상
+            continue
+        cs = {x.strip() for x in c(ic).split("·") if x.strip()} or None
+        out[c(ist)].append((d, cs))
+    print(f"[{PLAN_TAB}] 작업의뢰 발매일 {sum(map(len, out.values())):,}행 · {len(out):,}품번")
+    return out
+
+
+def pick_plan(p: dict, req: dict) -> tuple[_dt.date, str]:
+    """★발매일은 발매 캘린더(작업의뢰)와 같은 날로 본다(사용자 지시 2026-10-29).
+    아이템마스터 B열은 발매 직전·직후에야 채워지고 옮겨진 일정을 안 따라온다(우먼즈 퍼 10/21 → 작업의뢰 10/28).
+    같은 품번에 발매 행이 여럿(컬러추가·재발매)이면 그 컬러가 든 발매 → 그중 아이템마스터 날짜에 가장 가까운 것.
+    작업의뢰에 없거나 ±SAME_LAUNCH_DAYS 안에 없는(다른 시즌 발매) 품번만 아이템마스터 날짜."""
+    cands = req.get(p["style"])
+    if not cands:
+        return p["plan"], "아이템마스터"
+    color = p["sku"][9:11] if len(p["sku"]) >= 11 else p["color"]
+    near = [(d, cs) for d, cs in cands if abs((d - p["plan"]).days) <= SAME_LAUNCH_DAYS]
+    if not near:       # 작업의뢰엔 다음 시즌 재발매만 있다(26SS 발매 → 27SS 같은 품번) — 그 발매로 끌고 가지 않는다
+        return p["plan"], "아이템마스터"
+    hit = [d for d, cs in near if cs is None or color in cs] or [d for d, _ in near]
+    return min(hit, key=lambda d: (abs((d - p["plan"]).days), d)), "작업의뢰"
+
+
 def judge(p: dict, log: dict, today: _dt.date) -> tuple[str, str, str, str]:
     """→ (state, actual_at, diff_days, note)"""
     plan = p["plan"]
@@ -115,15 +157,27 @@ def judge(p: dict, log: dict, today: _dt.date) -> tuple[str, str, str, str]:
 
 def build(sheets, today: _dt.date) -> tuple[list[list], collections.Counter]:
     log = release_log.fetch(sheets)
-    plans = [p for p in load_plan(sheets)
-             if today - _dt.timedelta(days=PAST_DAYS) <= p["plan"] <= today + _dt.timedelta(days=FUTURE_DAYS)]
+    req = load_req_plan(sheets)
     cnt = collections.Counter()
+    plans, seen = [], set()
+    for p in load_plan(sheets):
+        im = p["plan"]
+        p["plan"], p["src"] = pick_plan(p, req)
+        p["im_plan"] = im
+        cnt["src:" + p["src"] + (" (날짜 다름)" if p["plan"] != im else "")] += 1
+        if (p["sku"], p["plan"]) in seen:      # 아이템마스터 두 날짜가 같은 작업의뢰 발매로 모인 것
+            cnt["src:접음"] += 1
+            continue
+        seen.add((p["sku"], p["plan"]))
+        if today - _dt.timedelta(days=PAST_DAYS) <= p["plan"] <= today + _dt.timedelta(days=FUTURE_DAYS):
+            plans.append(p)
     grid = []
     for p in sorted(plans, key=lambda x: (x["plan"], x["sku"]), reverse=True):
         st, at, d, note = judge(p, log, today)
         cnt[st] += 1
         grid.append([p["plan"].isoformat(), p["sku"], p["style"], p["color"], p["name"], p["season"],
-                     p["team"], p["item"], p["gender"], p["md"], p["uid"], st, at, d, note])
+                     p["team"], p["item"], p["gender"], p["md"], p["uid"], st, at, d, note,
+                     p["im_plan"].isoformat(), p["src"]])
     return grid, cnt
 
 
