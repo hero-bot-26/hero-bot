@@ -22,7 +22,7 @@
   입고  : 입고 완료(WMS 업체 입고, 품번 직접·ASN 무관) > ASN 통보만 > 입고 전
   온라인: 발매일 −7일 이후 첫 판매중 전환(launch_board 와 같은 규칙). 오프라인전용은 판정 제외
   분배  : 목록 매장 중 받은 매장 수(컬러 합집합). 온라인전용은 판정 제외
-  위험  : 발매 D-3 이내인데 입고 흔적 없음 / 발매 D-1·당일인데 상세페이지 미등록 컬러 / 발매일 지났는데 판매중 전환 없음
+  위험  : 발매 D-3 이내인데 입고 흔적 없음 / 예약 출고 D-3 인데 그 컬러 입고 전 / 발매 D-1·당일인데 상세페이지 미등록 컬러 / 발매일 지났는데 판매중 전환 없음
           ★'매장 0곳'은 위험으로 안 본다 — 모든 상품이 매장에 가지 않는데 작업의뢰엔 오프라인 계획 칸이 없어
             판매중인데 출고 0 인 스타일이 9~10월에만 86건(10/22). 상태(미분배)로만 보인다.
   창    : 입고·출고는 발매일 앞뒤 창 안의 것만(캐리오버 품번 오귀속 방지). 원천 보관 기간보다 오래된 발매는 '기록 없음'
@@ -53,6 +53,7 @@ INBOUND_RISK_DAYS = 3    # 발매 D-3 이내인데 입고 흔적이 없으면 �
 ASN_WINDOW = (-75, 30)   # 납품예정일이 발매일 −75~+30일
 DIST_FROM = -14          # 매장 출고는 발매일 −14일 이후
 DETAIL_RISK_DAYS = 1     # 발매 D-1·당일인데 상세페이지 미등록 컬러가 있으면 위험(사용자 지시 2026-10-23)
+PRESHIP_RISK_DAYS = (3, 14)  # 예약 출고일 D-3 ~ 지난 뒤 14일까지 그 컬러가 입고 전이면 위험(사용자 지시 2026-10-29)
 DATA_DAYS = 40           # 분배 원천은 최근 45일 — 이보다 오래된 발매의 분배는 '기록 없음'
 INB_DATA_DAYS = 160      # 입고 원천(ASN_STYLE_SQL)은 240일 — 발매 −75일 창을 빼면 160일 전 발매까지 온전하다
 MIN_ROWS = 200           # 시즌 하나당 실측 700행대 — 이보다 적으면 탭을 반쯤 읽은 것
@@ -372,10 +373,23 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                 risk.append(f"입고 흔적 없음 D-{dleft}")
             if dleft < 0 and on in ("미전환",):
                 risk.append(f"발매일 지났는데 미전환 D+{-dleft}")
+        # ★예약발매는 위 입고 조건에서 빠지니 예약 출고일 기준으로 따로 본다 — 출고 D-3 인데 그 컬러가 아직 안 들어왔으면 위험.
+        #   컬러를 못 가르면(통합·lcols 없음) 스타일 입고 상태로. Y·P 모두(사용자 지시 2026-10-29).
+        late = []
+        for c, d in sorted(pre_by_color.items()):
+            sleft = (_dt.datetime.strptime(d, "%Y%m%d").date() - today).days
+            if not (-PRESHIP_RISK_DAYS[1] <= sleft <= PRESHIP_RISK_DAYS[0]):
+                continue
+            notin = (c in miss) if (lcols and c != '통합') else inb not in ("입고 완료",)
+            if notin:
+                late.append((sleft, c))
+        if late:
+            sl = min(x[0] for x in late)
+            risk.append(f"예약 출고 전 미입고({' · '.join(c for _, c in late)}) 출고 " + (f"D-{sl}" if sl >= 0 else f"D+{-sl}"))
         if pre_src:
             cnt["preorder:" + pre_src] += 1
         for r_ in risk:
-            cnt["risk:" + r_.split(" D")[0]] += 1
+            cnt["risk:" + r_.split("(")[0].split(" D")[0]] += 1
         cnt[p["season"]] += 1
         grid.append([p["season"], plan.isoformat() if plan else "", sty, p["line"], p["item"], p["type"], p["hero"],
                      p["name"], p["sku"], p["plan_qty"],
