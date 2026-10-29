@@ -141,16 +141,29 @@ def build_pumbon2hero(sheets):
     raise RuntimeError("입고 보드 히어로 매핑을 어느 탭에서도 못 읽었습니다 — 상품MAP 탭 구성 확인 필요")
 
 
+# 읽는 열의 6행 머리말 — 열이 밀리면 조용히 틀린 열을 읽지 말고 멈춘다([[CLAUDE 1-1]]).
+PROD_HEADER = {"E": "오더구분", "G": "오더차수", "H": "PO넘버", "I": "품번-컬러", "K": "신품번", "L": "품명",
+               "Z": "CL 명", "AA": "발주량", "AK": "금주입고일", "AL": "금주입고량",
+               "AO": "실입고일", "AP": "실입고량"}
+
+
 def _read_prod_columns(sheets):
     """생산관리 필요한 열만 batchGet(28k행 부하 감소). 행 인덱스로 정렬."""
     ranges = [f"'{PROD_TAB}'!I7:I", f"'{PROD_TAB}'!K7:M",      # I=8 / K:M=10~12
               f"'{PROD_TAB}'!Z7:AA", f"'{PROD_TAB}'!AK7:AL",   # Z:AA=25~26 / AK:AL=36~37
-              f"'{PROD_TAB}'!AO7:AP"]                          # AO:AP=40~41
+              f"'{PROD_TAB}'!AO7:AP", f"'{PROD_TAB}'!E7:H",    # AO:AP=40~41 / E:H=오더구분·세부·차수·PO
+              f"'{PROD_TAB}'!A6:AP6"]
     res = sheets.spreadsheets().values().batchGet(
         spreadsheetId=PROD_SID, ranges=ranges,
         valueRenderOption="FORMATTED_VALUE").execute()
     vr = res.get("valueRanges", [])
     cols = [v.get("values", []) for v in vr]
+    hdr = (cols.pop() or [[]])[0]
+    _ci = lambda L: sum((ord(ch) - 64) * 26 ** i for i, ch in enumerate(reversed(L))) - 1
+    bad = {L: (hdr[_ci(L)] if _ci(L) < len(hdr) else "") for L, want in PROD_HEADER.items()
+           if want not in str(hdr[_ci(L)] if _ci(L) < len(hdr) else "").replace("\n", " ")}
+    if bad:
+        raise RuntimeError(f"[생산관리] 6행 머리말이 예상과 다름(열 밀림?) {bad} — 기대 {PROD_HEADER}")
     n = max((len(c) for c in cols), default=0)
 
     def cell(ci, ri, off=0):
@@ -170,8 +183,44 @@ def _read_prod_columns(sheets):
             "plan_qty": cell(3, ri, 1),               # AL 입고예정량
             "act_date": cell(4, ri, 0),               # AO 실입고일
             "act_qty": cell(4, ri, 1),                # AP 실입고량
+            "ord_kind": cell(5, ri, 0),               # E 오더구분
+            "ord_no": cell(5, ri, 2),                 # G 오더차수
+            "po": cell(5, ri, 3),                     # H PO넘버
         })
+    _cap_plans(rows)
     return rows
+
+
+def _cap_plans(rows) -> None:
+    """★한 오더(PO)의 입고예정을 발주량으로 막는다 → r["plan_eff"] (2026-10-29).
+
+    생산관리는 한 PO 를 분할 입고 행으로 쪼개 적는데, 금주입고량이 **겹쳐 적힌다**:
+      · 첫 행에 PO 전체(25,000) + 분할 행마다 실제 분량(14,000·8,050·3,270…) → 예정 2배 (MMFNP4A19-LI 4차)
+      · 분할 6행에 같은 예정(2,768 / 9/2)이 복사돼 있음 (MMFPK8B70-ML)
+      · 발주 62,000 인데 예정 행 합 118,000 — 실입고 28,300+33,700 으로 끝났고 30,000·26,000 행은 옛 예정 (MMFUBBZ01-BK)
+    부푼 예정이 FIFO 로 WMS 확정을 먼저 먹어 **뒤 차수가 거짓 '미입고'**가 됐다(10/29 전 상품 미입고 243차수 중 다수).
+    규칙: 같은 (품번-컬러, PO 또는 오더구분·차수) 묶음의 예정 합 ≤ max(발주량, 시트 실입고 합).
+      실입고가 적힌 행부터 날짜순으로 채우고, 남는 용량만 아직 안 들어온 행에 준다. 발주량이 비면 손대지 않는다."""
+    grp = defaultdict(list)
+    for i, r in enumerate(rows):
+        r["plan_eff"] = _num(r["plan_qty"])
+        key = r["po"] or (f"{r['ord_kind']}|{r['ord_no']}" if (r["ord_kind"] or r["ord_no"]) else "")
+        if r["sku"] and key:
+            grp[(r["sku"], key)].append(r)
+    cut_n = cut_q = 0
+    for rs in grp.values():
+        ordered = max((_num(r["ordqty"]) for r in rs), default=0)
+        if not ordered:
+            continue
+        cap = max(ordered, sum(_num(r["act_qty"]) for r in rs))
+        order = sorted(rs, key=lambda r: (0 if _num(r["act_qty"]) else 1, str(_pdate(r["plan_date"]) or "")))
+        for r in order:
+            take = min(r["plan_eff"], cap)
+            if take < r["plan_eff"]:
+                cut_n += 1; cut_q += r["plan_eff"] - take
+            r["plan_eff"] = take
+            cap -= take
+    print(f"[생산관리] 오더 {len(grp):,}묶음 · 발주량 넘는 겹친 예정 {cut_n:,}행 {cut_q:,}개 덜어냄")
 
 
 SALES_SHEET_ID = "1iHH2qG8Uj5vmlC3aXkey96usktWODmguDPD_ToT2rfA"   # 히어로 실적 (자동) — DBX 잡 산출
@@ -230,6 +279,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
         "sku": "", "style": "", "name": "", "color": "",
         "planned": [], "actual": [], "ordered_total": 0}))
 
+    _cut0 = CUTOFF.isoformat()
     for r in prod:
         style = r["style_k"] or r["style_m"]
         sku = r["sku"]
@@ -249,7 +299,10 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
         cell["sku"], cell["style"], cell["color"] = sku, style, r["color"]
         cell["name"] = cell["name"] or r["name"]
         cell["ordered_total"] += _num(r["ordqty"])
-        pq = _num(r["plan_qty"])
+        pq = r.get("plan_eff", _num(r["plan_qty"]))
+        if ad and ad < CUTOFF and pd and pd >= CUTOFF:
+            # 예정은 컷오프 뒤인데 실제론 앞서 들어온 차수 — 그 날부터 확정을 읽어야 한다(MMEPK302 3/27 입고·6/1 예정)
+            cell["from"] = min(cell.get("from") or _cut0, ad.isoformat())
         if pd and pq:
             cell["planned"].append({"date": pd.isoformat(), "qty": pq})
         aq = _num(r["act_qty"])
@@ -273,15 +326,20 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
         merged = OrderedDict()
         for code, c in skus.items():
             style = c["style"]
+            _alt = f"{style}-{code.rsplit('-', 1)[1]}" if style and "-" in code else ""
             if dbx_actuals is not None and code not in dbx_keys and style and style in dbx_keys:
                 out_key, dbx_key = style, style           # 벨트 폴백 → style로 병합
+            elif dbx_actuals is not None and code not in dbx_keys and _alt in dbx_keys:
+                # ★품번-컬러 칸에 구품번(MMEPK302-BK)이 남은 행 — WMS 는 신품번(MMEPK6Z02-BK)으로 받는다
+                out_key, dbx_key = code, _alt
             else:
                 out_key, dbx_key = code, code
             if out_key not in merged:
                 merged[out_key] = {"sku": out_key, "style": style, "name": c["name"],
                                    "color": c["color"], "planned": [], "actual_sheet": [],
-                                   "ordered_total": 0, "dbx_key": dbx_key, "n": 0}
+                                   "ordered_total": 0, "dbx_key": dbx_key, "n": 0, "from": _cut}
             m = merged[out_key]
+            m["from"] = min(m["from"], c.get("from") or _cut)
             m["planned"] += c["planned"]; m["actual_sheet"] += c["actual"]
             m["ordered_total"] += c["ordered_total"]; m["n"] += 1
             if not m["name"]:
@@ -293,7 +351,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
             plan_total = sum(p["qty"] for p in planned)
             # 실적 소스: DBX(WMS) 있으면 그걸로(컷오프 이후만), 없으면 시트 AO/AP
             if dbx_actuals is not None:
-                actual = sorted([a for a in dbx_actuals.get(c["dbx_key"], []) if a["date"] >= _cut],
+                actual = sorted([a for a in dbx_actuals.get(c["dbx_key"], []) if a["date"] >= c["from"]],
                                 key=lambda x: x["date"])
             else:
                 actual = sorted(c["actual_sheet"], key=lambda x: x["date"])
@@ -301,7 +359,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
             # ★시트 AO/AP(실입고일·량) = 담당자가 적는 '실제로 들어온 내용'. WMS 확정과 별개 트랙으로 보관.
             #   WMS는 커버리지가 넓고(시트 공란인 70 SKU·197k개도 잡음) 시트는 확정 전 도착을 먼저 알려준다.
             #   → 실적은 WMS 기준을 쓰되, WMS가 0인데 시트에 입고가 적혀 있으면 '미입고' 빨간불을 켜지 않는다.
-            sheet_actual = sorted([a for a in c["actual_sheet"] if a["date"] >= _cut],
+            sheet_actual = sorted([a for a in c["actual_sheet"] if a["date"] >= c["from"]],
                                   key=lambda x: x["date"])
             sheet_total = sum(a["qty"] for a in sheet_actual)
             # 차수별 실입고 배분(FIFO): 실입고를 예정 차수 순서대로 채움 → '이 차수 예정만큼 들어왔나'
@@ -320,7 +378,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
                 p["recv"] = _got
                 p["recv_dates"] = sorted(set(_fd))
             # 예정 초과분(예정에 귀속 안 된 실입고) = 예정 외 입고
-            leftover = [{"date": a["date"], "qty": a["qty"]} for a in _pool if a["qty"] > 0]
+            leftover = [{"date": a["date"], "qty": a["qty"]} for a in _pool if a["qty"] > 0 and a["date"] >= _cut]
             # 시트 실입고도 같은 FIFO로 차수에 귀속(srecv/sdates) — '계획이 밀려 나중에 들어온 물량'을
             # 그 차수 앞에 붙여 준다. 수량 집계엔 쓰지 않고 상태 판정·표기용.
             _spool = [dict(a) for a in sheet_actual]
