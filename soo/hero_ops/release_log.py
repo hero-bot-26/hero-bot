@@ -121,6 +121,35 @@ def fetch_detail(sheets, log=print) -> tuple[set[str], set[str], dict[str, bool]
     return empty, pending, integrated
 
 
+# ★상품명 보충(2026-10-26, 사용자 "비제스트 이름으로 채워줘") — 작업의뢰 '스타일명' 칸이 빈 행(MWFJP9B13 등 10/26 10건)은
+#   화면에 품번만 떴다. 품번(9자) → 비제스트 상품명 하나: 통합 UID(style_no 에 컬러 없음)를 먼저, 없으면 가장 최근 등록 UID.
+#   끝의 '[컬러]' 꼬리는 읽는 쪽(fetch_names)이 뗀다. 10/26 실측 무탠 12,015품번. 중계 spec 'names'.
+NAMES_SQL = """
+SELECT substr(style_no, 1, 9) AS style,
+       max_by(goods_nm, CASE WHEN style_no NOT LIKE '%-%' THEN 1 ELSE 0 END * 100000000 + goods_no) AS goods_nm
+FROM musinsa.bizest.goods
+WHERE brand LIKE 'musinsastandard%'
+  AND coalesce(sale_stat_cl, '') <> '-90'
+  AND length(style_no) >= 9
+GROUP BY substr(style_no, 1, 9)
+"""
+NAMES_MIN_ROWS = 5000
+
+
+def fetch_names(sheets, log=print) -> dict[str, str]:
+    """품번(9자) → 비제스트 상품명(끝 '[컬러]' 제거)."""
+    import re
+    from soo.hero_ops import dbx_relay
+    dbx_relay.configure(sheets, "names", max_age_h=30)
+    try:
+        rows = dbx_relay.rows(NAMES_SQL, log)
+    finally:
+        dbx_relay._cfg["sheets"] = None
+    if len(rows) < NAMES_MIN_ROWS:
+        raise RuntimeError(f"상품명 {len(rows)}행 < {NAMES_MIN_ROWS} — 부분 결과 의심")
+    return {str(s).strip(): re.sub(r"\s*\[[^\]]*\]\s*$", "", str(n or "")).strip() for s, n in rows if str(n or "").strip()}
+
+
 MIN_ROWS = 1000   # 실측 ~1만 행(240일) — 이보다 적으면 부분 결과로 보고 쓰지 않는다
 
 
