@@ -140,7 +140,8 @@ def net_asn(asn: dict, wms: dict, linked: dict) -> tuple[dict, collections.Count
     return out, cnt
 
 
-def build_events(board: dict, asn: dict, today: datetime.date) -> tuple[list[list], collections.Counter]:
+def build_events(board: dict, asn: dict, today: datetime.date,
+                 wms: dict | None = None) -> tuple[list[list], collections.Counter]:
     t = today.isoformat()
     late_plan = (today - datetime.timedelta(days=GRACE)).isoformat()
     late_asn = (today - datetime.timedelta(days=ASN_LATE_DAYS)).isoformat()
@@ -158,7 +159,15 @@ def build_events(board: dict, asn: dict, today: datetime.date) -> tuple[list[lis
             s = {"sku": s0["sku"], "style": s0["style"], "name": s0["name"], "color": s0["color"], "hero": h["name"]}
             seen.add(s0["sku"])
             lots = [dict(p) for p in sorted(s0["planned"], key=lambda p: p["date"])]
-            pool = ([{"date": a["date"], "qty": a["qty"], "kind": "입고"} for a in s0["actual"]]
+            # 보드 실적은 컷오프(6/1) 뒤 WMS 만 담는다 → 컷오프 전에 일찍 들어온 차수가 '지연'으로 남았다
+            #   (MEFSC0A51-BK 6/1 예정 1,000 ← 5/22 입고, 2026-10-30). 첫 차수 −EARLY_DAYS 까지 WMS 를 다시 붙이고,
+            #   그 앞당긴 입고는 차수를 채운 만큼만 줄로 낸다(옛 시즌 입고가 화면에 쏟아지지 않게).
+            pre = []
+            if wms is not None and lots and s0.get("dbx_key") and s0.get("from"):
+                lo0 = (datetime.date.fromisoformat(lots[0]["date"]) - datetime.timedelta(days=EARLY_DAYS)).isoformat()
+                pre = [{"date": a["date"], "qty": a["qty"], "kind": "입고", "pre": True}
+                       for a in wms.get(s0["dbx_key"], []) if lo0 <= a["date"] < s0["from"]]
+            pool = (pre + [{"date": a["date"], "qty": a["qty"], "kind": "입고"} for a in s0["actual"]]
                     + [dict(a, kind="ASN") for a in asn.get(s0["sku"], [])])
             pool.sort(key=lambda a: (a["date"], a["kind"] != "입고"))
             for a in pool:
@@ -190,7 +199,11 @@ def build_events(board: dict, asn: dict, today: datetime.date) -> tuple[list[lis
                     a["qty"] -= take; p["left"] -= take
             sku_season = next((p.get("season") for p in reversed(lots) if p.get("season")), "")
             for a in pool:
-                if a["kind"] == "입고":
+                if a.get("pre"):
+                    if a["qty"] - a["left"] > 0:
+                        emit(a["date"], "입고", s, a["qty"] - a["left"], a["season"] or sku_season)
+                        cnt["컷오프 전 입고로 채움"] += a["qty"] - a["left"]
+                elif a["kind"] == "입고":
                     emit(a["date"], "입고", s, a["qty"], a["season"] or sku_season)
                 else:
                     emit(a["date"], "ASN", s, a["qty"], a["season"] or sku_season, a["date"] <= late_asn,
@@ -263,7 +276,7 @@ def main() -> None:
     print(f"[ASN] 뒤에 들어온 WMS 로 지운 잔량 {ncnt['지운 ASN 잔량']:,}개")
     asn_gate = {k: {"qty": sum(x["qty"] for x in v), "dates": sorted({x["date"] for x in v})} for k, v in asn.items()}
     board = IB.build_inbound_board(sheets, as_of=today, dbx_actuals=dbx, asn=asn_gate, all_products=True)
-    grid, cnt = build_events(board, asn, today)
+    grid, cnt = build_events(board, asn, today, dbx)
 
     print(f"[{TAB}] {len(grid):,}행 · " + " · ".join(f"{k} {v:,}개" for k, v in sorted(cnt.items()))
           + f" · WMS ~{wms_max}")

@@ -434,6 +434,7 @@ def build_inbound_board(sheets, as_of=None, launch_meta=None, dbx_actuals=None, 
                 status = "예정"
             sku_list.append({
                 "sku": code, "style": c["style"], "name": c["name"], "color": _color,
+                "dbx_key": c["dbx_key"], "from": c["from"],
                 "planned": planned, "actual": actual, "leftover": leftover,
                 "plan_total": plan_total, "actual_total": act_total,
                 "sheet_total": sheet_total, "sheet_actual": sheet_actual,
