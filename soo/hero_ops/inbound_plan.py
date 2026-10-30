@@ -36,13 +36,27 @@ from soo.hero_ops.asn_ingest import APP_SHEET_ID, LAST_COL as ASN_LAST_COL
 HERO = Path(__file__).resolve().parents[2]
 TAB = "_OPS_INBOUND"
 ASN_TAB = "_OPS_ASN"
-HEADER = ["date", "kind", "sku", "style", "name", "color", "hero", "season", "qty", "late", "asn_no", "supplier", "cat"]
+HEADER = ["date", "kind", "sku", "style", "name", "color", "hero", "season", "qty", "late", "asn_no", "supplier", "cat", "cat2"]
 # 화면 카테고리 태그(2026-10-30 사용자: 맨/우먼/키즈/잡화/신발/언더웨어/홈). 정본은 PLM `데이터` 탭의 `대복종`·`브랜드라인`
 #   ([[CLAUDE 1-11]] 문자열 추론 금지) — 대복종이 먼저(키즈 언더웨어 = 언더웨어, ASN 알림 MD 팀장 배정과 같은 순서).
 #   PLM 에 없는 품번(지난 시즌 등)만 품번 앞 2자로 폴백, 그것도 모르면 '기타'.
 CAT_BIG = {"Underwear": "언더웨어", "Shoes": "신발", "Goods": "홈", "Accessory": "잡화"}
 CAT_LINE = {"MAN": "맨", "WOMAN": "우먼", "KIDS": "키즈", "ACCESSORY": "잡화"}
 CAT_PREFIX = {"MM": "맨", "MW": "우먼", "MK": "키즈", "ME": "잡화", "MH": "홈"}
+# 카테고리 안 묶음(cat2, 2026-10-30 사용자: "카테고리 안에서는 그룹으로"). 의류는 (대복종, 중복종) — 같은 중복종(Fleece·Sweat·Sweater)이
+#   아우터·상의·하의에 다 있어 대복종과 짝으로 본다. 잡화는 중복종, 신발·언더웨어·홈은 중복종이 대복종과 같아 소복종으로.
+CAT2_MID = {("Outer", "Blazer"): "블레이저", ("Outer", "Coat"): "코트", ("Outer", "Down"): "다운", ("Outer", "Fleece"): "플리스 아우터",
+            ("Outer", "Outer"): "재킷·점퍼", ("Outer", "Sweat"): "스웨트 집업", ("Outer", "Sweater"): "가디건",
+            ("Inner", "Blouse"): "블라우스", ("Inner", "Dress"): "원피스", ("Inner", "Fleece"): "플리스 상의", ("Inner", "Shirt"): "셔츠",
+            ("Inner", "Sweat"): "스웨트셔츠", ("Inner", "Sweater"): "니트", ("Inner", "T-shirt"): "티셔츠",
+            ("Bottom", "Fleece"): "플리스 팬츠", ("Bottom", "Pants"): "팬츠", ("Bottom", "Skirt"): "스커트",
+            ("Bottom", "Sweat"): "스웨트팬츠", ("Bottom", "Sweater"): "니트 하의",
+            ("Accessory", "Bag/Wallet"): "가방·지갑", ("Accessory", "Belt"): "벨트", ("Accessory", "Cap"): "모자",
+            ("Accessory", "Glove"): "장갑", ("Accessory", "Jewerly"): "주얼리", ("Accessory", "Muffler"): "머플러",
+            ("Accessory", "Socks"): "양말", ("Accessory", "Tie"): "타이"}
+CAT2_SMALL = {"Boots": "부츠", "Dress Shoes": "구두", "Sandals": "샌들", "Slides": "슬라이드", "Sneakers": "스니커즈",
+              "Bra": "브라", "Homewear": "홈웨어", "Innerwear Bottom": "이너 하의", "Innerwear Top": "이너 상의", "Panties": "팬티",
+              "Umbrella": "우산", "Mask": "마스크", "ETC": "기타 생활용품"}
 EARLY_DAYS = 60          # 예정일보다 이만큼 앞선 입고까지만 그 차수를 채운 것으로 본다
 GRACE = IB.CONFIRM_GRACE_DAYS   # 예정일 + 3일이 지나도 안 덮였으면 지연(WMS 확정은 하루 늦게 온다)
 ASN_LATE_DAYS = 2        # ASN 입고 예정일 + 2일이 지나도 WMS 확정이 없으면 지연
@@ -247,8 +261,8 @@ def build_events(board: dict, asn: dict, today: datetime.date,
     return out, cnt
 
 
-def load_categories(sheets) -> dict[str, str]:
-    """PLM `데이터` 탭 → {style_no: 카테고리}. 대복종 → 브랜드라인 순. 같은 style 이 여러 행이면 먼저 찬 값."""
+def load_categories(sheets) -> dict[str, tuple[str, str]]:
+    """PLM `데이터` 탭 → {style_no: (카테고리, 카테고리 안 묶음)}. 대복종 → 브랜드라인 순. 같은 style 이 여러 행이면 먼저 찬 값."""
     from soo.hero_ops import asn_notify as N
     v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{N.PLM_TAB}'!A1:AZ",
                                            valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
@@ -263,19 +277,21 @@ def load_categories(sheets) -> dict[str, str]:
     out = {}
     for r in v[1:]:
         st = g(r, "style_no")
-        if not st or out.get(st):
+        if not st or (out.get(st) or ("",))[0]:
             continue
         line = g(r, "브랜드라인").upper()
-        out[st] = CAT_BIG.get(g(r, "대복종")) or next((c for k, c in CAT_LINE.items() if f"({k})" in line), "")
+        big, mid = g(r, "대복종"), g(r, "중복종")
+        out[st] = (CAT_BIG.get(big) or next((c for k, c in CAT_LINE.items() if f"({k})" in line), ""),
+                   CAT2_MID.get((big, mid)) or CAT2_SMALL.get(g(r, "소복종")) or "")
     return out
 
 
-def add_categories(grid: list[list], cats: dict[str, str]) -> collections.Counter:
+def add_categories(grid: list[list], cats: dict[str, tuple[str, str]]) -> collections.Counter:
     src = collections.Counter()
     for r in grid:
-        c = cats.get(r[3], "")
+        c, c2 = cats.get(r[3], ("", ""))
         src["PLM" if c else "접두" if r[3][:2] in CAT_PREFIX else "기타"] += 1
-        r.append(c or CAT_PREFIX.get(r[3][:2], "기타"))
+        r += [c or CAT_PREFIX.get(r[3][:2], "기타"), c2 or "기타"]
     return src
 
 
@@ -326,7 +342,8 @@ def main() -> None:
     grid, cnt = build_events(board, asn, today, dbx)
     csrc = add_categories(grid, load_categories(sheets))
     print("[카테고리] 근거 " + " · ".join(f"{k} {v:,}행" for k, v in csrc.most_common())
-          + " · " + " · ".join(f"{k} {v:,}" for k, v in collections.Counter(r[-1] for r in grid).most_common()))
+          + " · " + " · ".join(f"{k} {v:,}" for k, v in collections.Counter(r[-2] for r in grid).most_common())
+          + " · 묶음 미상 " + f"{sum(r[-1] == '기타' for r in grid):,}행")
 
     print(f"[{TAB}] {len(grid):,}행 · " + " · ".join(f"{k} {v:,}개" for k, v in sorted(cnt.items()))
           + f" · WMS ~{wms_max}")
