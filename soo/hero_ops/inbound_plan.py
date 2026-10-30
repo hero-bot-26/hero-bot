@@ -36,7 +36,13 @@ from soo.hero_ops.asn_ingest import APP_SHEET_ID, LAST_COL as ASN_LAST_COL
 HERO = Path(__file__).resolve().parents[2]
 TAB = "_OPS_INBOUND"
 ASN_TAB = "_OPS_ASN"
-HEADER = ["date", "kind", "sku", "style", "name", "color", "hero", "season", "qty", "late", "asn_no", "supplier"]
+HEADER = ["date", "kind", "sku", "style", "name", "color", "hero", "season", "qty", "late", "asn_no", "supplier", "cat"]
+# 화면 카테고리 태그(2026-10-30 사용자: 맨/우먼/키즈/잡화/신발/언더웨어/홈). 정본은 PLM `데이터` 탭의 `대복종`·`브랜드라인`
+#   ([[CLAUDE 1-11]] 문자열 추론 금지) — 대복종이 먼저(키즈 언더웨어 = 언더웨어, ASN 알림 MD 팀장 배정과 같은 순서).
+#   PLM 에 없는 품번(지난 시즌 등)만 품번 앞 2자로 폴백, 그것도 모르면 '기타'.
+CAT_BIG = {"Underwear": "언더웨어", "Shoes": "신발", "Goods": "홈", "Accessory": "잡화"}
+CAT_LINE = {"MAN": "맨", "WOMAN": "우먼", "KIDS": "키즈", "ACCESSORY": "잡화"}
+CAT_PREFIX = {"MM": "맨", "MW": "우먼", "MK": "키즈", "ME": "잡화", "MH": "홈"}
 EARLY_DAYS = 60          # 예정일보다 이만큼 앞선 입고까지만 그 차수를 채운 것으로 본다
 GRACE = IB.CONFIRM_GRACE_DAYS   # 예정일 + 3일이 지나도 안 덮였으면 지연(WMS 확정은 하루 늦게 온다)
 ASN_LATE_DAYS = 2        # ASN 입고 예정일 + 2일이 지나도 WMS 확정이 없으면 지연
@@ -241,6 +247,38 @@ def build_events(board: dict, asn: dict, today: datetime.date,
     return out, cnt
 
 
+def load_categories(sheets) -> dict[str, str]:
+    """PLM `데이터` 탭 → {style_no: 카테고리}. 대복종 → 브랜드라인 순. 같은 style 이 여러 행이면 먼저 찬 값."""
+    from soo.hero_ops import asn_notify as N
+    v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{N.PLM_TAB}'!A1:AZ",
+                                           valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+    if not v:
+        return {}
+    h = [str(c).strip() for c in v[0]]
+    if "style_no" not in h or "대복종" not in h:
+        print(f"[카테고리] `{N.PLM_TAB}` 에 style_no/대복종 열이 없다 {h[:12]} → 품번 접두 폴백만")
+        return {}
+    I = {k: i for i, k in enumerate(h)}
+    g = lambda r, k: str(r[I[k]]).strip() if k in I and I[k] < len(r) else ""
+    out = {}
+    for r in v[1:]:
+        st = g(r, "style_no")
+        if not st or out.get(st):
+            continue
+        line = g(r, "브랜드라인").upper()
+        out[st] = CAT_BIG.get(g(r, "대복종")) or next((c for k, c in CAT_LINE.items() if f"({k})" in line), "")
+    return out
+
+
+def add_categories(grid: list[list], cats: dict[str, str]) -> collections.Counter:
+    src = collections.Counter()
+    for r in grid:
+        c = cats.get(r[3], "")
+        src["PLM" if c else "접두" if r[3][:2] in CAT_PREFIX else "기타"] += 1
+        r.append(c or CAT_PREFIX.get(r[3][:2], "기타"))
+    return src
+
+
 def write(sheets, grid: list[list], label: str) -> None:
     sid = APP_SHEET_ID
     meta = sheets.spreadsheets().get(spreadsheetId=sid, fields="sheets.properties(title,sheetId,gridProperties)").execute()
@@ -286,6 +324,9 @@ def main() -> None:
     asn_gate = {k: {"qty": sum(x["qty"] for x in v), "dates": sorted({x["date"] for x in v})} for k, v in asn.items()}
     board = IB.build_inbound_board(sheets, as_of=today, dbx_actuals=dbx, asn=asn_gate, all_products=True)
     grid, cnt = build_events(board, asn, today, dbx)
+    csrc = add_categories(grid, load_categories(sheets))
+    print("[카테고리] 근거 " + " · ".join(f"{k} {v:,}행" for k, v in csrc.most_common())
+          + " · " + " · ".join(f"{k} {v:,}" for k, v in collections.Counter(r[-1] for r in grid).most_common()))
 
     print(f"[{TAB}] {len(grid):,}행 · " + " · ".join(f"{k} {v:,}개" for k, v in sorted(cnt.items()))
           + f" · WMS ~{wms_max}")
