@@ -40,6 +40,8 @@ HEADER = ["date", "kind", "sku", "style", "name", "color", "hero", "season", "qt
 EARLY_DAYS = 60          # 예정일보다 이만큼 앞선 입고까지만 그 차수를 채운 것으로 본다
 GRACE = IB.CONFIRM_GRACE_DAYS   # 예정일 + 3일이 지나도 안 덮였으면 지연(WMS 확정은 하루 늦게 온다)
 ASN_LATE_DAYS = 2        # ASN 입고 예정일 + 2일이 지나도 WMS 확정이 없으면 지연
+ASN_REISSUE_DAYS = 14    # 같은 컬러·같은 통보 수량 ASN 이 이 안에 또 오면 다시 올린 것(옛 통보 미취소)으로 본다
+ASN_NET_DAYS = 30       # ASN 날짜부터 이 안에 같은 컬러로 들어온(ASN 에 안 이어진) WMS 입고는 그 통보분으로 본다
 MIN_ROWS = 3000          # 10/29 실측 ~1.5만 행 — 이보다 적으면 원천 부분 로딩으로 보고 쓰지 않는다
 
 
@@ -51,8 +53,14 @@ def _col(n: int) -> str:
     return s
 
 
-def load_asn_pending(sheets) -> dict[str, list[dict]]:
-    """`_OPS_ASN` → 품번-컬러 → [ASN 잔량(통보 − 중복 − WMS 확정)]. 취소·잔량 0 은 뺀다."""
+def _ymd(s: str) -> str:
+    s = str(s).strip().split(".")[0].replace("-", "")
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else ""
+
+
+def load_asn_pending(sheets, linked: dict | None = None) -> dict[str, list[dict]]:
+    """`_OPS_ASN` → 품번-컬러 → [ASN 잔량(통보 − 중복 − WMS 확정)]. 취소·잔량 0 은 뺀다.
+    linked 를 주면 WMS 에 이어진 확정분 {품번-컬러: [{date, recv_dates, qty}]} 을 채운다(net_asn 용)."""
     v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{ASN_TAB}'!A2:{ASN_LAST_COL}",
                                            valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
     if len(v) < 2:
@@ -70,14 +78,66 @@ def load_asn_pending(sheets) -> dict[str, list[dict]]:
         e = str(g("eindt")).split(".")[0]
         if len(e) != 8:
             continue
-        pend = IB._num(g("qty")) - IB._num(g("dup_qty")) - IB._num(g("recv_qty"))
+        if linked is not None and IB._num(g("recv_qty")) > 0:
+            linked.setdefault(str(g("sku")).strip(), []).append({
+                "date": _ymd(e), "qty": IB._num(g("recv_qty")),
+                "recv_dates": [d for d in (_ymd(x) for x in str(g("recv_dates")).split(",")) if d]})
+        pend =IB._num(g("qty")) - IB._num(g("dup_qty")) - IB._num(g("recv_qty"))
         if pend <= 0:
             continue
         out[str(g("sku")).strip()].append({
-            "date": f"{e[:4]}-{e[4:6]}-{e[6:8]}", "qty": pend, "recv": IB._num(g("recv_qty")), "asn_no": str(g("asn_no")),
+            "date": f"{e[:4]}-{e[4:6]}-{e[6:8]}", "qty": pend, "asn_qty": IB._num(g("qty")), "recv": IB._num(g("recv_qty")), "asn_no": str(g("asn_no")),
             "supplier": str(g("supplier")), "name": str(g("name")), "color": str(g("color_nm")),
             "style": str(g("style")), "hero": str(g("hero"))})
     return out
+
+
+def net_asn(asn: dict, wms: dict, linked: dict) -> tuple[dict, collections.Counter]:
+    """ASN 잔량에서 그 뒤 같은 컬러로 들어온 WMS 입고(ASN 에 안 이어진 것)를 지운다.
+    업체가 같은 물량을 ASN 으로 여러 번 다시 올리고 옛 통보를 취소하지 않으면, WMS 는 한 번만 들어오는데
+    옛 통보가 전부 'ASN 지연'으로 남는다(MWBCTBZ03 10/13·13·14·16 재통보 → 10/23 입고, 2026-10-30 사용자 지적).
+    WMS 한 개는 통보 한 개만 지운다 — 이미 ASN 에 이어진 확정분(recv_qty)을 먼저 빼고, 남은 입고를 날짜순으로.
+    그 전에 다시 올린 통보(같은 컬러·같은 통보 수량·ASN_REISSUE_DAYS 안)는 가장 늦은 것 하나만 남긴다."""
+    cnt = collections.Counter()
+    out = {}
+    for sku, arr in asn.items():
+        arr = sorted(arr, key=lambda x: x["date"])
+        uniq = []
+        for a in arr:
+            prev = next((u for u in reversed(uniq) if u.get("asn_qty") and u["asn_qty"] == a.get("asn_qty")
+                         and (datetime.date.fromisoformat(a["date"])
+                              - datetime.date.fromisoformat(u["date"])).days <= ASN_REISSUE_DAYS), None)
+            if prev is not None:
+                cnt["재통보로 합친 잔량"] += prev["qty"]
+                uniq.remove(prev)
+            uniq.append(a)
+        arr = uniq
+        pool = [dict(w) for w in wms.get(sku, [])]
+        for L in sorted(linked.get(sku, []), key=lambda x: x["date"]):
+            need = L["qty"]
+            for pick in ([w for w in pool if w["date"] in L["recv_dates"]], [w for w in pool if w["date"] >= L["date"]]):
+                for w in pick:
+                    take = min(need, w["qty"]); w["qty"] -= take; need -= take
+                    if need <= 0:
+                        break
+                if need <= 0:
+                    break
+        kept = []
+        for a in sorted(arr, key=lambda x: x["date"]):
+            hi = (datetime.date.fromisoformat(a["date"]) + datetime.timedelta(days=ASN_NET_DAYS)).isoformat()
+            left = a["qty"]
+            for w in pool:
+                if left <= 0:
+                    break
+                if w["qty"] <= 0 or not (a["date"] <= w["date"] <= hi):
+                    continue
+                take = min(left, w["qty"]); w["qty"] -= take; left -= take
+            cnt["지운 ASN 잔량"] += a["qty"] - left
+            if left > 0:
+                kept.append(dict(a, qty=left))
+        if kept:
+            out[sku] = kept
+    return out, cnt
 
 
 def build_events(board: dict, asn: dict, today: datetime.date) -> tuple[list[list], collections.Counter]:
@@ -197,7 +257,10 @@ def main() -> None:
     if not dbx:
         raise RuntimeError("'입고일자별'(WMS 입고확정)을 못 읽었다 — 입고 줄이 통째로 비니 쓰지 않는다")
     wms_max = max(x["date"] for v in dbx.values() for x in v)
-    asn = load_asn_pending(sheets)
+    linked = {}
+    asn = load_asn_pending(sheets, linked)
+    asn, ncnt = net_asn(asn, dbx, linked)
+    print(f"[ASN] 뒤에 들어온 WMS 로 지운 잔량 {ncnt['지운 ASN 잔량']:,}개")
     asn_gate = {k: {"qty": sum(x["qty"] for x in v), "dates": sorted({x["date"] for x in v})} for k, v in asn.items()}
     board = IB.build_inbound_board(sheets, as_of=today, dbx_actuals=dbx, asn=asn_gate, all_products=True)
     grid, cnt = build_events(board, asn, today)
