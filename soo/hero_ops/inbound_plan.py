@@ -40,7 +40,8 @@ HEADER = ["date", "kind", "sku", "style", "name", "color", "hero", "season", "qt
 EARLY_DAYS = 60          # 예정일보다 이만큼 앞선 입고까지만 그 차수를 채운 것으로 본다
 GRACE = IB.CONFIRM_GRACE_DAYS   # 예정일 + 3일이 지나도 안 덮였으면 지연(WMS 확정은 하루 늦게 온다)
 ASN_LATE_DAYS = 2        # ASN 입고 예정일 + 2일이 지나도 WMS 확정이 없으면 지연
-ASN_REISSUE_DAYS = 14    # 같은 컬러·같은 통보 수량 ASN 이 이 안에 또 오면 다시 올린 것(옛 통보 미취소)으로 본다
+OLD_DAYS = 60            # 예정일이 이만큼 지났는데 하나도 안 온 차수 = '오래된 미입고'(late=O, 지연 카드에서 뺀다)
+ASN_REISSUE_DAYS = 14   # 같은 컬러·같은 통보 수량 ASN 이 이 안에 또 오면 다시 올린 것(옛 통보 미취소)으로 본다
 ASN_NET_DAYS = 30       # ASN 날짜부터 이 안에 같은 컬러로 들어온(ASN 에 안 이어진) WMS 입고는 그 통보분으로 본다
 MIN_ROWS = 3000          # 10/29 실측 ~1.5만 행 — 이보다 적으면 원천 부분 로딩으로 보고 쓰지 않는다
 
@@ -145,14 +146,16 @@ def build_events(board: dict, asn: dict, today: datetime.date,
     t = today.isoformat()
     late_plan = (today - datetime.timedelta(days=GRACE)).isoformat()
     late_asn = (today - datetime.timedelta(days=ASN_LATE_DAYS)).isoformat()
+    old_plan = (today - datetime.timedelta(days=OLD_DAYS)).isoformat()
     out, cnt, seen = [], collections.Counter(), set()
     # 일부만 확정되고 날짜가 지난 ASN 의 잔량은 '덜 보낸 것'(수량 차이)이지 앞으로 올 물량이 아니다 → 뺀다
     asn = {k: [a for a in v if not (a.get("recv") and a["date"] <= late_asn)] for k, v in asn.items()}
 
     def emit(date, kind, s, qty, season, late=False, asn_no="", supplier=""):
+        code = late if isinstance(late, str) else ("Y" if late else "")
         out.append([date, kind, s["sku"], s["style"], s["name"], s["color"], s["hero"], season, qty,
-                    "Y" if late else "", asn_no, supplier])
-        cnt[kind + (" 지연" if late else "")] += qty
+                    code, asn_no, supplier])
+        cnt[kind + {"Y": " 지연", "S": " 수량 차이", "O": " 오래된 미입고"}.get(code, "")] += qty
 
     for h in board["heroes"]:
         for s0 in h["skus"]:
@@ -210,7 +213,13 @@ def build_events(board: dict, asn: dict, today: datetime.date,
                          a["asn_no"], a["supplier"])
             for p in lots:
                 if p["left"] > 0:
-                    emit(p["date"], "예정", s, p["left"], p.get("season", ""), p["date"] <= late_plan)
+                    # 지난 예정 잔량을 셋으로 가른다(2026-10-30 사용자 지시 — '날짜 지났는데 안 들어왔어요'가 너무 많다):
+                    #   S 수량 차이 = 그 차수가 일부라도 들어왔다(늦은 게 아니라 덜 온 것)
+                    #   O 오래된 미입고 = 하나도 안 왔고 예정일이 OLD_DAYS 넘게 지났다(취소·이월 행 정리 대상)
+                    #   Y 지연 = 그 밖(진짜 늦는 것)
+                    late = ("" if p["date"] > late_plan else "S" if p["left"] < p["qty"]
+                            else "O" if p["date"] < old_plan else "Y")
+                    emit(p["date"], "예정", s, p["left"], p.get("season", ""), late)
     # 오더시트에도 WMS 에도 없는 ASN(신규 품번 등) — 통보 그대로 싣는다
     for sku, arr in asn.items():
         if sku in seen:
