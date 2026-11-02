@@ -57,6 +57,26 @@ CAT2_MID = {("Outer", "Blazer"): "블레이저", ("Outer", "Coat"): "코트", ("
 CAT2_SMALL = {"Boots": "부츠", "Dress Shoes": "구두", "Sandals": "샌들", "Slides": "슬라이드", "Sneakers": "스니커즈",
               "Bra": "브라", "Homewear": "홈웨어", "Innerwear Bottom": "이너 하의", "Innerwear Top": "이너 상의", "Panties": "팬티",
               "Umbrella": "우산", "Mask": "마스크", "ETC": "기타 생활용품"}
+# ★PLM `데이터` 탭은 다움님 적재 테이블을 통째로 옮겨 쓴 것이라 시즌이 빠질 수 있다(2026-11-02 05시 27FW 만 남아
+#   1,873 STY 중 1,865 가 '기타'). 그래서 PLM 에서 한 번 본 분류는 **누적 원장**에 남기고(줄지 않는 합집합 [[CLAUDE 1-2]]),
+#   PLM·원장 둘 다 없는 품번(26SS 캐리오버 등)은 오더시트 `생산관리` 의 사람이 적은 팀·아이템·세부아이템 열로 채운다.
+CAT_TAB = "_OPS_CAT"
+CAT_HEADER = ["style", "cat", "cat2", "대복종", "중복종", "소복종", "브랜드라인", "시즌", "seen"]
+ORD_TEAM = {"남성": "맨", "여성": "우먼", "키즈": "키즈", "언더웨어": "언더웨어", "신발": "신발"}
+ORD_ITEM_CAT = {"Underwear": "언더웨어", "Shoes": "신발", "Acc": "잡화", "ACC": "잡화", "LifeStyle": "홈", "Lifestyle": "홈"}   # 대복종처럼 팀보다 먼저
+ORD_ITEM = {"T-Shirts": "티셔츠", "T-shirts": "티셔츠", "Pants": "팬츠", "Slacks": "팬츠", "Outer": "재킷·점퍼", "Down": "다운",
+            "Coat": "코트", "Blazer": "블레이저", "Shirts": "셔츠", "Skirt": "스커트", "Dress": "원피스", "Sweater": "니트",
+            "LifeStyle": "기타 생활용품", "Lifestyle": "기타 생활용품"}
+ORD_SUB = {("Sweater", "가디건"): "가디건", ("Sweater", "베스트"): "가디건", ("Sweater", "하의"): "니트 하의",
+           ("Sweat", "하의"): "스웨트팬츠", ("Sweat", "상의"): "스웨트셔츠", ("Sweat", "아우터"): "스웨트 집업",
+           ("Fleece", "아우터"): "플리스 아우터", ("Fleece", "상의"): "플리스 상의", ("Fleece", "하의"): "플리스 팬츠",
+           ("Underwear", "팬티"): "팬티", ("Underwear", "브라"): "브라", ("Underwear", "파자마"): "홈웨어",
+           ("Underwear", "간소매"): "이너 상의", ("Underwear", "긴소매"): "이너 상의",
+           ("Shoes", "드레스 슈즈"): "구두", ("Shoes", "드레스슈즈"): "구두", ("Shoes", "슬라이드"): "슬라이드",
+           ("Shoes", "부츠"): "부츠", ("Shoes", "스니커즈"): "스니커즈", ("Shoes", "샌들"): "샌들",
+           ("Acc", "양말"): "양말", ("Acc", "가방"): "가방·지갑", ("Acc", "지갑"): "가방·지갑", ("Acc", "벨트"): "벨트",
+           ("Acc", "주얼리"): "주얼리", ("Acc", "모자"): "모자", ("Acc", "머플러"): "머플러", ("Acc", "장갑"): "장갑",
+           ("Acc", "넥타이"): "타이"}
 EARLY_DAYS = 60          # 예정일보다 이만큼 앞선 입고까지만 그 차수를 채운 것으로 본다
 GRACE = IB.CONFIRM_GRACE_DAYS   # 예정일 + 3일이 지나도 안 덮였으면 지연(WMS 확정은 하루 늦게 온다)
 ASN_LATE_DAYS = 2        # ASN 입고 예정일 + 2일이 지나도 WMS 확정이 없으면 지연
@@ -261,37 +281,110 @@ def build_events(board: dict, asn: dict, today: datetime.date,
     return out, cnt
 
 
-def load_categories(sheets) -> dict[str, tuple[str, str]]:
-    """PLM `데이터` 탭 → {style_no: (카테고리, 카테고리 안 묶음)}. 대복종 → 브랜드라인 순. 같은 style 이 여러 행이면 먼저 찬 값."""
-    from soo.hero_ops import asn_notify as N
-    v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{N.PLM_TAB}'!A1:AZ",
-                                           valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+def _plm_cat(big: str, mid: str, small: str, line: str) -> tuple[str, str]:
+    line = line.upper()
+    return (CAT_BIG.get(big) or next((c for k, c in CAT_LINE.items() if f"({k})" in line), ""),
+            CAT2_MID.get((big, mid)) or CAT2_SMALL.get(small) or "")
+
+
+def parse_plm(v: list[list]) -> dict[str, list[str]]:
+    """PLM `데이터` 값(1행 머리말) → {style_no: [대복종, 중복종, 소복종, 브랜드라인, 시즌]}. 같은 style 이 여러 행이면 먼저 찬 값."""
     if not v:
         return {}
     h = [str(c).strip() for c in v[0]]
     if "style_no" not in h or "대복종" not in h:
-        print(f"[카테고리] `{N.PLM_TAB}` 에 style_no/대복종 열이 없다 {h[:12]} → 품번 접두 폴백만")
+        print(f"[카테고리] PLM 에 style_no/대복종 열이 없다 {h[:12]} → 원장·오더시트·품번 접두로만")
         return {}
     I = {k: i for i, k in enumerate(h)}
     g = lambda r, k: str(r[I[k]]).strip() if k in I and I[k] < len(r) else ""
     out = {}
     for r in v[1:]:
         st = g(r, "style_no")
-        if not st or (out.get(st) or ("",))[0]:
-            continue
-        line = g(r, "브랜드라인").upper()
-        big, mid = g(r, "대복종"), g(r, "중복종")
-        out[st] = (CAT_BIG.get(big) or next((c for k, c in CAT_LINE.items() if f"({k})" in line), ""),
-                   CAT2_MID.get((big, mid)) or CAT2_SMALL.get(g(r, "소복종")) or "")
+        raw = [g(r, "대복종"), g(r, "중복종"), g(r, "소복종"), g(r, "브랜드라인"), g(r, "시즌")]
+        if st and not (st in out and _plm_cat(*out[st][:4])[0]):
+            out[st] = raw
     return out
 
 
-def add_categories(grid: list[list], cats: dict[str, tuple[str, str]]) -> collections.Counter:
+def load_plm(sheets) -> dict[str, list[str]]:
+    from soo.hero_ops import asn_notify as N
+    return parse_plm(sheets.spreadsheets().values().get(
+        spreadsheetId=APP_SHEET_ID, range=f"'{N.PLM_TAB}'!A1:AZ",
+        valueRenderOption="UNFORMATTED_VALUE").execute().get("values", []))
+
+
+def load_cat_ledger(sheets) -> dict[str, list[str]]:
+    """누적 원장 → {style: [대복종, 중복종, 소복종, 브랜드라인, 시즌, seen]}. 탭이 없으면 {}."""
+    try:
+        v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{CAT_TAB}'!A1:I").execute().get("values", [])
+    except Exception as e:
+        print(f"[카테고리] 원장 `{CAT_TAB}` 못 읽음({str(e)[:80]}) → 이번엔 PLM·오더시트만")
+        return {}
+    if not v or v[0][:len(CAT_HEADER)] != CAT_HEADER:
+        return {}
+    return {r[0]: (r + [""] * 9)[3:9] for r in v[1:] if r and r[0]}
+
+
+def write_cat_ledger(sheets, led: dict[str, list[str]]) -> None:
+    sid = APP_SHEET_ID
+    meta = sheets.spreadsheets().get(spreadsheetId=sid, fields="sheets.properties(title,sheetId,gridProperties)").execute()
+    hit = next((x["properties"] for x in meta["sheets"] if x["properties"]["title"] == CAT_TAB), None)
+    need = len(led) + 2000
+    if hit is None:
+        sheets.spreadsheets().batchUpdate(spreadsheetId=sid, body={"requests": [{"addSheet": {"properties": {
+            "title": CAT_TAB, "hidden": True,
+            "gridProperties": {"rowCount": need, "columnCount": len(CAT_HEADER), "frozenRowCount": 1}}}}]}).execute()
+    elif hit["gridProperties"]["rowCount"] < len(led) + 1:
+        sheets.spreadsheets().batchUpdate(spreadsheetId=sid, body={"requests": [{"updateSheetProperties": {
+            "properties": {"sheetId": hit["sheetId"], "gridProperties": {"rowCount": need}},
+            "fields": "gridProperties.rowCount"}}]}).execute()
+    body = [CAT_HEADER] + [[st, *_plm_cat(*raw[:4]), *raw] for st, raw in sorted(led.items())]
+    sheets.spreadsheets().values().update(spreadsheetId=sid, range=f"'{CAT_TAB}'!A1",
+                                          valueInputOption="RAW", body={"values": body}).execute()
+    sheets.spreadsheets().values().clear(spreadsheetId=sid, range=f"'{CAT_TAB}'!A{len(body) + 1}:I", body={}).execute()
+    print(f"[{CAT_TAB}] 원장 {len(led):,} STY 기입")
+
+
+def load_order_categories(sheets) -> dict[str, tuple[str, str]]:
+    """오더시트 `생산관리` 6행 머리말 `신품번`·`팀`·`아이템`·`세부아이템`(라벨로 찾는다 [[CLAUDE 1-1]]) → {style: (cat, cat2)}."""
+    v = sheets.spreadsheets().values().get(spreadsheetId=IB.PROD_SID, range=f"'{IB.PROD_TAB}'!A6:CZ").execute().get("values", [])
+    h = [str(c).strip() for c in (v[0] if v else [])]
+    sc = [i for i, c in enumerate(h) if c == "신품번"]
+    want = {k: (h.index(k) if k in h else -1) for k in ("팀", "아이템", "세부아이템")}
+    if not sc or min(want.values()) < 0:
+        print(f"[카테고리] 오더시트 머리말에 신품번/팀/아이템/세부아이템이 없다 {want} → 오더시트 보충 없이")
+        return {}
+    out = {}
+    for r in v[1:]:
+        g = lambda i: str(r[i]).strip() if i < len(r) else ""
+        team, item, sub = g(want["팀"]), g(want["아이템"]), g(want["세부아이템"])
+        cat = ORD_ITEM_CAT.get(item) or ORD_TEAM.get(team, "")
+        if not cat:
+            continue
+        c2 = ORD_SUB.get((item, sub)) or ORD_ITEM.get(item, "")
+        for i in sc:
+            st = g(i)
+            if st and not (st in out and out[st][1]):
+                out[st] = (cat, c2)
+    return out
+
+
+def add_categories(grid: list[list], plm: dict, led: dict, ords: dict) -> collections.Counter:
+    """카테고리·묶음 = PLM 지금 → PLM 누적 원장 → 오더시트 → 품번 접두 → '기타'. 근거별 행 수를 돌려준다."""
     src = collections.Counter()
     for r in grid:
-        c, c2 = cats.get(r[3], ("", ""))
-        src["PLM" if c else "접두" if r[3][:2] in CAT_PREFIX else "기타"] += 1
-        r += [c or CAT_PREFIX.get(r[3][:2], "기타"), c2 or "기타"]
+        st = r[3]
+        hit = next(((k, _plm_cat(*d[st][:4])) for k, d in (("PLM", plm), ("원장", led))
+                    if st in d and _plm_cat(*d[st][:4])[0]), None)
+        if hit is None and st in ords:
+            hit = ("오더시트", ords[st])
+        if hit is None:
+            hit = ("접두", (CAT_PREFIX[st[:2]], "")) if st[:2] in CAT_PREFIX else ("기타", ("", ""))
+        k, (c, c2) = hit
+        if not c2 and st in ords and ords[st][0] == c:
+            c2 = ords[st][1]
+        src[k] += 1
+        r += [c or "기타", c2 or "기타"]
     return src
 
 
@@ -340,7 +433,12 @@ def main() -> None:
     asn_gate = {k: {"qty": sum(x["qty"] for x in v), "dates": sorted({x["date"] for x in v})} for k, v in asn.items()}
     board = IB.build_inbound_board(sheets, as_of=today, dbx_actuals=dbx, asn=asn_gate, all_products=True)
     grid, cnt = build_events(board, asn, today, dbx)
-    csrc = add_categories(grid, load_categories(sheets))
+    plm, led = load_plm(sheets), load_cat_ledger(sheets)
+    if led and len(plm) < len(led) * 0.5:
+        print(f"::warning::[카테고리] PLM `데이터` 탭 품번 {len(plm):,}개 — 누적 원장 {len(led):,}개의 절반 미만"
+              f"(시즌 {sorted({x[4] for x in plm.values()})}만 남음?) → 원장으로 보충")
+    led = {**led, **{st: raw + [today.isoformat()] for st, raw in plm.items()}}
+    csrc = add_categories(grid, plm, led, load_order_categories(sheets))
     print("[카테고리] 근거 " + " · ".join(f"{k} {v:,}행" for k, v in csrc.most_common())
           + " · " + " · ".join(f"{k} {v:,}" for k, v in collections.Counter(r[-2] for r in grid).most_common())
           + " · 묶음 미상 " + f"{sum(r[-1] == '기타' for r in grid):,}행")
@@ -353,6 +451,7 @@ def main() -> None:
              f"· 컷오프 {board['cutoff']} · 생성 {now.strftime('%Y-%m-%d %H:%M')} KST")
     if a.apply:
         write(sheets, grid, label)
+        write_cat_ledger(sheets, led)
     else:
         print("(드라이런 — --apply 로 기입)")
 
