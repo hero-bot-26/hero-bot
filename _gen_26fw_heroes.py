@@ -144,6 +144,7 @@ for r in res.get("values", []):
 
 # 보충 원천 감시용 — ★반드시 파싱보다 **앞**에서 선언한다(뒤에 두면 파싱 결과를 덮어쓴다)
 _plm_extra_recs, _plm_id_extra_seen, _plm_primary_recs = [], False, []
+_PLM_SHRINK = ""
 
 # ── PLM (공유드라이브 최신본 자동읽기; --local=경로 로 로컬 파일 사용) ──
 if LOCAL_PLM:
@@ -157,10 +158,59 @@ elif USE_SHEET:
     #   ★단독 전환하면 안 된다: 실측(9/4) 담당자 1,519→0 · 입고 완료 896건→0 으로 퇴보한다.
     _plm_id, _plm_tab = _src("plm_milestone"), _src_tab("plm_milestone", "데이터")
     recs = parse_milestone_sheet_auto(sheets, _plm_id, _plm_tab)
+    _plm_primary_recs = list(recs)      # 신선도 지문은 원장 보충 전 '주'만으로
+    # ★2026-11-02 주 원천 축소 방어 — `데이터` 탭은 다움님 테이블 통째 복사라 시즌이 빠질 수 있다
+    #   (11/2 05시 27FW 만 남아 2,994→91 스타일: 26FW·27SS 단계·담당자가 통째로 빠질 뻔).
+    #   주에서 본 행은 `_PLM_누적` 원장에 남기고, 주에 없는 스타일만 원장에서 더한다(겹치면 주가 이긴다).
+    #   원장 행은 그날 이후 안 바뀌므로 축소가 감지되면 헬스 경고로 올린다([[CLAUDE 1-4]] 직전값 유지=경고).
+    try:
+        _led_tab = "_PLM_누적"
+        _gv = lambda rng: sheets.spreadsheets().values().get(
+            spreadsheetId=_plm_id, range=rng, valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+        _cur_v = _gv(f"'{_plm_tab}'!A1:AZ")
+        try:
+            _led_v = _gv(f"'{_led_tab}'!A1:AZ")
+        except Exception:
+            _led_v = []
+        _h = [str(c).strip() for c in (_cur_v[0] if _cur_v else [])]
+        if "style_no" in _h:
+            _si = _h.index("style_no")
+            _sty = lambda r: str(r[_si]).strip() if _si < len(r) else ""
+            _cur_s = {_sty(r) for r in _cur_v[1:]} - {""}
+            _old = [r for r in _led_v[1:] if _sty(r) and _sty(r) not in _cur_s] \
+                if _led_v and [str(c).strip() for c in _led_v[0]] == _h else []
+            _led_s = _cur_s | {_sty(r) for r in _old}
+            # ★행을 머리말 폭으로 채워 쓴다 — API 는 행 끝 빈 칸을 잘라 주므로 그대로 쓰면 아래 깔린 옛 행의 뒤 칸(style_no)이 남는다
+            _pad = lambda r: list(r) + [""] * (len(_h) - len(r))
+            _body = [_h] + [_pad(r) for r in _cur_v[1:]] + [_pad(r) for r in _old]
+            _meta = sheets.spreadsheets().get(spreadsheetId=_plm_id, fields="sheets.properties(title,sheetId,gridProperties)").execute()
+            _hit = next((x["properties"] for x in _meta["sheets"] if x["properties"]["title"] == _led_tab), None)
+            if _hit is None:
+                sheets.spreadsheets().batchUpdate(spreadsheetId=_plm_id, body={"requests": [{"addSheet": {"properties": {
+                    "title": _led_tab, "hidden": True,
+                    "gridProperties": {"rowCount": len(_body) + 2000, "columnCount": len(_h)}}}}]}).execute()
+            elif _hit["gridProperties"]["rowCount"] < len(_body) + 1:
+                sheets.spreadsheets().batchUpdate(spreadsheetId=_plm_id, body={"requests": [{"updateSheetProperties": {
+                    "properties": {"sheetId": _hit["sheetId"], "gridProperties": {"rowCount": len(_body) + 2000}},
+                    "fields": "gridProperties.rowCount"}}]}).execute()
+            # 덮어쓴 뒤 꼬리만 지운다(먼저 지우면 중간에 끊길 때 원장이 잘린다 [[CLAUDE 1-3]])
+            sheets.spreadsheets().values().update(spreadsheetId=_plm_id, range=f"'{_led_tab}'!A1",
+                                                  valueInputOption="RAW", body={"values": _body}).execute()
+            sheets.spreadsheets().values().clear(spreadsheetId=_plm_id, range=f"'{_led_tab}'!A{len(_body) + 1}:AZ", body={}).execute()
+            if _old:
+                _have = {r.style_no for r in recs}
+                _add = [r for r in parse_milestone_sheet_auto(sheets, _plm_id, _led_tab) if r.style_no not in _have]
+                recs = recs + _add
+                print(f"PLM 원장 `{_led_tab}`: 주에 없는 {len({_sty(r) for r in _old})} 스타일 보충(**{len(_add)}종 추가**)")
+            if len(_cur_s) < len(_led_s) * 0.5:
+                _PLM_SHRINK = (f"PLM `{_plm_tab}` 탭이 {len(_cur_s):,} 스타일로 줄었다(원장 {len(_led_s):,}) — "
+                               f"빠진 시즌은 원장 값으로 유지 중이라 단계가 갱신되지 않는다. PLM→Databricks 적재 범위 확인 필요")
+                print("★" + _PLM_SHRINK)
+    except Exception as _ex:
+        print(f"[주의] PLM 원장 `_PLM_누적` 처리 실패 — 주 원천만 사용: {type(_ex).__name__}: {_ex}")
     # ★신선도 지문은 **주 원천만으로** 계산해야 한다 — 병합본으로 재면 주가 멈춰도
     #   보충이 바뀐 날 '신선함'으로 찍혀 감시가 통째로 무력화된다(실제로 한 번 만들었다 잡음).
-    _plm_primary_recs = list(recs)
-    print(f"PLM 소스(주): {len(recs)} 스타일 · {_plm_id[:12]}…/{_plm_tab}")
+    print(f"PLM 소스(주): {len(_plm_primary_recs)} 스타일(원장 보충 후 {len(recs)}) · {_plm_id[:12]}…/{_plm_tab}")
     _x_id, _x_tab = _src("plm_milestone_extra"), _src_tab("plm_milestone_extra", "시트1")
     if _x_id:
         try:
@@ -188,7 +238,7 @@ plm = {rec.style_no: rec for rec in recs}
 #   → **내용 지문**을 남겨 '며칠째 안 바뀌었는지'로 판단한다. 임계 넘으면 헬스 경고 → CI 슬랙 DM.
 #   적재 주기 실측(2026): 5/11·5/15·5/18·5/26·5/29·6/1·6/4·6/5·6/9·6/23·6/29·7/6·7/13·7/22
 #   ≈ 주 1회 → 임계 10일.
-_FRESH_WATCH = []
+_FRESH_WATCH = [_PLM_SHRINK] if _PLM_SHRINK else []
 try:
     from soo.hero_ops import freshness_watch as _fw
     # ★`_소스신선도` 는 우리 **원장 탭**이라 원천이 바뀌어도 위치를 고정한다
