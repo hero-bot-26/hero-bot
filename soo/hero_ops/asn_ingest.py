@@ -217,11 +217,54 @@ WITH asn AS (
          max(LGOBE)   warehouse,
          max(DELVSTS) sts,
          min(INS_DATE) ins_at,
-         max(UPD_DATE) upd_at
+         max(UPD_DATE) upd_at,
+         '' hub_canc
   FROM pbo.moms.iif_bam_asn
   WHERE substr(ZZ_BARCODE,1,9) IN ({in_styles})
     AND EINDT >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {int(lookback)}), 'yyyyMMdd')
   GROUP BY DELVNO, 2, 3, 4, EINDT
+  UNION ALL
+  -- ★SCM Hub 보충 (2026-11-02). 10/23 SCM Hub 전환 뒤 SAP 인터페이스가 끊겨 moms·ERP 에 무탠 ASN 이
+  --   **한 건도 안 들어왔다**(WMS 엔 10/23~29 무탠 TX-INB 27건 9.9만 장 입고 — 알림 10/22 이후 0건).
+  --   원본 `ocmp.scm_hub` 를 붙이되 **moms 에 없는 ASN 만** 가져온다(보충 — 겹치면 moms 가 이긴다 [[CLAUDE 1-5-1]]).
+  --   실측(10/13~22 겹침): moms TX-INB 81건 중 80건 존재 · SKU 2,384/2,424 · 매칭 SKU 수량 100% 일치.
+  --   ★공급사 ASN = inbound_type 'PLM_INBOUND' (moms 와 겹친 80건 전부). 'STOCK_MOVEMENT'(매장 이동 3만 건/2주)·
+  --     'WAREHOUSE_INBOUND'(타 브랜드 입점사)·반품은 ASN 통보가 아니다.
+  --   ★supplier_barcode 는 ZZ_BARCODE 와 같은 `품번+컬러+사이즈` 문자열 → 같은 substr 규칙.
+  --   ★created_at·updated_at 은 UTC → +9h 해서 moms INS_DATE 와 같은 'yyyyMMddHHmmss'(KST)로 맞춘다
+  --     (중계 노트북 세션 TZ = Etc/UTC 전제).
+  --   ★공급사(LIFTX)·PO 는 이 경로에 없다(company = 무신사 법인) — 빈칸. 취소 = 품목 상태 CANCELLED.
+  SELECT i.transaction_id DELVNO,
+         concat(substr(b.supplier_barcode,1,9),'-',substr(b.supplier_barcode,10,2)) sku,
+         substr(b.supplier_barcode,1,9) style,
+         substr(b.supplier_barcode,10,2) color,
+         date_format(to_date(i.expected_inbound_date), 'yyyyMMdd') EINDT,
+         '' po_no,
+         0 po_cnt,
+         max(p.product_name) name,
+         -- 사이즈 일부만 취소면 남은 것만 · 전부 취소면 원 수량 + 취소 딱지(moms 취소 행과 같은 모양)
+         CASE WHEN count_if(it.inbound_item_status <> 'CANCELLED') = 0 THEN sum(it.inbound_requested_quantity)
+              ELSE sum(CASE WHEN it.inbound_item_status <> 'CANCELLED' THEN it.inbound_requested_quantity ELSE 0 END) END qty,
+         0 po_qty,
+         0 remain,
+         '' supplier,
+         max(s.name) warehouse,
+         max(it.inbound_item_status) sts,
+         date_format(min(i.created_at) + INTERVAL 9 HOURS, 'yyyyMMddHHmmss') ins_at,
+         date_format(max(it.updated_at) + INTERVAL 9 HOURS, 'yyyyMMddHHmmss') upd_at,
+         CASE WHEN count_if(it.inbound_item_status <> 'CANCELLED') = 0 THEN 'Y' ELSE '' END hub_canc
+  FROM ocmp.scm_hub.inbound i
+  JOIN ocmp.scm_hub.inbound_item it ON it.fk_inbound_id = i._id
+  JOIN ocmp.scm_hub.barcode b ON b._id = it.fk_barcode_id
+  LEFT JOIN ocmp.scm_hub.product_option op ON op._id = it.fk_product_option_id
+  LEFT JOIN ocmp.scm_hub.product p ON p._id = op.fk_product_id
+  LEFT JOIN ocmp.scm_hub.storage s ON s._id = i.fk_destination_storage_id
+  WHERE i.inbound_type = 'PLM_INBOUND'
+    AND substr(b.supplier_barcode,1,9) IN ({in_styles})
+    AND i.expected_inbound_date >= DATE_FORMAT(DATE_SUB(CURRENT_DATE(), {int(lookback)}), 'yyyy-MM-dd')
+    -- NOT IN 은 DELVNO 에 NULL 하나만 있어도 전부 탈락한다 → NOT EXISTS
+    AND NOT EXISTS (SELECT 1 FROM pbo.moms.iif_bam_asn m WHERE m.DELVNO = i.transaction_id)
+  GROUP BY 1, 2, 3, 4, 5
 ),
 canc AS (
   -- ★취소 ASN. 우리 원천(`pbo.moms.iif_bam_asn`)엔 delete_flag 가 없어 여태 못 걸렀다 →
@@ -265,7 +308,7 @@ SELECT a.DELVNO, a.po_no, a.po_cnt, a.sku, a.style, a.color, c.color_nm, a.name,
        coalesce(w.dts, '') recv_dates,
        -- 취소면 'Y'. ★행을 버리지 않고 딱지만 붙인다 — 알림은 제외하되 화면에서는 보여야
        --   "왜 사라졌지"가 되지 않는다([[CLAUDE 1-12]] 필터로 영구 드롭하지 말고 토글로 가려라).
-       CASE WHEN cx.asn_no IS NOT NULL THEN 'Y' ELSE '' END cancelled,
+       CASE WHEN cx.asn_no IS NOT NULL OR a.hub_canc = 'Y' THEN 'Y' ELSE '' END cancelled,
        CASE WHEN w.asn_no IS NOT NULL THEN 'Y' ELSE '' END wms_linked
 FROM asn a
 LEFT JOIN color c ON c.color_cd = a.color
@@ -283,8 +326,8 @@ ORDER BY a.EINDT DESC, a.ins_at DESC, a.sku
     #   47분 + 다음 hourly 런(concurrency 로 이어서 대기)이면 1시간 창이 사실상 끊김 없이 덮인다.
     #   ★잡 timeout 을 같이 안 늘리면 GH 하드 타임아웃에 걸려 **잘린 로그**만 남는다(yml 과 짝).
     if all_brand:
-        # 히어로 SQL 의 품번 목록 자리 두 곳(asn·canc)을 무탠 CTE 로 갈아 끼운다 — 나머지 로직은 공유.
-        assert sql.count(f"IN ({in_styles})") == 2 and sql.count("WITH asn AS (") == 1
+        # 히어로 SQL 의 품번 목록 자리 세 곳(asn moms·asn scm_hub·canc)을 무탠 CTE 로 갈아 끼운다 — 나머지 로직은 공유.
+        assert sql.count(f"IN ({in_styles})") == 3 and sql.count("WITH asn AS (") == 1
         sql = sql.replace(f"IN ({in_styles})", "IN (SELECT sty FROM mutan)")
         sql = sql.replace("WITH asn AS (", "WITH " + MUTAN_CTE + "asn AS (", 1)
     rows = dbx_sql(sql, wait=900, attempts=3)
@@ -414,7 +457,7 @@ def ensure_tab(sheets, sheet_id: str, title: str) -> None:
 
 def write_tab(sheets, sheet_id: str, grid: list[list], as_of: str) -> None:
     """전량 덮어쓰기(멱등). ★append/INSERT_ROWS 금지 — 다른 탭 수식 참조가 밀린다([[CLAUDE 1-6]])."""
-    label = (f"히어로 ASN(입하 통보) · pbo.moms.iif_bam_asn · 최근 {LOOKBACK_DAYS}일 "
+    label = (f"히어로 ASN(입하 통보) · pbo.moms.iif_bam_asn + ocmp.scm_hub(보충) · 최근 {LOOKBACK_DAYS}일 "
              f"· 수량=EINQTY · 생성 {as_of}")
     body = [[label] + [""] * (len(HEADER) - 1), HEADER] + grid
     # 이전 실행이 더 길었을 수 있으니 뒤를 비운다(잔재 행이 남으면 화면에 유령 ASN 이 뜬다).
