@@ -44,6 +44,7 @@ from soo.hero_ops.asn_ingest import APP_SHEET_ID, TAB as ASN_TAB
 
 HERO = Path(__file__).resolve().parents[2]
 PLM_TAB = "데이터"                 # style_no ↔ md_nm/ds_nm/sc_nm
+OWNER_LEDGER_TAB = "_OPS_CAT"      # inbound_plan 이 쌓는 PLM 누적 원장(PLM 이 줄어도 담당자·대복종 보존)
 ALARM_LOG_TAB = "알람발송로그"
 KEY_PREFIX = "asn:"            # ① ASN 등록 알림
 KEY_PREFIX_RECV = "asnrecv:"   # ② 입고확정 시작 알림 — 확정이 처음 잡힌 그때 1회만
@@ -259,7 +260,40 @@ def load_owners(sheets) -> dict[str, dict]:
         elif not prev.get("cat"):
             # 분류는 담당자와 따로 본다 — 담당자가 비었을 뿐 `대복종`은 차 있는 행이 있다.
             prev["cat"] = g("대복종")
+    _fill_from_ledger(sheets, out)
     return out
+
+
+def _fill_from_ledger(sheets, out: dict[str, dict]) -> None:
+    """★PLM `데이터` 탭은 원천 테이블 통째 복사라 시즌이 빠질 수 있다(2026-11-02 05시 27FW 만 남아
+    최근 ASN 66 STY 중 63 이 담당자를, 언더웨어 19 STY 가 MD 팀장 배정을 잃음). PLM 에서 한 번 본 담당자·대복종은
+    inbound_plan 이 `_OPS_CAT` 누적 원장에 남긴다 → PLM 에 없거나 빈 칸만 원장으로 채운다(PLM 이 이긴다)."""
+    try:
+        v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{OWNER_LEDGER_TAB}'!A1:L",
+                                               valueRenderOption="UNFORMATTED_VALUE").execute().get("values", [])
+    except Exception as e:
+        print(f"[ASN알림] 원장 `{OWNER_LEDGER_TAB}` 못 읽음({str(e)[:80]}) → PLM 담당자만")
+        return
+    h = [str(c).strip() for c in (v[0] if v else [])]
+    if not all(k in h for k in ("style", "대복종", "md_nm", "ds_nm", "sc_nm")):
+        print(f"[ASN알림] 원장 `{OWNER_LEDGER_TAB}` 머리말에 담당자 열이 없다 {h} → PLM 담당자만")
+        return
+    I = {k: i for i, k in enumerate(h)}
+    n_own = n_cat = 0
+    for r in v[1:]:
+        g = lambda k: str(r[I[k]]).strip() if I[k] < len(r) else ""
+        st = g("style")
+        if not st:
+            continue
+        cur = out.setdefault(st, {"md": "", "ds": "", "sc": "", "cat": ""})
+        if not any(cur.get(k) for k in ("md", "ds", "sc")) and any(g(k) for k in ("md_nm", "ds_nm", "sc_nm")):
+            cur.update(md=g("md_nm"), ds=g("ds_nm"), sc=g("sc_nm"))
+            n_own += 1
+        if not cur.get("cat") and g("대복종"):
+            cur["cat"] = g("대복종")
+            n_cat += 1
+    if n_own or n_cat:
+        print(f"[ASN알림] PLM 에 없는 담당자 {n_own} STY · 대복종 {n_cat} STY 를 원장 `{OWNER_LEDGER_TAB}` 으로 보충")
 
 
 def load_sent_keys(sheets) -> set[str]:

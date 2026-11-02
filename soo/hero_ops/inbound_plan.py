@@ -61,7 +61,8 @@ CAT2_SMALL = {"Boots": "부츠", "Dress Shoes": "구두", "Sandals": "샌들", "
 #   1,873 STY 중 1,865 가 '기타'). 그래서 PLM 에서 한 번 본 분류는 **누적 원장**에 남기고(줄지 않는 합집합 [[CLAUDE 1-2]]),
 #   PLM·원장 둘 다 없는 품번(26SS 캐리오버 등)은 오더시트 `생산관리` 의 사람이 적은 팀·아이템·세부아이템 열로 채운다.
 CAT_TAB = "_OPS_CAT"
-CAT_HEADER = ["style", "cat", "cat2", "대복종", "중복종", "소복종", "브랜드라인", "시즌", "seen"]
+# ★담당자(md/ds/sc)도 같이 남긴다 — ASN 알림(asn_notify.load_owners)이 PLM 이 줄면 이 원장으로 보충한다.
+CAT_HEADER = ["style", "cat", "cat2", "대복종", "중복종", "소복종", "브랜드라인", "시즌", "seen", "md_nm", "ds_nm", "sc_nm"]
 ORD_TEAM = {"남성": "맨", "여성": "우먼", "키즈": "키즈", "언더웨어": "언더웨어", "신발": "신발"}
 ORD_ITEM_CAT = {"Underwear": "언더웨어", "Shoes": "신발", "Acc": "잡화", "ACC": "잡화", "LifeStyle": "홈", "Lifestyle": "홈"}   # 대복종처럼 팀보다 먼저
 ORD_ITEM = {"T-Shirts": "티셔츠", "T-shirts": "티셔츠", "Pants": "팬츠", "Slacks": "팬츠", "Outer": "재킷·점퍼", "Down": "다운",
@@ -288,7 +289,8 @@ def _plm_cat(big: str, mid: str, small: str, line: str) -> tuple[str, str]:
 
 
 def parse_plm(v: list[list]) -> dict[str, list[str]]:
-    """PLM `데이터` 값(1행 머리말) → {style_no: [대복종, 중복종, 소복종, 브랜드라인, 시즌]}. 같은 style 이 여러 행이면 먼저 찬 값."""
+    """PLM `데이터` 값(1행 머리말) → {style_no: [대복종, 중복종, 소복종, 브랜드라인, 시즌, md, ds, sc]}.
+    같은 style 이 여러 행이면 분류는 먼저 찬 값, 담당자는 빈 칸만 뒤 행으로 채운다."""
     if not v:
         return {}
     h = [str(c).strip() for c in v[0]]
@@ -300,9 +302,14 @@ def parse_plm(v: list[list]) -> dict[str, list[str]]:
     out = {}
     for r in v[1:]:
         st = g(r, "style_no")
-        raw = [g(r, "대복종"), g(r, "중복종"), g(r, "소복종"), g(r, "브랜드라인"), g(r, "시즌")]
-        if st and not (st in out and _plm_cat(*out[st][:4])[0]):
-            out[st] = raw
+        raw = [g(r, "대복종"), g(r, "중복종"), g(r, "소복종"), g(r, "브랜드라인"), g(r, "시즌"),
+               g(r, "md_nm"), g(r, "ds_nm"), g(r, "sc_nm")]
+        if not st:
+            continue
+        if not (st in out and _plm_cat(*out[st][:4])[0]):
+            out[st] = raw[:5] + [o or p for o, p in zip(raw[5:], (out.get(st) or [""] * 8)[5:])]
+        else:
+            out[st][5:] = [p or o for o, p in zip(raw[5:], out[st][5:])]
     return out
 
 
@@ -314,15 +321,15 @@ def load_plm(sheets) -> dict[str, list[str]]:
 
 
 def load_cat_ledger(sheets) -> dict[str, list[str]]:
-    """누적 원장 → {style: [대복종, 중복종, 소복종, 브랜드라인, 시즌, seen]}. 탭이 없으면 {}."""
+    """누적 원장 → {style: [대복종, 중복종, 소복종, 브랜드라인, 시즌, seen, md, ds, sc]}. 탭이 없으면 {}."""
     try:
-        v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{CAT_TAB}'!A1:I").execute().get("values", [])
+        v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{CAT_TAB}'!A1:L").execute().get("values", [])
     except Exception as e:
         print(f"[카테고리] 원장 `{CAT_TAB}` 못 읽음({str(e)[:80]}) → 이번엔 PLM·오더시트만")
         return {}
-    if not v or v[0][:len(CAT_HEADER)] != CAT_HEADER:
+    if not v or v[0][:9] != CAT_HEADER[:9]:      # 담당자 3열은 나중에 붙었다 — 앞 9열만 맞으면 읽는다
         return {}
-    return {r[0]: (r + [""] * 9)[3:9] for r in v[1:] if r and r[0]}
+    return {r[0]: (r + [""] * 12)[3:12] for r in v[1:] if r and r[0]}
 
 
 def write_cat_ledger(sheets, led: dict[str, list[str]]) -> None:
@@ -341,7 +348,7 @@ def write_cat_ledger(sheets, led: dict[str, list[str]]) -> None:
     body = [CAT_HEADER] + [[st, *_plm_cat(*raw[:4]), *raw] for st, raw in sorted(led.items())]
     sheets.spreadsheets().values().update(spreadsheetId=sid, range=f"'{CAT_TAB}'!A1",
                                           valueInputOption="RAW", body={"values": body}).execute()
-    sheets.spreadsheets().values().clear(spreadsheetId=sid, range=f"'{CAT_TAB}'!A{len(body) + 1}:I", body={}).execute()
+    sheets.spreadsheets().values().clear(spreadsheetId=sid, range=f"'{CAT_TAB}'!A{len(body) + 1}:L", body={}).execute()
     print(f"[{CAT_TAB}] 원장 {len(led):,} STY 기입")
 
 
@@ -437,7 +444,8 @@ def main() -> None:
     if led and len(plm) < len(led) * 0.5:
         print(f"::warning::[카테고리] PLM `데이터` 탭 품번 {len(plm):,}개 — 누적 원장 {len(led):,}개의 절반 미만"
               f"(시즌 {sorted({x[4] for x in plm.values()})}만 남음?) → 원장으로 보충")
-    led = {**led, **{st: raw + [today.isoformat()] for st, raw in plm.items()}}
+    led = {**led, **{st: raw[:5] + [today.isoformat()] + [o or p for o, p in zip(raw[5:], (led.get(st) or [""] * 9)[6:])]
+                     for st, raw in plm.items()}}
     csrc = add_categories(grid, plm, led, load_order_categories(sheets))
     print("[카테고리] 근거 " + " · ".join(f"{k} {v:,}행" for k, v in csrc.most_common())
           + " · " + " · ".join(f"{k} {v:,}" for k, v in collections.Counter(r[-2] for r in grid).most_common())
