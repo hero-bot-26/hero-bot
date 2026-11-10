@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""26FW 대시보드 A열 uid · F열 컬러명 자동 채움 + 노트북 GOODS_FILTER 동기화 (매일).
+"""26FW·27SS 대시보드 A열 uid · F열 컬러명 자동 채움 + 노트북 GOODS_FILTER 동기화 (매일).
 
 왜 필요했나(2026-07-31):
   · 미발매 스타일은 대시보드 A열(uid)이 비어 있고, 발매 시점에 채워야 실적이 잡힌다.
@@ -48,6 +48,12 @@ DATA = "1O78bMnJZq-U6zO2mZLHV84573uKM9DU2wpgzeGDBIk0"   # 26FW 데이터시트(�
 ITEM = "1rVbq1UVwKAdNApYovVDPF9ALwoE-v1KhNZUyHtf_bn4"   # ItemMaster
 MSTRD = "1tvtbz6u3xob_SkZQBH79xX6J8dRpsHAa1-nn-KMeY-g"  # 26FW HERO 시트(HERO SKU 컬러명)
 FILTER_TAB = "_UID_FILTER"
+# ★2026-11-10 27SS 대시보드 합류 — 같은 데이터시트·같은 잡을 함께 쓴다(27SS 전용 잡 전까지).
+#   _UID_FILTER 는 매번 지우고 다시 쓰므로 **두 대시보드 uid 를 합집합으로** 써야 한쪽이 지워지지 않는다.
+DASH27 = "1YD6mzlemzD5JfDptt3ZbBSS1RGWuy1NzXYN5k9Kdd-g"  # 27SS 히어로 실적 대시보드
+TABS27 = ["라이트다운·플리스", "신세틱 레더·스웨이드", "시티레저 윈드브레이커", "간절기 아우터", "NEW FIT 팬츠",
+          "쿨탠다드", "쿨탠다드 UV", "쿨탠다드 워셔블",
+          "맨즈 HERO", "우먼즈 HERO", "키즈 HERO", "언더웨어 HERO", "잡화 HERO"]
 
 TABS = ["커브드팬츠", "라이트다운", "힛탠다드", "빅토리아 울", "그리드/메시 플리스",
         "에센셜 플리스", "웜 팬츠", "리커버리", "헤비다운", "슬랙스",
@@ -94,10 +100,10 @@ def item_master(sh):
     return by_pum, by_style
 
 
-def scan(sh, tab):
+def scan(sh, tab, dash=DASH):
     """→ (rows, formulas). rows = [[A,B,C,D,E,F]…] 1-based 인덱스는 +1."""
     res = sh.spreadsheets().values().batchGet(
-        spreadsheetId=DASH, ranges=[f"'{tab}'!A1:F400", f"'{tab}'!G1:G400"],
+        spreadsheetId=dash, ranges=[f"'{tab}'!A1:F400", f"'{tab}'!G1:G400"],
         valueRenderOption="FORMULA").execute()["valueRanges"]
     return res[0].get("values", []), [(_g(x, 0) if x else "") for x in res[1].get("values", [])]
 
@@ -198,7 +204,17 @@ def main():
     # 대시보드가 이미 쓰고 있는 표기를 우선한다 — 코드탭은 '라이트 그레이', 시트는 '라이트그레이'처럼
     # 띄어쓰기만 다른 경우가 많아, 같은 이름이면 시트 관행을 따라야 표가 균일해 보인다.
     sheet_spelling = defaultdict(Counter)
-    scans = {t: scan(sh, t) for t in TABS}
+    targets = [(DASH, TABS)]
+    try:
+        _t27 = {x["properties"]["title"] for x in sh.spreadsheets().get(
+            spreadsheetId=DASH27, fields="sheets(properties(title))").execute()["sheets"]}
+        targets.append((DASH27, [t for t in TABS27 if t in _t27]))
+        _miss = [t for t in TABS27 if t not in _t27]
+        if _miss:
+            print(f"⚠ 27SS 대시보드에 없는 탭 {_miss}")
+    except Exception as e:                       # 27SS 쪽이 깨져도 26FW 는 그대로 돈다
+        print(f"⚠ 27SS 대시보드 읽기 실패 — 26FW 만 처리: {e}")
+    scans = {(d, t): scan(sh, t, d) for d, ts in targets for t in ts}
     for rows, _f in scans.values():
         for row in rows:
             if COLOR_CODE.match(_g(row, 2)) and _g(row, 5):
@@ -216,8 +232,8 @@ def main():
         return cand
 
     fills, dfills, ffills, pending, all_uid = [], [], [], [], set()
-    for tab in TABS:
-        rows, forms = scans[tab]
+    for dash, tab in scans:
+        rows, forms = scans[(dash, tab)]
         for i, row in enumerate(rows):
             r = i + 1
             a_val, pum = _g(row, 0), _g(row, 2)
@@ -230,14 +246,14 @@ def main():
                 #   FORMULA 렌더로 읽으면 수식 문자열이 나온다(웜 팬츠 3건이 이래서 새어나갔다).
                 nm = pick_name(pum, pum.rsplit("-", 1)[-1])
                 if nm:
-                    ffills.append((tab, r, nm, pum))
+                    ffills.append((dash, tab, r, nm, pum))
                 else:
                     pending.append((tab, r, pum, "컬러명 소스 없음"))
             k = kind(forms[i] if i < len(forms) else "", r)
             if k == "개별" and not a_val.isdigit():
                 uid = by_pum.get(pum)
                 if uid:
-                    fills.append((tab, r, uid, pum, a_val))
+                    fills.append((dash, tab, r, uid, pum, a_val))
                     all_uid.add(uid)
                 else:
                     pending.append((tab, r, pum, "ItemMaster 미발급"))
@@ -250,8 +266,8 @@ def main():
                 all_uid.add(uid)          # ★먼저 필터에 태워야 실적이 들어오고, 그래야 옵션코드가 생긴다
                 code = optmap.get(uid, {}).get(_norm(_g(row, 5)))
                 if code:
-                    fills.append((tab, r, uid, pum, a_val))
-                    dfills.append((tab, r, code))
+                    fills.append((dash, tab, r, uid, pum, a_val))
+                    dfills.append((dash, tab, r, code))
                 else:
                     pending.append((tab, r, pum, f"통합uid {uid} · 옵션코드 대기(판매 전)"))
         for f in forms:                                  # 수식에 박힌 통합uid 회수
@@ -280,10 +296,10 @@ def main():
     all_uid |= prev_uid
 
     print(f"\n★A열 채울 행 {len(fills)}건")
-    for t, r, uid, pum, old in fills:
+    for _d, t, r, uid, pum, old in fills:
         print(f"   [{t}] R{r} {pum} → {uid}" + (f"  (기존값 '{old}' 덮어씀)" if old else ""))
     print(f"\n★F열 컬러명 채울 행 {len(ffills)}건")
-    for t, r, nm, pum in ffills[:60]:
+    for _d, t, r, nm, pum in ffills[:60]:
         print(f"   [{t}] R{r} {pum} → {nm}")
     if len(ffills) > 60:
         print(f"   … 외 {len(ffills) - 60}건")
@@ -298,35 +314,38 @@ def main():
         print("\n(dry-run) --apply 로 실제 기록")
         return
 
-    if fills:
-        sh.spreadsheets().values().batchUpdate(spreadsheetId=DASH, body={
-            "valueInputOption": "RAW",
-            "data": [{"range": f"'{t}'!A{r}", "values": [[uid]]} for t, r, uid, _, _ in fills],
-        }).execute()
-        print(f"A열 {len(fills)}건 기록 완료")
-    if dfills:
-        # ★D열 옵션코드는 반드시 TEXT — USER_ENTERED 로 쓰면 '03'→숫자 3 이 되어
-        #   문자열인 MTD!U 와 매칭 실패, 조용히 0 이 된다(과거 벨트 사고).
-        sids = {s["properties"]["title"]: s["properties"]["sheetId"]
-                for s in sh.spreadsheets().get(spreadsheetId=DASH,
-                                               fields="sheets(properties(sheetId,title))").execute()["sheets"]}
-        sh.spreadsheets().batchUpdate(spreadsheetId=DASH, body={"requests": [
-            {"repeatCell": {"range": {"sheetId": sids[t], "startRowIndex": r - 1, "endRowIndex": r,
-                                      "startColumnIndex": 3, "endColumnIndex": 4},
-                            "cell": {"userEnteredFormat": {"numberFormat": {"type": "TEXT"}}},
-                            "fields": "userEnteredFormat.numberFormat"}} for t, r, _ in dfills]}).execute()
-        sh.spreadsheets().values().batchUpdate(spreadsheetId=DASH, body={
-            "valueInputOption": "RAW",
-            "data": [{"range": f"'{t}'!D{r}", "values": [[code]]} for t, r, code in dfills],
-        }).execute()
-        print(f"D열 옵션코드 {len(dfills)}건 기록 완료 (TEXT)")
-
-    if ffills:
-        sh.spreadsheets().values().batchUpdate(spreadsheetId=DASH, body={
-            "valueInputOption": "RAW",
-            "data": [{"range": f"'{t}'!F{r}", "values": [[nm]]} for t, r, nm, _ in ffills],
-        }).execute()
-        print(f"F열 컬러명 {len(ffills)}건 기록 완료")
+    for DASH_, _tabs in targets:
+        _f = [x[1:] for x in fills if x[0] == DASH_]
+        _df = [x[1:] for x in dfills if x[0] == DASH_]
+        _ff = [x[1:] for x in ffills if x[0] == DASH_]
+        if _f:
+            sh.spreadsheets().values().batchUpdate(spreadsheetId=DASH_, body={
+                "valueInputOption": "RAW",
+                "data": [{"range": f"'{t}'!A{r}", "values": [[uid]]} for t, r, uid, _, _ in _f],
+            }).execute()
+            print(f"[{DASH_[:6]}] A열 {len(_f)}건 기록 완료")
+        if _df:
+            # ★D열 옵션코드는 반드시 TEXT — USER_ENTERED 로 쓰면 '03'→숫자 3 이 되어
+            #   문자열인 MTD!U 와 매칭 실패, 조용히 0 이 된다(과거 벨트 사고).
+            sids = {s_["properties"]["title"]: s_["properties"]["sheetId"]
+                    for s_ in sh.spreadsheets().get(spreadsheetId=DASH_,
+                                                    fields="sheets(properties(sheetId,title))").execute()["sheets"]}
+            sh.spreadsheets().batchUpdate(spreadsheetId=DASH_, body={"requests": [
+                {"repeatCell": {"range": {"sheetId": sids[t], "startRowIndex": r - 1, "endRowIndex": r,
+                                          "startColumnIndex": 3, "endColumnIndex": 4},
+                                "cell": {"userEnteredFormat": {"numberFormat": {"type": "TEXT"}}},
+                                "fields": "userEnteredFormat.numberFormat"}} for t, r, _ in _df]}).execute()
+            sh.spreadsheets().values().batchUpdate(spreadsheetId=DASH_, body={
+                "valueInputOption": "RAW",
+                "data": [{"range": f"'{t}'!D{r}", "values": [[code]]} for t, r, code in _df],
+            }).execute()
+            print(f"[{DASH_[:6]}] D열 옵션코드 {len(_df)}건 기록 완료 (TEXT)")
+        if _ff:
+            sh.spreadsheets().values().batchUpdate(spreadsheetId=DASH_, body={
+                "valueInputOption": "RAW",
+                "data": [{"range": f"'{t}'!F{r}", "values": [[nm]]} for t, r, nm, _ in _ff],
+            }).execute()
+            print(f"[{DASH_[:6]}] F열 컬러명 {len(_ff)}건 기록 완료")
 
     # _UID_FILTER 탭 (없으면 생성) — 노트북이 GOODS_FILTER 에 합집합으로 더한다.
     meta = sh.spreadsheets().get(spreadsheetId=DATA, fields="sheets(properties(sheetId,title))").execute()
