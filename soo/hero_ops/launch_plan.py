@@ -110,6 +110,13 @@ def parse_launch(grid: list[list[str]], season: str) -> list[dict]:
     miss = [f for f in REQUIRED if f not in ix]
     if miss:
         raise ValueError(f"[{season}] 발매1 필수 열 없음 {miss} — 헤더: {sub[:30]}")
+    # 촬샘(촬영샘플) 입고 — 예정일 = 묶음 '촬샘입고'·세부 '예정일'. 완료 = 그 **바로 뒤 3칸 안의 첫 '실 입고일'**.
+    #   묶음 라벨이 시즌마다 다르다(27SS '촬영샘플' P열 · 26FW '실입고일' Q열, 사이에 '디자인실 요청')라 위치로 가른다.
+    #   ★기존 COLS 'inb_manual'(None,'실 입고일' 첫 것)도 실은 이 칸을 읽는다 — 상품 실입고가 아니라 촬샘 실입고다(11/11 확인).
+    sp_j = next((j for j in range(len(sub)) if g(j) == "촬샘입고" and sub[j].strip() == "예정일"), None)
+    sd_j = next((j for j in range(sp_j + 1, min(sp_j + 4, len(sub))) if sub[j].strip() == "실 입고일"), None) if sp_j is not None else None
+    if sp_j is None or sd_j is None:
+        print(f"[plan] ⚠ {season} 촬샘 예정일/실 입고일 열 못 찾음(예정 {sp_j} · 실입고 {sd_j}) — 이 시즌 촬샘 알림 제외")
     out = []
     for r in grid[hi + 1:]:
         c = lambda f: (r[ix[f]].strip() if f in ix and ix[f] < len(r) else "")
@@ -127,8 +134,12 @@ def parse_launch(grid: list[list[str]], season: str) -> list[dict]:
                     "type": c("type"), "hero": c("hero"), "name": c("name"), "sku": c("sku"),
                     "plan_qty": int(_num(c("plan_qty"))), "inb_plan": work_req.norm_date(c("inb_plan")),
                     "inb_manual": work_req.norm_date(c("inb_manual")), "issue": c("issue"),
-                    "sourcing": c("sourcing"), "note": note, "preorder": c("preorder")})
-    print(f"[plan] {season} 발매1 {len(out):,}행 (헤더 {hi + 1}행 · 열 {ix})")
+                    "sourcing": c("sourcing"), "note": note, "preorder": c("preorder"),
+                    "shoot_ok": sd_j is not None,
+                    "shoot_plan": work_req.norm_date(r[sp_j].strip() if sp_j is not None and sp_j < len(r) else ""),
+                    # 완료 = 실 입고일 칸에 **뭐든** 적혀 있으면(날짜가 아닌 '완료' 같은 글자도 완료로 본다)
+                    "shoot_done": (r[sd_j].strip() if sd_j is not None and sd_j < len(r) else "")})
+    print(f"[plan] {season} 발매1 {len(out):,}행 (헤더 {hi + 1}행 · 열 {ix} · 촬샘 예정 {sp_j} 실입고 {sd_j})")
     return out
 
 
@@ -172,7 +183,7 @@ def load_uids(sheets) -> dict[str, set]:
     return out
 
 
-def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Counter]:
+def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Counter, list[dict]]:
     reg = source_registry.load_registry(sheets)
     plans: list[dict] = []
     for key in [k for k in source_registry.DEFAULTS if k.startswith("launch_")]:
@@ -412,7 +423,7 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                      inb, on, ds, " · ".join(risk), p["issue"][:200], p["sourcing"], p["note"],
                      p2h.get(sty, ""), a["rfirst"].isoformat() if a["rfirst"] else "", pre, pre_src, pre_ship,
                      dst, d_done, d_total, d_missing, " · ".join(sorted(lcols)) if lcols else "", inb_missing])
-    return grid, cnt
+    return grid, cnt, plans
 
 
 # ── 발매일 변경 감지(사용자 지시 2026-10-23 "발매일이 변경되면 알람") ─────────────────────────────
@@ -523,7 +534,7 @@ def format_changes(rows: list[list], now: _dt.datetime, test: bool = False) -> s
     return msg
 
 
-def send_changes(msg: str) -> int:
+def send_changes(msg: str, label: str = "발매일 변경 알림") -> int:
     """CHG_RECIPIENTS 전원에게 DM. 성공 수를 돌려준다(토큰 없으면 0 — 로컬 시험).
 
     ★보내는 봇 = **MUSINSA STANDARD MDP 봇**(사용자 지시 2026-10-23 — 히어로 봇과 분리). 토큰 = Secret SLACK_MDP_BOT_TOKEN
@@ -533,7 +544,7 @@ def send_changes(msg: str) -> int:
     import os
     tok = os.environ.get("SLACK_MDP_BOT_TOKEN", "").strip()
     if not tok:
-        print("[plan] SLACK_MDP_BOT_TOKEN 없음 — 발매일 변경 알림 스킵(원장엔 미발송으로 남는다)")
+        print(f"[plan] SLACK_MDP_BOT_TOKEN 없음 — {label} 스킵(원장엔 미발송으로 남는다)")
         return 0
     from soo import persona
     mdp = persona.Persona(**{**persona.RANKING_BOT.__dict__, "slack_username": None, "slack_icon_emoji": None, "slack_icon_url": None})
@@ -543,8 +554,8 @@ def send_changes(msg: str) -> int:
             if persona.send_slack(msg, bot_token=tok, target=target, persona=mdp):
                 ok += 1
         except Exception as e:
-            print(f"[plan] 발매일 변경 알림 실패({target}): {type(e).__name__}: {e}")
-    print(f"[plan] 발매일 변경 알림 {ok}/{len(CHG_RECIPIENTS)}명")
+            print(f"[plan] {label} 실패({target}): {type(e).__name__}: {e}")
+    print(f"[plan] {label} {ok}/{len(CHG_RECIPIENTS)}명")
     return ok
 
 
@@ -563,6 +574,149 @@ def _notify_pending(sheets, now: _dt.datetime) -> None:
     sheets.spreadsheets().values().batchUpdate(spreadsheetId=APP_SHEET_ID,
                                                body={"valueInputOption": "RAW", "data": data}).execute()
     print(f"[plan] 발매일 변경 알림 {len(todo)}건 발송")
+
+
+# ── 촬샘 입고 알림(사용자 지시 2026-11-11) ────────────────────────────────────────────────────
+#   ①예정일 변경 — 발매일 변경과 같은 방식(스냅샷 날짜 집합 비교, 빠진 날↔생긴 날 짝만 '변경'). 담당 소싱을 같이 적는다.
+#     ('누가 바꿨는지'는 칸 단위 편집자를 API 로 못 읽어 담당 소싱으로 대신 — 사용자 확정)
+#   ②미입고 — 예정일이 하루 이상 지났는데 '실 입고일' 칸이 비어 있으면 한 번. 키 = (시즌, 품번, 예정일) 원장 dedup.
+#     '어제'만 보지 않고 원장에 없는 지난 건 전부를 본다 — 주말·CI 빠진 날도 다음 실행에 잡힌다([[CLAUDE 1-3]]).
+#     ★첫 실행엔 이미 밀린 건을 '기준선'으로만 적고 보내지 않는다(11/11 실측 27SS 21건).
+#   D-3 사전 알림은 하지 않는다(사용자 결정 — 실입고일 늦게 적는 걸 감안해 D+1 만).
+#   알림 = CHG_RECIPIENTS DM · MDP 봇 · KST 08~20시(발매일 변경과 같음).
+SHOOT_SNAP_TAB = "_OPS_SHOOT_SNAP"
+SHOOT_TAB = "_OPS_SHOOT_CHG"
+SHOOT_HEADER = ["detected_at", "season", "style", "name", "kind", "old", "new", "sourcing", "notified"]
+SHOOT_GRACE_DAYS = 1      # 예정일 + 1일부터 미입고
+
+
+def _read_opt(sheets, tab: str, ncol: int) -> list[list] | None:
+    """탭이 없으면 None(드라이런은 탭을 만들지 않는다)."""
+    meta = sheets.spreadsheets().get(spreadsheetId=APP_SHEET_ID, fields="sheets.properties(title)").execute()
+    if not any(x["properties"]["title"] == tab for x in meta["sheets"]):
+        return None
+    return sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{tab}'!A2:{_col(ncol)}").execute().get("values", [])
+
+
+def shoot_events(plans: list[dict], snap_rows: list[list] | None, ledger: list[list] | None,
+                 now: _dt.datetime) -> tuple[list[list], list[list], dict]:
+    """(새 원장 행, 새 스냅샷 행, 통계). 원장 행 notified 칸: '' = 보낼 것 · '기준선' = 첫 실행 밀린 건."""
+    today, stamp = now.date(), now.strftime("%Y-%m-%d %H:%M")
+    cur: dict[str, dict] = {}
+    for p in plans:
+        if not p.get("shoot_ok"):
+            continue
+        e = cur.setdefault(f"{p['season']}|{p['style']}", {"dates": set(), "name": p["name"], "src": "", "done": 0})
+        if p["shoot_plan"]:
+            e["dates"].add(p["shoot_plan"].isoformat())
+        e["src"] = e["src"] or p["sourcing"]
+        e["done"] += bool(p["shoot_done"])
+    events: list[list] = []
+    st = {"styles": len(cur), "done_now": sum(v["done"] for v in cur.values())}
+    # ① 예정일 변경
+    if snap_rows:
+        prev = {r[0]: [d for d in (r[2] if len(r) > 2 else "").split(",") if d] for r in snap_rows if r}
+        st["done_prev"] = sum(int(r[3]) for r in snap_rows if len(r) > 3 and str(r[3]).isdigit())
+        prev_seasons = {k.split("|", 1)[0] for k in prev}
+        chg = []
+        for k in sorted(set(cur) & set(prev)):
+            season, sty = k.split("|", 1)
+            if season not in prev_seasons:
+                continue
+            a, b = set(prev[k]), cur[k]["dates"]
+            for o_, n_ in zip(sorted(a - b), sorted(b - a)):
+                chg.append([stamp, season, sty, cur[k]["name"], "변경", o_, n_, cur[k]["src"], ""])
+        limit = max(30, int(len(cur) * 0.1))
+        if len(chg) > limit:
+            print(f"[shoot] ⚠ 촬샘 예정일 변화 {len(chg)}건 > 한도 {limit} — 반쯤 읽은 것으로 보고 변경 기록 건너뜀")
+            chg = []
+        events += chg
+    # ② 미입고 — 완료 칸이 통째로 비면(반쯤 읽기·열 이동) 무더기 오알림이 난다 → 직전 대비 완료 수가 20% 넘게 줄면 건너뜀
+    if snap_rows and st.get("done_prev", 0) >= 20 and st["done_now"] < st["done_prev"] * 0.8:
+        print(f"[shoot] ⚠ 실 입고일 기입 {st['done_prev']}→{st['done_now']} 급감 — 미입고 판정 건너뜀")
+    else:
+        seen = {(r[1], r[2], r[5]) for r in (ledger or []) if len(r) > 5 and r[4] == "미입고"}
+        first = ledger is None
+        miss = {}
+        for p in plans:
+            sp = p.get("shoot_plan")
+            if not p.get("shoot_ok") or not sp or p["shoot_done"] or (today - sp).days < SHOOT_GRACE_DAYS:
+                continue
+            k = (p["season"], p["style"], sp.isoformat())
+            if k not in seen:
+                miss.setdefault(k, [stamp, *k[:2], p["name"], "미입고", k[2], "", p["sourcing"], "기준선" if first else ""])
+        events += sorted(miss.values(), key=lambda r: (r[5], r[2]))
+    snap = [[k, v["name"], ",".join(sorted(v["dates"])), v["done"]] for k, v in sorted(cur.items())]
+    return events, snap, st
+
+
+def format_shoot(rows: list[list], kind: str, test: bool = False) -> str:
+    md = lambda x: f"{int(x[5:7])}/{int(x[8:10])}" if x else "-"
+    src = lambda r: f" (소싱 {r[7]})" if len(r) > 7 and r[7] else ""
+    lines = []
+    for r in rows[:30]:
+        what = f"{md(r[5])} → {md(r[6])}" if kind == "변경" else f"예정 {md(r[5])}"
+        lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — {what}{src(r)}")
+    more = "" if len(rows) <= 30 else f"\n… 외 {len(rows) - 30}건"
+    if kind == "변경":
+        head, tail = ":camera: 촬샘 입고일자가 변경되었어요!", ":speech_balloon: 자세한 사유는 담당 소싱에게 문의 부탁드려요!"
+    else:
+        head = ":warning: 촬샘 입고 예정일이 지났는데 아직 입고 완료(실 입고일) 표시가 없어요"
+        tail = ":point_right: 스케줄대로 들어왔는지 확인 부탁드려요!"
+    return ("[시험] " if test else "") + head + "\n" + "\n".join(lines) + more + "\n" + tail
+
+
+def track_shoot(sheets, plans: list[dict], now: _dt.datetime, apply: bool) -> list[list]:
+    snap_rows = _read_opt(sheets, SHOOT_SNAP_TAB, 4)
+    ledger = _read_opt(sheets, SHOOT_TAB, len(SHOOT_HEADER))
+    events, snap, st = shoot_events(plans, snap_rows, ledger, now)
+    ck = collections.Counter((r[4], r[8] or "보낼 것") for r in events)
+    print(f"[shoot] 품번 {st['styles']:,} · 실입고 기입 {st['done_now']}(직전 {st.get('done_prev', '-')}) · "
+          + (" · ".join(f"{k[0]}/{k[1]} {v}" for k, v in sorted(ck.items())) or "새 건 없음")
+          + ("" if snap_rows else " · 스냅샷 첫 생성(변경 비교는 다음 실행부터)"))
+    for r in events[:10]:
+        print("   ", r[1], r[2], r[3][:20], r[4], r[5], "→" if r[6] else "", r[6], r[7], r[8])
+    if not apply:
+        for kind in ("변경", "미입고"):
+            todo = [r for r in events if r[4] == kind and not r[8]]
+            if todo:
+                print(f"--- 미리보기({kind}) ---\n" + format_shoot(todo, kind, test=True))
+        return events
+    _ensure(sheets, SHOOT_TAB, SHOOT_HEADER)      # ★건이 없어도 만든다 — 원장 탭 유무가 '첫 실행(기준선)' 판정이다
+    if events:
+        sheets.spreadsheets().values().append(   # ★OVERWRITE([[CLAUDE 1-6]])
+            spreadsheetId=APP_SHEET_ID, range=f"'{SHOOT_TAB}'!A1", valueInputOption="RAW",
+            insertDataOption="OVERWRITE", body={"values": events}).execute()
+    _ensure(sheets, SHOOT_SNAP_TAB, ["key", "name", "dates", "done"])
+    sheets.spreadsheets().values().clear(spreadsheetId=APP_SHEET_ID, range=f"'{SHOOT_SNAP_TAB}'!A1:D", body={}).execute()
+    meta = sheets.spreadsheets().get(spreadsheetId=APP_SHEET_ID, fields="sheets.properties(title,sheetId,gridProperties)").execute()
+    sp = next(x["properties"] for x in meta["sheets"] if x["properties"]["title"] == SHOOT_SNAP_TAB)
+    if sp["gridProperties"]["rowCount"] < len(snap) + 100:
+        sheets.spreadsheets().batchUpdate(spreadsheetId=APP_SHEET_ID, body={"requests": [{"updateSheetProperties": {
+            "properties": {"sheetId": sp["sheetId"], "gridProperties": {"rowCount": len(snap) + 500}},
+            "fields": "gridProperties.rowCount"}}]}).execute()
+    sheets.spreadsheets().values().update(spreadsheetId=APP_SHEET_ID, range=f"'{SHOOT_SNAP_TAB}'!A1", valueInputOption="RAW",
+                                          body={"values": [["key", "name", "dates", "done"]] + snap}).execute()
+    if 8 <= now.hour < 20:
+        _notify_shoot(sheets, now)
+    return events
+
+
+def _notify_shoot(sheets, now: _dt.datetime) -> None:
+    _ensure(sheets, SHOOT_TAB, SHOOT_HEADER)
+    rows = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{SHOOT_TAB}'!A2:I").execute().get("values", [])
+    col = _col(len(SHOOT_HEADER))
+    for kind in ("변경", "미입고"):
+        todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 6 and r[4] == kind and not (r[8] if len(r) > 8 else "").strip()]
+        if not todo:
+            continue
+        if send_changes(format_shoot([r for _, r in todo], kind), label=f"촬샘 {kind} 알림") == 0:
+            print(f"[shoot] 촬샘 {kind} 알림 미발송 {len(todo)}건 — 원장에 '보냄' 표시 안 함")   # 기록은 성공 시에만
+            continue
+        sent = now.strftime("%Y-%m-%d %H:%M")
+        sheets.spreadsheets().values().batchUpdate(spreadsheetId=APP_SHEET_ID, body={"valueInputOption": "RAW", "data": [
+            {"range": f"'{SHOOT_TAB}'!{col}{i + 2}", "values": [[sent]]} for i, _ in todo]}).execute()
+        print(f"[shoot] 촬샘 {kind} 알림 {len(todo)}건 발송")
 
 
 def write(sheets, grid: list[list], label: str) -> None:
@@ -592,14 +746,16 @@ def main() -> None:
     a = ap.parse_args()
     svc = build_services(get_credentials(HERO / "credentials.json", HERO / "token.json"))
     now = _kst_now()
-    grid, cnt = build(svc["sheets"], svc["drive"], now.date())
+    grid, cnt, plans = build(svc["sheets"], svc["drive"], now.date())
     print("[plan] " + " · ".join(f"{k} {v:,}" for k, v in sorted(cnt.items())))
     if a.apply:
         # 변경 감지는 화면 기입 **뒤에** — 실패하면 예외로 스텝을 실패시켜 워크플로 실패 알림이 오게 한다(조용히 삼키지 않는다).
         write(svc["sheets"], grid, f"발매 파이프라인 · 발매일=시즌 작업의뢰 '발매1' · 입고=WMS 업체 입고(품번) · 예약발매=비제스트 예약 배송 이력 "
                                    f"· 온라인=판매중 전환 · 분배=매장 출고(부문 대시보드 매장 기준) · 생성 {now:%Y-%m-%d %H:%M} KST")
         track_changes(svc["sheets"], grid, now)
+        track_shoot(svc["sheets"], plans, now, apply=True)
     else:
+        track_shoot(svc["sheets"], plans, now, apply=False)
         print("(드라이런 — --apply 로 기입)")
 
 
