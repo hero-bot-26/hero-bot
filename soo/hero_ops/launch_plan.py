@@ -63,7 +63,7 @@ HEADER = ["season", "plan", "style", "line", "item", "type", "hero", "name", "sk
           "online_at", "online_diff", "uids", "dist_qty", "dist_shops", "dist_total", "dist_last",
           "inb_state", "online_state", "dist_state", "risk", "issue", "sourcing", "row_note", "hero_series",
           "recv_first", "preorder", "preorder_src", "preorder_ship", "detail_state", "detail_done", "detail_total", "detail_missing",
-          "launch_colors", "inb_missing"]
+          "launch_colors", "inb_missing", "shoot_plan", "shoot_done"]   # 촬샘 예정일·실 입고일(원문) — 캘린더 카드(11/11)
 
 # 헤더 (묶음 라벨, 세부 라벨) → 필드. 묶음이 None 이면 세부 라벨만 본다. 같은 라벨이 여럿이면 **첫 것**.
 COLS = {
@@ -422,7 +422,8 @@ def build(sheets, drive, today: _dt.date) -> tuple[list[list], collections.Count
                      len(u), int(dd["q"]), n_sh, len(in_list), dd["last"],
                      inb, on, ds, " · ".join(risk), p["issue"][:200], p["sourcing"], p["note"],
                      p2h.get(sty, ""), a["rfirst"].isoformat() if a["rfirst"] else "", pre, pre_src, pre_ship,
-                     dst, d_done, d_total, d_missing, " · ".join(sorted(lcols)) if lcols else "", inb_missing])
+                     dst, d_done, d_total, d_missing, " · ".join(sorted(lcols)) if lcols else "", inb_missing,
+                     p["shoot_plan"].isoformat() if p.get("shoot_plan") else "", p.get("shoot_done", "")])
     return grid, cnt, plans
 
 
