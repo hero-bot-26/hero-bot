@@ -608,13 +608,12 @@ def _read_opt(sheets, tab: str, ncol: int) -> list[list] | None:
 
 
 def _shoot_owners(p: dict, owners: dict[str, dict]) -> tuple[str, str]:
-    """(소싱, 기획MD) 이름 문자열 ', ' 구분. 소싱 = PLM sc_nm ∪ 발매1 '소싱담당'(11/13 실측 13건 중 8건이 서로 달랐다)."""
+    """(소싱, 기획MD) 이름 문자열 ', ' 구분.
+    소싱 = **작업의뢰 발매1 '소싱담당'이 정본**(사용자 결정 11/13 — PLM sc_nm 과 13건 중 8건이 달랐고, 니트는 발매1 의 김우진(소싱/니트)이 맞음).
+    발매1 칸이 비었을 때만 PLM sc_nm 폴백. 기획MD = PLM md_nm."""
     from soo.hero_ops.asn_notify import _names
     o = owners.get(p["style"], {})
-    sc = []
-    for n in _names(o.get("sc")) + _names(p.get("sourcing")):
-        if n not in sc:
-            sc.append(n)
+    sc = _names(p.get("sourcing")) or _names(o.get("sc"))
     return ", ".join(sc), ", ".join(_names(o.get("md")))
 
 
