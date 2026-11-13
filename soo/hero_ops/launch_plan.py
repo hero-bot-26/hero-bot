@@ -535,8 +535,8 @@ def format_changes(rows: list[list], now: _dt.datetime, test: bool = False) -> s
     return msg
 
 
-def send_changes(msg: str, label: str = "발매일 변경 알림") -> int:
-    """CHG_RECIPIENTS 전원에게 DM. 성공 수를 돌려준다(토큰 없으면 0 — 로컬 시험).
+def send_changes(msg: str, label: str = "발매일 변경 알림", targets: list[str] | None = None) -> int:
+    """targets(기본 CHG_RECIPIENTS) 전원에게 DM. 성공 수를 돌려준다(토큰 없으면 0 — 로컬 시험).
 
     ★보내는 봇 = **MUSINSA STANDARD MDP 봇**(사용자 지시 2026-10-23 — 히어로 봇과 분리). 토큰 = Secret SLACK_MDP_BOT_TOKEN
       (로컬 = hero_bot/secrets.yaml `mdp_bot_token`). 히어로 봇 토큰엔 chat:write.customize 가 없어 이름만 바꾸는 건 불가였다.
@@ -550,13 +550,14 @@ def send_changes(msg: str, label: str = "발매일 변경 알림") -> int:
     from soo import persona
     mdp = persona.Persona(**{**persona.RANKING_BOT.__dict__, "slack_username": None, "slack_icon_emoji": None, "slack_icon_url": None})
     ok = 0
-    for target in CHG_RECIPIENTS:
+    targets = CHG_RECIPIENTS if targets is None else targets
+    for target in targets:
         try:
             if persona.send_slack(msg, bot_token=tok, target=target, persona=mdp):
                 ok += 1
         except Exception as e:
             print(f"[plan] {label} 실패({target}): {type(e).__name__}: {e}")
-    print(f"[plan] {label} {ok}/{len(CHG_RECIPIENTS)}명")
+    print(f"[plan] {label} {ok}/{len(targets)}명")
     return ok
 
 
@@ -583,12 +584,19 @@ def _notify_pending(sheets, now: _dt.datetime) -> None:
 #   ②미입고 — 예정일이 하루 이상 지났는데 '실 입고일' 칸이 비어 있으면 한 번. 키 = (시즌, 품번, 예정일) 원장 dedup.
 #     '어제'만 보지 않고 원장에 없는 지난 건 전부를 본다 — 주말·CI 빠진 날도 다음 실행에 잡힌다([[CLAUDE 1-3]]).
 #     ★첫 실행엔 이미 밀린 건을 '기준선'으로만 적고 보내지 않는다(11/11 실측 27SS 21건).
-#   D-3 사전 알림은 하지 않는다(사용자 결정 — 실입고일 늦게 적는 걸 감안해 D+1 만).
-#   알림 = CHG_RECIPIENTS DM · MDP 봇 · KST 08~20시(발매일 변경과 같음).
+#   ③사전(독촉) — 예정일 D-7 이내(오늘~+7일)인데 실 입고일 빈칸이면 한 번(사용자 지시 2026-11-13 "소싱이 늦어져도 본인도
+#     모르거나 노티가 없다 — D-1주에 담당 소싱·담당 기획MD 에게만 '제대로 들어오는 거 맞나요?'"). 11/11 의 'D-3 사전 알림 안 함'을
+#     사용자가 이 목적(일정 확인 독촉)으로 바꿨다. 키 = (시즌, 품번, 예정일) — 예정일이 바뀌면 새 날짜로 다시 한 번.
+#     수신 = 그 품번의 소싱(PLM sc_nm ∪ 발매1 '소싱담당' — 둘이 다른 품번이 있어 합집합) + 기획MD(PLM md_nm), 사람별 자기 건만.
+#     ★SHOOT_REMIND_LIVE=False(배포 전)면 수영님에게만 '→ 받을 사람' 을 붙여 보내고 원장에 'TEST …' 로 적는다.
+#       LIVE 로 바꾸면 'TEST' 건 중 아직 예정일 전·미입고인 것은 실담당자에게 다시 나간다(테스트 발송이 원장을 소비하지 않게 [[CLAUDE 1-3]]).
+#   알림(①②) = CHG_RECIPIENTS DM · MDP 봇 · KST 08~20시(발매일 변경과 같음). 배포 때 관련 팀 전원으로 넓힐 예정(사용자 11/13).
 SHOOT_SNAP_TAB = "_OPS_SHOOT_SNAP"
 SHOOT_TAB = "_OPS_SHOOT_CHG"
-SHOOT_HEADER = ["detected_at", "season", "style", "name", "kind", "old", "new", "sourcing", "notified"]
+SHOOT_HEADER = ["detected_at", "season", "style", "name", "kind", "old", "new", "sourcing", "notified", "md"]
 SHOOT_GRACE_DAYS = 1      # 예정일 + 1일부터 미입고
+SHOOT_REMIND_DAYS = 7     # 예정일 D-7 이내 진입 시 사전 독촉(사용자 지시 2026-11-13)
+SHOOT_REMIND_LIVE = False # ★배포 전 = 수영님에게만. True = 담당 소싱·기획MD 각자에게
 
 
 def _read_opt(sheets, tab: str, ncol: int) -> list[list] | None:
@@ -599,8 +607,19 @@ def _read_opt(sheets, tab: str, ncol: int) -> list[list] | None:
     return sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{tab}'!A2:{_col(ncol)}").execute().get("values", [])
 
 
+def _shoot_owners(p: dict, owners: dict[str, dict]) -> tuple[str, str]:
+    """(소싱, 기획MD) 이름 문자열 ', ' 구분. 소싱 = PLM sc_nm ∪ 발매1 '소싱담당'(11/13 실측 13건 중 8건이 서로 달랐다)."""
+    from soo.hero_ops.asn_notify import _names
+    o = owners.get(p["style"], {})
+    sc = []
+    for n in _names(o.get("sc")) + _names(p.get("sourcing")):
+        if n not in sc:
+            sc.append(n)
+    return ", ".join(sc), ", ".join(_names(o.get("md")))
+
+
 def shoot_events(plans: list[dict], snap_rows: list[list] | None, ledger: list[list] | None,
-                 now: _dt.datetime) -> tuple[list[list], list[list], dict]:
+                 now: _dt.datetime, owners: dict[str, dict] | None = None) -> tuple[list[list], list[list], dict]:
     """(새 원장 행, 새 스냅샷 행, 통계). 원장 행 notified 칸: '' = 보낼 것 · '기준선' = 첫 실행 밀린 건."""
     today, stamp = now.date(), now.strftime("%Y-%m-%d %H:%M")
     cur: dict[str, dict] = {}
@@ -647,6 +666,18 @@ def shoot_events(plans: list[dict], snap_rows: list[list] | None, ledger: list[l
             if k not in seen:
                 miss.setdefault(k, [stamp, *k[:2], p["name"], "미입고", k[2], "", p["sourcing"], "기준선" if first else ""])
         events += sorted(miss.values(), key=lambda r: (r[5], r[2]))
+        # ③ 사전(D-7 이내) — 같은 급감 가드 안에 둔다(완료 칸이 통째로 비면 무더기 독촉이 나간다)
+        seen_r = {(r[1], r[2], r[5]) for r in (ledger or []) if len(r) > 5 and r[4] == "사전"}
+        pre = {}
+        for p in plans:
+            sp = p.get("shoot_plan")
+            if not p.get("shoot_ok") or not sp or p["shoot_done"] or not 0 <= (sp - today).days <= SHOOT_REMIND_DAYS:
+                continue
+            k = (p["season"], p["style"], sp.isoformat())
+            if k not in seen_r and k not in pre:
+                sc, md = _shoot_owners(p, owners or {})
+                pre[k] = [stamp, *k[:2], p["name"], "사전", k[2], "", sc, "", md]
+        events += sorted(pre.values(), key=lambda r: (r[5], r[2]))
     snap = [[k, v["name"], ",".join(sorted(v["dates"])), v["done"]] for k, v in sorted(cur.items())]
     return events, snap, st
 
@@ -656,11 +687,20 @@ def format_shoot(rows: list[list], kind: str, test: bool = False) -> str:
     src = lambda r: f" (소싱 {r[7]})" if len(r) > 7 and r[7] else ""
     lines = []
     for r in rows[:30]:
+        if kind == "사전":
+            d = (_dt.date.fromisoformat(r[5]) - _kst_now().date()).days
+            who = f" (→ 소싱 {r[7] or '-'} / 기획MD {(r[9] if len(r) > 9 else '') or '-'})" if test else ""
+            lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — 예정 {md(r[5])} (D-{d}){who}")
+            continue
         what = f"{md(r[5])} → {md(r[6])}" if kind == "변경" else f"예정 {md(r[5])}"
         lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — {what}{src(r)}")
     more = "" if len(rows) <= 30 else f"\n… 외 {len(rows) - 30}건"
     if kind == "변경":
         head, tail = ":camera: 촬샘 입고일자가 변경되었어요!", ":speech_balloon: 자세한 사유는 담당 소싱에게 문의 부탁드려요!"
+    elif kind == "사전":
+        head = ":camera: 촬샘 입고 D-7 예정인 스타일이에요!"
+        tail = (":point_right: 일정대로 들어오는 게 맞나요? 변경이 필요하면 작업의뢰 시트 촬샘 예정일 업데이트 및 "
+                "관련 분들께 노티 부탁드려요!")
     else:
         head = ":warning: 촬샘 입고 예정일이 지났는데 아직 입고 완료(실 입고일) 표시가 없어요"
         tail = ":point_right: 스케줄대로 들어왔는지 확인 부탁드려요!"
@@ -670,7 +710,9 @@ def format_shoot(rows: list[list], kind: str, test: bool = False) -> str:
 def track_shoot(sheets, plans: list[dict], now: _dt.datetime, apply: bool) -> list[list]:
     snap_rows = _read_opt(sheets, SHOOT_SNAP_TAB, 4)
     ledger = _read_opt(sheets, SHOOT_TAB, len(SHOOT_HEADER))
-    events, snap, st = shoot_events(plans, snap_rows, ledger, now)
+    from soo.hero_ops import asn_notify
+    owners = asn_notify.load_owners(sheets)          # PLM `데이터` + `_OPS_CAT` 원장 보충(ASN 알림과 같은 경로)
+    events, snap, st = shoot_events(plans, snap_rows, ledger, now, owners)
     ck = collections.Counter((r[4], r[8] or "보낼 것") for r in events)
     print(f"[shoot] 품번 {st['styles']:,} · 실입고 기입 {st['done_now']}(직전 {st.get('done_prev', '-')}) · "
           + (" · ".join(f"{k[0]}/{k[1]} {v}" for k, v in sorted(ck.items())) or "새 건 없음")
@@ -678,12 +720,13 @@ def track_shoot(sheets, plans: list[dict], now: _dt.datetime, apply: bool) -> li
     for r in events[:10]:
         print("   ", r[1], r[2], r[3][:20], r[4], r[5], "→" if r[6] else "", r[6], r[7], r[8])
     if not apply:
-        for kind in ("변경", "미입고"):
+        for kind in ("변경", "미입고", "사전"):
             todo = [r for r in events if r[4] == kind and not r[8]]
             if todo:
                 print(f"--- 미리보기({kind}) ---\n" + format_shoot(todo, kind, test=True))
         return events
     _ensure(sheets, SHOOT_TAB, SHOOT_HEADER)      # ★건이 없어도 만든다 — 원장 탭 유무가 '첫 실행(기준선)' 판정이다
+    _fix_header(sheets)
     if events:
         sheets.spreadsheets().values().append(   # ★OVERWRITE([[CLAUDE 1-6]])
             spreadsheetId=APP_SHEET_ID, range=f"'{SHOOT_TAB}'!A1", valueInputOption="RAW",
@@ -699,15 +742,34 @@ def track_shoot(sheets, plans: list[dict], now: _dt.datetime, apply: bool) -> li
     sheets.spreadsheets().values().update(spreadsheetId=APP_SHEET_ID, range=f"'{SHOOT_SNAP_TAB}'!A1", valueInputOption="RAW",
                                           body={"values": [["key", "name", "dates", "done"]] + snap}).execute()
     if 8 <= now.hour < 20:
-        _notify_shoot(sheets, now)
+        open_keys = {(p["season"], p["style"], p["shoot_plan"].isoformat()) for p in plans
+                     if p.get("shoot_ok") and p.get("shoot_plan") and not p["shoot_done"]}
+        _notify_shoot(sheets, now, open_keys)
     return events
 
 
-def _notify_shoot(sheets, now: _dt.datetime) -> None:
+def _fix_header(sheets) -> None:
+    """11/11 에 만든 원장은 9열 — 사전 알림용 'md' 열(J)을 머리말에 붙인다(행 구조 불변, 열만 뒤에 [[CLAUDE 1-6]])."""
+    meta = sheets.spreadsheets().get(spreadsheetId=APP_SHEET_ID, fields="sheets.properties(title,sheetId,gridProperties)").execute()
+    sp = next(x["properties"] for x in meta["sheets"] if x["properties"]["title"] == SHOOT_TAB)
+    if sp["gridProperties"]["columnCount"] < len(SHOOT_HEADER):
+        sheets.spreadsheets().batchUpdate(spreadsheetId=APP_SHEET_ID, body={"requests": [{"updateSheetProperties": {
+            "properties": {"sheetId": sp["sheetId"], "gridProperties": {"columnCount": len(SHOOT_HEADER)}},
+            "fields": "gridProperties.columnCount"}}]}).execute()
+    h = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID,
+                                           range=f"'{SHOOT_TAB}'!A1:{_col(len(SHOOT_HEADER))}1").execute().get("values", [[]])
+    if (h[0] if h else []) != SHOOT_HEADER:
+        sheets.spreadsheets().values().update(spreadsheetId=APP_SHEET_ID, range=f"'{SHOOT_TAB}'!A1", valueInputOption="RAW",
+                                              body={"values": [SHOOT_HEADER]}).execute()
+
+
+def _notify_shoot(sheets, now: _dt.datetime, open_keys: set | None = None) -> None:
     _ensure(sheets, SHOOT_TAB, SHOOT_HEADER)
-    rows = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range=f"'{SHOOT_TAB}'!A2:I").execute().get("values", [])
-    col = _col(len(SHOOT_HEADER))
-    for kind in ("변경", "미입고"):
+    rows = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID,
+                                              range=f"'{SHOOT_TAB}'!A2:{_col(len(SHOOT_HEADER))}").execute().get("values", [])
+    col = _col(SHOOT_HEADER.index("notified") + 1)    # I — 'md' 열(J)이 붙어도 notified 는 I
+    _notify_remind(sheets, now, rows, col, open_keys or set())
+    for kind in ("변경", "미입고"):          # '사전' 은 _notify_remind(사람별)
         todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 6 and r[4] == kind and not (r[8] if len(r) > 8 else "").strip()]
         if not todo:
             continue
@@ -718,6 +780,60 @@ def _notify_shoot(sheets, now: _dt.datetime) -> None:
         sheets.spreadsheets().values().batchUpdate(spreadsheetId=APP_SHEET_ID, body={"valueInputOption": "RAW", "data": [
             {"range": f"'{SHOOT_TAB}'!{col}{i + 2}", "values": [[sent]]} for i, _ in todo]}).execute()
         print(f"[shoot] 촬샘 {kind} 알림 {len(todo)}건 발송")
+
+
+def _notify_remind(sheets, now: _dt.datetime, rows: list[list], col: str, open_keys: set) -> None:
+    """사전(D-7) 독촉 발송. 보낼 행 = kind '사전' · 아직 미입고·같은 예정일(open_keys) · notified 빈칸(LIVE 땐 'TEST…'도).
+    TEST = CHG_RECIPIENTS 에 전부 한 통('→ 받을 사람' 표기) · LIVE = 소싱·기획MD 이름 → `담당자매핑` Slack ID 로 사람별 자기 건만.
+    Slack ID 없는 이름이 낀 건은 CHG_RECIPIENTS 로도 모아 보낸다(조용히 빠지지 않게)."""
+    stamp = now.strftime("%Y-%m-%d %H:%M")
+    today = now.date()
+
+    def due(r):
+        n = (r[8] if len(r) > 8 else "").strip()
+        if not (not n or (SHOOT_REMIND_LIVE and n.startswith("TEST"))):
+            return False
+        try:
+            left = (_dt.date.fromisoformat(r[5]) - today).days
+        except ValueError:
+            return False
+        return left >= 0 and (r[1], r[2], r[5]) in open_keys
+
+    todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 6 and r[4] == "사전" and due(r)]
+    if not todo:
+        return
+    sent_rows: set[int] = set()
+    if not SHOOT_REMIND_LIVE:
+        if send_changes(format_shoot([r for _, r in todo], "사전", test=True), label="촬샘 사전(D-7) 알림[TEST]"):
+            sent_rows = {i for i, _ in todo}
+        label = "TEST"
+    else:
+        from soo.hero_ops import asn_notify, triggers as T
+        from soo.hero_ops.asn_notify import _names
+        T.load_owner_map(sheets, APP_SHEET_ID)
+        by: dict[str, list] = collections.defaultdict(list)
+        unmapped: list = []
+        for i, r in todo:
+            names = _names(r[7]) + _names(r[9] if len(r) > 9 else "")
+            sids = {asn_notify._sid_of(n) for n in names} - {""}
+            for sid in sids:
+                by[sid].append((i, r))
+            if not names or any(not asn_notify._sid_of(n) for n in names):
+                unmapped.append((i, r))
+        for sid, items in by.items():
+            if send_changes(format_shoot([r for _, r in items], "사전"), label="촬샘 사전(D-7) 알림", targets=[sid]):
+                sent_rows |= {i for i, _ in items}
+        if unmapped:
+            print(f"[shoot] 사전 알림 Slack ID 없는 담당이 낀 {len(unmapped)}건 → 전략팀 DM")
+            send_changes(format_shoot([r for _, r in unmapped], "사전", test=True).replace("[시험] ", "[담당자 미매핑] "),
+                         label="촬샘 사전 미매핑")
+        label = "LIVE"
+    if not sent_rows:
+        print(f"[shoot] 촬샘 사전 알림 미발송 {len(todo)}건 — 원장에 '보냄' 표시 안 함")
+        return
+    sheets.spreadsheets().values().batchUpdate(spreadsheetId=APP_SHEET_ID, body={"valueInputOption": "RAW", "data": [
+        {"range": f"'{SHOOT_TAB}'!{col}{i + 2}", "values": [[f"{label} {stamp}"]]} for i in sorted(sent_rows)]}).execute()
+    print(f"[shoot] 촬샘 사전 알림 {len(sent_rows)}/{len(todo)}건 발송({label})")
 
 
 def write(sheets, grid: list[list], label: str) -> None:
