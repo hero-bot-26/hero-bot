@@ -56,6 +56,8 @@ CONTENT_SEED = [   # 사용자 1차 명단 2026-11-17
 CONTENT_SEED_OUT = [("이인직", "U02AZR9PNTF")]   # 같은 소속이지만 1차 명단에 없음 → '제외'
 # 알림 전용 이름 → Slack ID(role 'id'). `담당자매핑` 에 넣으면 **ASN 알림까지 받기 시작**하므로 여기 따로 둔다(2026-11-17).
 #   작업의뢰 소싱담당·PLM 기획MD 에 나오는데 담당자매핑에 ID 가 없던 사람 + 사용자가 준 소싱 명단 중 빠진 사람.
+# PLM 담당자 이름 오기 → 실제 사람(사용자 확인 2026-11-17: 27SS 우먼즈 쿨 터치 팬츠 2건 '황수현' = 황서영 담당)
+NAME_FIX = {"황수현": "황서영"}
 ID_SEED = [
     ("문환웅", "U0AP5GE5R55"), ("주인아", "U0C0EMBVBD4"), ("엄기훈", "U06H5CESNA3"), ("장인영", "U08QSUR31U7"),
     ("김재희", "U0CAUUYRSBC"), ("권경민", "U0CEU2VCCAY"),                      # 소싱
@@ -100,7 +102,7 @@ class Router:
         o = self.owners.get(style, {})
         for role in ROUTES[route]:
             if role == "md":
-                ns = _names(o.get("md"))
+                ns = list(dict.fromkeys(NAME_FIX.get(n, n) for n in _names(o.get("md"))))
             elif role == "sc":
                 ns = _names(sourcing) or _names(o.get("sc"))
             elif role == "online":
