@@ -40,7 +40,7 @@ import datetime as _dt
 from pathlib import Path
 
 from soo.auth import get_credentials, build_services
-from soo.hero_ops import release_log, source_registry, work_req
+from soo.hero_ops import alert_route, release_log, source_registry, work_req
 from soo.hero_ops.imc_triggers import MUTAN_SHEET, MUTAN_TAB
 
 HERO = Path(__file__).resolve().parents[2]
@@ -441,6 +441,29 @@ CHG_HEADER = ["detected_at", "season", "style", "name", "kind", "old", "new", "n
 CHG_RECIPIENTS = ["U09BU1F85TR"]
 
 
+# 알림 라우팅용 스타일 맥락 — (시즌, 품번) → (구분, 소싱담당). main 이 build() 결과로 채운다.
+_CTX: dict[tuple[str, str], tuple[str, str]] = {}
+_ROUTER: list = []
+
+
+def set_ctx(plans: list[dict]) -> None:
+    for p in plans:
+        k = (p["season"], p["style"])
+        line, src = _CTX.get(k, ("", ""))
+        _CTX[k] = (line or p.get("line", ""), src or p.get("sourcing", ""))
+
+
+def _ctx_of(r: list) -> tuple[str, str, str]:
+    line, src = _CTX.get((r[1], r[2])) or next((v for k, v in _CTX.items() if k[1] == r[2]), ("", ""))
+    return r[2], line, src
+
+
+def _router(sheets):
+    if not _ROUTER:
+        _ROUTER.append(alert_route.Router(sheets, APP_SHEET_ID))
+    return _ROUTER[0]
+
+
 def _snapshot(grid: list[list]) -> dict[str, dict]:
     ix = {h: i for i, h in enumerate(HEADER)}
     out: dict[str, dict] = {}
@@ -516,15 +539,15 @@ def track_changes(sheets, grid: list[list], now: _dt.datetime, notify: bool = Tr
     return events
 
 
-def format_changes(rows: list[list], now: _dt.datetime, test: bool = False) -> str:
-    """원장 행(CHG_HEADER 순서) → 슬랙 본문. 시험 발송·실발송이 같은 함수를 쓴다."""
+def format_changes(rows: list[list], now: _dt.datetime, test: bool = False, who: list[str] | None = None) -> str:
+    """원장 행(CHG_HEADER 순서) → 슬랙 본문. 시험 발송·실발송이 같은 함수를 쓴다. who = 줄마다 붙일 '(→ 받을 사람)'."""
     todo = [(i, r) for i, r in enumerate(rows)]
     md = lambda x: f"{int(x[5:7])}/{int(x[8:10])}" if x else "-"
     lines = []
-    for _, r in todo[:30]:
+    for k, (_, r) in enumerate(todo[:30]):
         old, new = (r[5] if len(r) > 5 else ""), (r[6] if len(r) > 6 else "")
         verb = {"변경": f"{md(old)} → {md(new)}", "추가": f"{md(new)} 발매 추가", "삭제": f"{md(old)} 발매 빠짐"}.get(r[4], r[4])
-        lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — {verb}")
+        lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — {verb}" + (who[k] if who else ""))
     # ★문구(사용자 지시 2026-10-23) — 건수·'작업의뢰 발매시트 · 감지' 같은 딱딱한 머리말과 날 URL 은 빼고,
     #   한 줄 안내 + 담당자 문의 안내 + 슬랙 링크 글자('발매 캘린더 보러가기')로.
     # 슬랙 이모지(사용자 요청 2026-10-23) — 슬랙 알림 한정. 대시보드 화면은 무신사 톤이라 이모지 금지([[CLAUDE 3-10]]).
@@ -567,12 +590,15 @@ def _notify_pending(sheets, now: _dt.datetime) -> None:
     todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 5 and not (r[7] if len(r) > 7 else "").strip()]
     if not todo:
         return
-    msg = format_changes([r for _, r in todo], now)
-    if send_changes(msg) == 0:           # ★기록은 발송 성공 시에만([[CLAUDE 1-3]]) — 실패분은 다음 실행에 다시 나간다
+    # 받는 팀 = 기획·소싱·콘텐츠마케팅·온라인실(사용자 지시 2026-11-17, alert_route.ROUTES)
+    ok = alert_route.deliver(todo, "launch_chg", _ctx_of, _router(sheets),
+                             lambda rs, who=None: format_changes(rs, now, who=who),
+                             lambda m, lb, t: send_changes(m, label=lb, targets=t), "발매일 변경 알림")
+    if not ok:                           # ★기록은 발송 성공 시에만([[CLAUDE 1-3]]) — 실패분은 다음 실행에 다시 나간다
         print(f"[plan] 발매일 변경 알림 미발송 {len(todo)}건 — 원장에 '보냄' 표시 안 함")
         return
-    sent = now.strftime("%Y-%m-%d %H:%M")
-    data = [{"range": f"'{CHG_TAB}'!H{i + 2}", "values": [[sent]]} for i, _ in todo]
+    sent = ("" if alert_route.ALERT_LIVE else "TEST ") + now.strftime("%Y-%m-%d %H:%M")
+    data = [{"range": f"'{CHG_TAB}'!H{i + 2}", "values": [[sent]]} for i, _ in todo if i in ok]
     sheets.spreadsheets().values().batchUpdate(spreadsheetId=APP_SHEET_ID,
                                                body={"valueInputOption": "RAW", "data": data}).execute()
     print(f"[plan] 발매일 변경 알림 {len(todo)}건 발송")
@@ -588,7 +614,7 @@ def _notify_pending(sheets, now: _dt.datetime) -> None:
 #     모르거나 노티가 없다 — D-1주에 담당 소싱·담당 기획MD 에게만 '제대로 들어오는 거 맞나요?'"). 11/11 의 'D-3 사전 알림 안 함'을
 #     사용자가 이 목적(일정 확인 독촉)으로 바꿨다. 키 = (시즌, 품번, 예정일) — 예정일이 바뀌면 새 날짜로 다시 한 번.
 #     수신 = 그 품번의 소싱(PLM sc_nm ∪ 발매1 '소싱담당' — 둘이 다른 품번이 있어 합집합) + 기획MD(PLM md_nm), 사람별 자기 건만.
-#     ★SHOOT_REMIND_LIVE=False(배포 전)면 수영님에게만 '→ 받을 사람' 을 붙여 보내고 원장에 'TEST …' 로 적는다.
+#     ★alert_route.ALERT_LIVE=False(배포 전)면 수영님에게만 '→ 받을 사람' 을 붙여 보내고 원장에 'TEST …' 로 적는다.
 #       LIVE 로 바꾸면 'TEST' 건 중 아직 예정일 전·미입고인 것은 실담당자에게 다시 나간다(테스트 발송이 원장을 소비하지 않게 [[CLAUDE 1-3]]).
 #   알림(①②) = CHG_RECIPIENTS DM · MDP 봇 · KST 08~20시(발매일 변경과 같음). 배포 때 관련 팀 전원으로 넓힐 예정(사용자 11/13).
 SHOOT_SNAP_TAB = "_OPS_SHOOT_SNAP"
@@ -596,7 +622,7 @@ SHOOT_TAB = "_OPS_SHOOT_CHG"
 SHOOT_HEADER = ["detected_at", "season", "style", "name", "kind", "old", "new", "sourcing", "notified", "md"]
 SHOOT_GRACE_DAYS = 1      # 예정일 + 1일부터 미입고
 SHOOT_REMIND_DAYS = 7     # 예정일 D-7 이내 진입 시 사전 독촉(사용자 지시 2026-11-13)
-SHOOT_REMIND_LIVE = False # ★배포 전 = 수영님에게만. True = 담당 소싱·기획MD 각자에게
+# ★수신 라우팅·LIVE 스위치는 alert_route(ALERT_LIVE · ROUTES) — 네 알림이 한 스위치를 쓴다(2026-11-17)
 
 
 def _read_opt(sheets, tab: str, ncol: int) -> list[list] | None:
@@ -681,18 +707,19 @@ def shoot_events(plans: list[dict], snap_rows: list[list] | None, ledger: list[l
     return events, snap, st
 
 
-def format_shoot(rows: list[list], kind: str, test: bool = False) -> str:
+def format_shoot(rows: list[list], kind: str, test: bool = False, who: list[str] | None = None) -> str:
+    """who = 줄마다 붙일 '(→ 받을 사람)'(시험본·수영님 사본). 담당자에게 가는 본문엔 없다."""
     md = lambda x: f"{int(x[5:7])}/{int(x[8:10])}" if x else "-"
     src = lambda r: f" (소싱 {r[7]})" if len(r) > 7 and r[7] else ""
     lines = []
-    for r in rows[:30]:
+    for k, r in enumerate(rows[:30]):
+        tail = who[k] if who else ""
         if kind == "사전":
             d = (_dt.date.fromisoformat(r[5]) - _kst_now().date()).days
-            who = f" (→ 소싱 {r[7] or '-'} / 기획MD {(r[9] if len(r) > 9 else '') or '-'})" if test else ""
-            lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — 예정 {md(r[5])} (D-{d}){who}")
+            lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — 예정 {md(r[5])} (D-{d}){tail}")
             continue
         what = f"{md(r[5])} → {md(r[6])}" if kind == "변경" else f"예정 {md(r[5])}"
-        lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — {what}{src(r)}")
+        lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — {what}{src(r) if not tail else ''}{tail}")
     more = "" if len(rows) <= 30 else f"\n… 외 {len(rows) - 30}건"
     if kind == "변경":
         head, tail = ":camera: 촬샘 입고일자가 변경되었어요!", ":speech_balloon: 자세한 사유는 담당 소싱에게 문의 부탁드려요!"
@@ -772,25 +799,28 @@ def _notify_shoot(sheets, now: _dt.datetime, open_keys: set | None = None) -> No
         todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 6 and r[4] == kind and not (r[8] if len(r) > 8 else "").strip()]
         if not todo:
             continue
-        if send_changes(format_shoot([r for _, r in todo], kind), label=f"촬샘 {kind} 알림") == 0:
+        route = "shoot_chg" if kind == "변경" else "shoot_miss"     # 변경 = 온라인실 빼고(사용자 지시 2026-11-17)
+        ok = alert_route.deliver(todo, route, _ctx_of, _router(sheets),
+                                 lambda rs, who=None, kind=kind: format_shoot(rs, kind, who=who),
+                                 lambda m, lb, t: send_changes(m, label=lb, targets=t), f"촬샘 {kind} 알림")
+        if not ok:
             print(f"[shoot] 촬샘 {kind} 알림 미발송 {len(todo)}건 — 원장에 '보냄' 표시 안 함")   # 기록은 성공 시에만
             continue
-        sent = now.strftime("%Y-%m-%d %H:%M")
+        sent = ("" if alert_route.ALERT_LIVE else "TEST ") + now.strftime("%Y-%m-%d %H:%M")
         sheets.spreadsheets().values().batchUpdate(spreadsheetId=APP_SHEET_ID, body={"valueInputOption": "RAW", "data": [
-            {"range": f"'{SHOOT_TAB}'!{col}{i + 2}", "values": [[sent]]} for i, _ in todo]}).execute()
+            {"range": f"'{SHOOT_TAB}'!{col}{i + 2}", "values": [[sent]]} for i, _ in todo if i in ok]}).execute()
         print(f"[shoot] 촬샘 {kind} 알림 {len(todo)}건 발송")
 
 
 def _notify_remind(sheets, now: _dt.datetime, rows: list[list], col: str, open_keys: set) -> None:
     """사전(D-7) 독촉 발송. 보낼 행 = kind '사전' · 아직 미입고·같은 예정일(open_keys) · notified 빈칸(LIVE 땐 'TEST…'도).
-    TEST = CHG_RECIPIENTS 에 전부 한 통('→ 받을 사람' 표기) · LIVE = 소싱·기획MD 이름 → `담당자매핑` Slack ID 로 사람별 자기 건만.
-    Slack ID 없는 이름이 낀 건은 CHG_RECIPIENTS 로도 모아 보낸다(조용히 빠지지 않게)."""
+    받는 사람·TEST/LIVE 는 alert_route.deliver(route 'shoot_pre' = 기획·소싱·콘텐츠마케팅·온라인실)."""
     stamp = now.strftime("%Y-%m-%d %H:%M")
     today = now.date()
 
     def due(r):
         n = (r[8] if len(r) > 8 else "").strip()
-        if not (not n or (SHOOT_REMIND_LIVE and n.startswith("TEST"))):
+        if not (not n or (alert_route.ALERT_LIVE and n.startswith("TEST"))):
             return False
         try:
             left = (_dt.date.fromisoformat(r[5]) - today).days
@@ -801,32 +831,10 @@ def _notify_remind(sheets, now: _dt.datetime, rows: list[list], col: str, open_k
     todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 6 and r[4] == "사전" and due(r)]
     if not todo:
         return
-    sent_rows: set[int] = set()
-    if not SHOOT_REMIND_LIVE:
-        if send_changes(format_shoot([r for _, r in todo], "사전", test=True), label="촬샘 사전(D-7) 알림[TEST]"):
-            sent_rows = {i for i, _ in todo}
-        label = "TEST"
-    else:
-        from soo.hero_ops import asn_notify, triggers as T
-        from soo.hero_ops.asn_notify import _names
-        T.load_owner_map(sheets, APP_SHEET_ID)
-        by: dict[str, list] = collections.defaultdict(list)
-        unmapped: list = []
-        for i, r in todo:
-            names = _names(r[7]) + _names(r[9] if len(r) > 9 else "")
-            sids = {asn_notify._sid_of(n) for n in names} - {""}
-            for sid in sids:
-                by[sid].append((i, r))
-            if not names or any(not asn_notify._sid_of(n) for n in names):
-                unmapped.append((i, r))
-        for sid, items in by.items():
-            if send_changes(format_shoot([r for _, r in items], "사전"), label="촬샘 사전(D-7) 알림", targets=[sid]):
-                sent_rows |= {i for i, _ in items}
-        if unmapped:
-            print(f"[shoot] 사전 알림 Slack ID 없는 담당이 낀 {len(unmapped)}건 → 전략팀 DM")
-            send_changes(format_shoot([r for _, r in unmapped], "사전", test=True).replace("[시험] ", "[담당자 미매핑] "),
-                         label="촬샘 사전 미매핑")
-        label = "LIVE"
+    sent_rows = alert_route.deliver(todo, "shoot_pre", _ctx_of, _router(sheets),
+                                    lambda rs, who=None: format_shoot(rs, "사전", test=not alert_route.ALERT_LIVE, who=who),
+                                    lambda m, lb, t: send_changes(m, label=lb, targets=t), "촬샘 사전(D-7) 알림")
+    label = "LIVE" if alert_route.ALERT_LIVE else "TEST"
     if not sent_rows:
         print(f"[shoot] 촬샘 사전 알림 미발송 {len(todo)}건 — 원장에 '보냄' 표시 안 함")
         return
@@ -864,6 +872,12 @@ def main() -> None:
     now = _kst_now()
     grid, cnt, plans = build(svc["sheets"], svc["drive"], now.date())
     print("[plan] " + " · ".join(f"{k} {v:,}" for k, v in sorted(cnt.items())))
+    set_ctx(plans)
+    if 8 <= now.hour < 20:     # 콘텐츠마케팅 명단 — 하루 한 번 슬랙 소속으로 갱신(실패해도 알림은 기존 명단으로)
+        try:
+            alert_route.sync_team(svc["sheets"], APP_SHEET_ID, now, apply=a.apply)
+        except Exception as e:
+            print(f"::warning::[route] 팀 명단 갱신 실패 {type(e).__name__}: {e}")
     if a.apply:
         # 변경 감지는 화면 기입 **뒤에** — 실패하면 예외로 스텝을 실패시켜 워크플로 실패 알림이 오게 한다(조용히 삼키지 않는다).
         write(svc["sheets"], grid, f"발매 파이프라인 · 발매일=시즌 작업의뢰 '발매1' · 입고=WMS 업체 입고(품번) · 예약발매=비제스트 예약 배송 이력 "
