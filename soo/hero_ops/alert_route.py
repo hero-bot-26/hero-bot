@@ -59,7 +59,8 @@ CONTENT_SEED_OUT = [("이인직", "U02AZR9PNTF")]   # 같은 소속이지만 1�
 ID_SEED = [
     ("문환웅", "U0AP5GE5R55"), ("주인아", "U0C0EMBVBD4"), ("엄기훈", "U06H5CESNA3"), ("장인영", "U08QSUR31U7"),
     ("김재희", "U0CAUUYRSBC"), ("권경민", "U0CEU2VCCAY"),                      # 소싱
-    ("김세현", "U0B9F182X9C"), ("황수정", "U0BCV28NVAQ"), ("구새봄", "U0C1QG2N1L7")]   # 기획MD (PLM '황수현'은 슬랙에 없음 — 매핑 안 함)
+    ("김세현", "U0B9F182X9C"), ("황수정", "U0BCV28NVAQ"), ("구새봄", "U0C1QG2N1L7"),    # 기획MD (PLM '황수현'은 슬랙에 없음 — 매핑 안 함)
+    ("전혜미", "U07L63PNQBB")]   # 온라인MD 여성(담당자매핑엔 ID 빈칸 — ASN 은 그대로, 사용자 지시 2026-11-17)
 
 
 def _names(v) -> list[str]:
@@ -75,12 +76,6 @@ class Router:
         T.load_owner_map(sheets, app_sheet_id)
         self._sid = asn_notify._sid_of
         self.owners = asn_notify.load_owners(sheets)
-        rows = sheets.spreadsheets().values().get(spreadsheetId=app_sheet_id, range="담당자매핑!A2:E").execute().get("values", [])
-        self.online: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
-        for r in rows:
-            r = [str(x).strip() for x in r] + [""] * 5
-            if r[1] == "온라인MD" and r[2] == "담당자" and r[4]:
-                self.online[r[3]].append((r[0], r[4]))
         self.team: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
         self.ids: dict[str, str] = {}
         for r in read_team(sheets, app_sheet_id):
@@ -89,6 +84,13 @@ class Router:
                     self.ids[r["name"]] = r["slack_id"]
                 else:
                     self.team[r["role"]].append((r["name"], r["slack_id"]))
+        rows = sheets.spreadsheets().values().get(spreadsheetId=app_sheet_id, range="담당자매핑!A2:E").execute().get("values", [])
+        self.online: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
+        for r in rows:
+            r = [str(x).strip() for x in r] + [""] * 5
+            sid = r[4] or self.ids.get(r[0], "")       # 매핑 ID 빈칸이면 알림 전용 ID(전혜미)
+            if r[1] == "온라인MD" and r[2] == "담당자" and sid:
+                self.online[r[3]].append((r[0], sid))
         print(f"[route] 온라인MD {sum(map(len, self.online.values()))}명({', '.join(f'{k} {len(v)}' for k, v in self.online.items())})"
               f" · 콘텐츠마케팅 {len(self.team['content'])}명")
 
