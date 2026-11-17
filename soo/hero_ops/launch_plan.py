@@ -450,7 +450,11 @@ def set_ctx(plans: list[dict]) -> None:
     for p in plans:
         k = (p["season"], p["style"])
         line, src = _CTX.get(k, ("", ""))
-        _CTX[k] = (line or p.get("line", ""), src or p.get("sourcing", ""))
+        ln = p.get("line", "")
+        # 잡화(ME)는 PLM 에 성별 칸이 없다 — 상품명 '우먼즈' 만 여성 온라인실로(사용자 11/17). 공용·맨은 구분 불가 → 온라인실 없음
+        if p["style"].startswith("ME") and "우먼즈" in (p.get("name") or ""):
+            ln = "여성"
+        _CTX[k] = (line or ln, src or p.get("sourcing", ""))
 
 
 def _ctx_of(r: list) -> tuple[str, str, str]:
