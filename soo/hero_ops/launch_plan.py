@@ -814,7 +814,7 @@ def _notify_shoot(sheets, now: _dt.datetime, open_keys: set | None = None) -> No
 
 def _notify_remind(sheets, now: _dt.datetime, rows: list[list], col: str, open_keys: set) -> None:
     """사전(D-7) 독촉 발송. 보낼 행 = kind '사전' · 아직 미입고·같은 예정일(open_keys) · notified 빈칸(LIVE 땐 'TEST…'도).
-    받는 사람·TEST/LIVE 는 alert_route.deliver(route 'shoot_pre' = 기획·소싱·콘텐츠마케팅·온라인실)."""
+    받는 사람·TEST/LIVE 는 alert_route.deliver(route 'shoot_pre' = 기획·소싱)."""
     stamp = now.strftime("%Y-%m-%d %H:%M")
     today = now.date()
 

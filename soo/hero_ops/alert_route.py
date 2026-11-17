@@ -40,7 +40,7 @@ ROUTES = {
     "launch_chg": ("md", "content", "online", "offline"),   # 소싱 제외·오프라인실(상품컨트롤) 포함(사용자 11/17)
     "shoot_chg": ("md", "content"),                   # 소싱 제외 — 촬샘일을 바꾸는 주체(사용자 11/17)
     "shoot_miss": ("md", "sc", "content", "online"),
-    "shoot_pre": ("md", "sc", "content", "online"),
+    "shoot_pre": ("md", "sc"),                        # D-7 독촉 = 기획·소싱만(사용자 11/17)
 }
 ROLE_KO = {"md": "기획", "sc": "소싱", "content": "콘텐츠마케팅", "online": "온라인", "offline": "오프라인"}
 ONLINE_LINES = ("남성", "여성", "키즈")   # 발매1 '구분' 그대로 = 담당자매핑 온라인MD category. 제품·언더웨어·신발은 미정(사용자 확인 대기)
