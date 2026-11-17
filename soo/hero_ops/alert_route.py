@@ -141,7 +141,7 @@ def deliver(rows: list[list], route: str, ctx, router: Router | None, fmt, send,
         return set()
     whos = [router.who(route, *ctx(r)) if router else [] for _, r in rows]
     if not ALERT_LIVE:
-        msg = fmt([r for _, r in rows], [who_text(w) if router else "" for w in whos])
+        msg = fmt([r for _, r in rows])      # 받을 사람 꼬리 안 붙임(사용자 11/17: "누구한테 갔는지는 굳이 안 적어도 돼")
         return {i for i, _ in rows} if send(msg, label + "[TEST]", STRATEGY_DM) else set()
     by: dict[str, list[int]] = collections.defaultdict(list)
     unmapped: list[int] = []
@@ -158,7 +158,7 @@ def deliver(rows: list[list], route: str, ctx, router: Router | None, fmt, send,
         if send(fmt([rows[k][1] for k in ks]), label, [sid]):
             sent |= {rows[k][0] for k in ks}
     # 수영님 = 전체 사본(받을 사람 표시) — 담당자 0명이 나간 건도 여기서 보인다
-    copy = fmt([r for _, r in rows], [who_text(w) for w in whos])
+    copy = fmt([r for _, r in rows])
     if send(copy.replace("[시험] ", ""), label + "[사본]", STRATEGY_DM):
         sent |= {i for i, _ in rows}         # 담당자 미매핑 건도 수영님이 받았으면 '보냄'(다음 실행에 또 나가지 않게)
     if unmapped:
