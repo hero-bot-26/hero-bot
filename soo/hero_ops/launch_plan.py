@@ -71,6 +71,7 @@ COLS = {
     "type": (None, "컬러추가"), "hero": (None, "히어로"), "name": (None, "스타일명"), "sku": (None, "SKU"),
     "plan_qty": (None, "기획수량"), "inb_plan": ("상품입고", "예정일"), "inb_manual": (None, "실 입고일"),
     "issue": (None, "발매 이슈"), "sourcing": ("소싱담당", None), "preorder": (None, "예발여부"),
+    "gender": (None, "성별구분"),     # 27SS '제품용' 묶음 — 잡화 남성/여성(26FW 엔 없음). 알림 온라인실 배정용(11/17)
 }
 REQUIRED = ("plan", "style", "name")
 
@@ -134,7 +135,7 @@ def parse_launch(grid: list[list[str]], season: str) -> list[dict]:
                     "type": c("type"), "hero": c("hero"), "name": c("name"), "sku": c("sku"),
                     "plan_qty": int(_num(c("plan_qty"))), "inb_plan": work_req.norm_date(c("inb_plan")),
                     "inb_manual": work_req.norm_date(c("inb_manual")), "issue": c("issue"),
-                    "sourcing": c("sourcing"), "note": note, "preorder": c("preorder"),
+                    "sourcing": c("sourcing"), "note": note, "preorder": c("preorder"), "gender": c("gender"),
                     "shoot_ok": sd_j is not None,
                     "shoot_plan": work_req.norm_date(r[sp_j].strip() if sp_j is not None and sp_j < len(r) else ""),
                     # 완료 = 실 입고일 칸에 **뭐든** 적혀 있으면(날짜가 아닌 '완료' 같은 글자도 완료로 본다)
@@ -451,9 +452,14 @@ def set_ctx(plans: list[dict]) -> None:
         k = (p["season"], p["style"])
         line, src = _CTX.get(k, ("", ""))
         ln = p.get("line", "")
-        # 잡화(ME)는 PLM 에 성별 칸이 없다 — 상품명 '우먼즈' 만 여성 온라인실로(사용자 11/17). 공용·맨은 구분 불가 → 온라인실 없음
-        if p["style"].startswith("ME") and "우먼즈" in (p.get("name") or ""):
-            ln = "여성"
+        # 잡화(ME) 온라인실 — ①작업의뢰 '성별구분'(27SS 제품, 남성/여성) ②비면 상품명 '우먼즈' → 여성(사용자 11/17).
+        #   둘 다 없으면(신발 공용 등) 온라인실 없음
+        if p["style"].startswith("ME"):
+            gd = (p.get("gender") or "").strip()
+            if gd in ("남성", "여성"):
+                ln = gd
+            elif "우먼즈" in (p.get("name") or ""):
+                ln = "여성"
         _CTX[k] = (line or ln, src or p.get("sourcing", ""))
 
 
