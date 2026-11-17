@@ -13,6 +13,7 @@
   기획   = PLM `데이터` md_nm(스타일별) → `담당자매핑` 이름 → Slack ID
   소싱   = 작업의뢰 발매1 '소싱담당'(정본, 사용자 11/13) · 빈칸이면 PLM sc_nm
   온라인실 = `담당자매핑` role '온라인MD' 중 category = 발매1 '구분'(남성·여성·키즈)
+  ID 없음  = `담당자매핑` 에 없는 이름은 `_OPS_TEAM` role 'id' 행(알림 전용 — ASN 엔 안 걸린다)
   콘텐츠마케팅 = 팀 전원 — `_OPS_TEAM` 명단(사용자 1차 명단 9명 시드). 하루 한 번 슬랙 표시 이름의 소속
          ('무신사스탠다드마케팅/콘텐츠마케팅', @musinsa.com)으로 새로 들어온 사람을 더하고, 슬랙에서 사라진 사람은 '이동/퇴사'로.
          사람이 '제외'로 바꾼 행은 건드리지 않는다(이인직 = 1차 명단에 없어 '제외'로 시드).
@@ -53,6 +54,12 @@ CONTENT_SEED = [   # 사용자 1차 명단 2026-11-17
     ("최수영", "U0AM2L50211"), ("김린", "U0BHD8NMRKL"), ("김선재", "U0BHH6QJFD2"), ("양도원", "U0BPNE6G39Q"),
     ("김은애", "U0C6VD5LFFH")]
 CONTENT_SEED_OUT = [("이인직", "U02AZR9PNTF")]   # 같은 소속이지만 1차 명단에 없음 → '제외'
+# 알림 전용 이름 → Slack ID(role 'id'). `담당자매핑` 에 넣으면 **ASN 알림까지 받기 시작**하므로 여기 따로 둔다(2026-11-17).
+#   작업의뢰 소싱담당·PLM 기획MD 에 나오는데 담당자매핑에 ID 가 없던 사람 + 사용자가 준 소싱 명단 중 빠진 사람.
+ID_SEED = [
+    ("문환웅", "U0AP5GE5R55"), ("주인아", "U0C0EMBVBD4"), ("엄기훈", "U06H5CESNA3"), ("장인영", "U08QSUR31U7"),
+    ("김재희", "U0CAUUYRSBC"), ("권경민", "U0CEU2VCCAY"),                      # 소싱
+    ("김세현", "U0B9F182X9C"), ("황수정", "U0BCV28NVAQ"), ("구새봄", "U0C1QG2N1L7")]   # 기획MD (PLM '황수현'은 슬랙에 없음 — 매핑 안 함)
 
 
 def _names(v) -> list[str]:
@@ -75,9 +82,13 @@ class Router:
             if r[1] == "온라인MD" and r[2] == "담당자" and r[4]:
                 self.online[r[3]].append((r[0], r[4]))
         self.team: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
+        self.ids: dict[str, str] = {}
         for r in read_team(sheets, app_sheet_id):
             if r["status"] == "포함" and r["slack_id"]:
-                self.team[r["role"]].append((r["name"], r["slack_id"]))
+                if r["role"] == "id":
+                    self.ids[r["name"]] = r["slack_id"]
+                else:
+                    self.team[r["role"]].append((r["name"], r["slack_id"]))
         print(f"[route] 온라인MD {sum(map(len, self.online.values()))}명({', '.join(f'{k} {len(v)}' for k, v in self.online.items())})"
               f" · 콘텐츠마케팅 {len(self.team['content'])}명")
 
@@ -97,7 +108,7 @@ class Router:
             else:
                 out += [(role, n, s) for n, s in self.team.get(role, [])] or [(role, "", "")]
                 continue
-            out += [(role, n, self._sid(n)) for n in ns] or [(role, "", "")]
+            out += [(role, n, self._sid(n) or self.ids.get(n, "")) for n in ns] or [(role, "", "")]
         return out
 
 
@@ -155,7 +166,8 @@ def deliver(rows: list[list], route: str, ctx, router: Router | None, fmt, send,
 def read_team(sheets, app_sheet_id: str) -> list[dict]:
     meta = sheets.spreadsheets().get(spreadsheetId=app_sheet_id, fields="sheets.properties(title)").execute()
     if not any(x["properties"]["title"] == TEAM_TAB for x in meta["sheets"]):
-        return [{"role": "content", "name": n, "slack_id": s, "status": "포함", "src": "1차 명단", "updated": ""} for n, s in CONTENT_SEED]
+        return ([{"role": "content", "name": n, "slack_id": s, "status": "포함", "src": "1차 명단", "updated": ""} for n, s in CONTENT_SEED]
+                + [{"role": "id", "name": n, "slack_id": s, "status": "포함", "src": "알림 전용 ID", "updated": ""} for n, s in ID_SEED])
     vals = sheets.spreadsheets().values().get(spreadsheetId=app_sheet_id, range=f"'{TEAM_TAB}'!A2:F").execute().get("values", [])
     return [dict(zip(TEAM_HEADER, [str(x).strip() for x in r] + [""] * 6)) for r in vals if r and r[0]]
 
