@@ -590,7 +590,7 @@ def _notify_pending(sheets, now: _dt.datetime) -> None:
     todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 5 and not (r[7] if len(r) > 7 else "").strip()]
     if not todo:
         return
-    # 받는 팀 = 기획·소싱·콘텐츠마케팅·온라인실(사용자 지시 2026-11-17, alert_route.ROUTES)
+    # 받는 팀 = 기획·콘텐츠마케팅·온라인실·오프라인실(사용자 지시 2026-11-17, alert_route.ROUTES)
     ok = alert_route.deliver(todo, "launch_chg", _ctx_of, _router(sheets),
                              lambda rs, who=None: format_changes(rs, now, who=who),
                              lambda m, lb, t: send_changes(m, label=lb, targets=t), "발매일 변경 알림")
@@ -799,7 +799,7 @@ def _notify_shoot(sheets, now: _dt.datetime, open_keys: set | None = None) -> No
         todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 6 and r[4] == kind and not (r[8] if len(r) > 8 else "").strip()]
         if not todo:
             continue
-        route = "shoot_chg" if kind == "변경" else "shoot_miss"     # 변경 = 온라인실 빼고(사용자 지시 2026-11-17)
+        route = "shoot_chg" if kind == "변경" else "shoot_miss"     # 변경 = 기획·콘텐츠만(소싱은 바꾸는 주체, 사용자 11/17)
         ok = alert_route.deliver(todo, route, _ctx_of, _router(sheets),
                                  lambda rs, who=None, kind=kind: format_shoot(rs, kind, who=who),
                                  lambda m, lb, t: send_changes(m, label=lb, targets=t), f"촬샘 {kind} 알림")

@@ -37,12 +37,12 @@ import urllib.request
 ALERT_LIVE = False
 STRATEGY_DM = ["U09BU1F85TR"]          # 수영님 — 전체 사본 · 시험본 · 담당자 미매핑 건
 ROUTES = {
-    "launch_chg": ("md", "sc", "content", "online"),
-    "shoot_chg": ("md", "sc", "content"),
+    "launch_chg": ("md", "content", "online", "offline"),   # 소싱 제외·오프라인실(상품컨트롤) 포함(사용자 11/17)
+    "shoot_chg": ("md", "content"),                   # 소싱 제외 — 촬샘일을 바꾸는 주체(사용자 11/17)
     "shoot_miss": ("md", "sc", "content", "online"),
     "shoot_pre": ("md", "sc", "content", "online"),
 }
-ROLE_KO = {"md": "기획", "sc": "소싱", "content": "콘텐츠마케팅", "online": "온라인"}
+ROLE_KO = {"md": "기획", "sc": "소싱", "content": "콘텐츠마케팅", "online": "온라인", "offline": "오프라인"}
 ONLINE_LINES = ("남성", "여성", "키즈")   # 발매1 '구분' 그대로 = 담당자매핑 온라인MD category. 제품·언더웨어·신발은 미정(사용자 확인 대기)
 
 TEAM_TAB = "_OPS_TEAM"
@@ -105,6 +105,11 @@ class Router:
                 ns = list(dict.fromkeys(NAME_FIX.get(n, n) for n in _names(o.get("md"))))
             elif role == "sc":
                 ns = _names(sourcing) or _names(o.get("sc"))
+            elif role == "offline":      # 오프라인실 = ASN 과 같은 상품컨트롤팀 배정(품번 앞 2자, ME 없음)
+                from soo.hero_ops.asn_notify import CTRL_LEADS
+                ns = list(CTRL_LEADS.get(str(style)[:2], ()))
+                out += [(role, n, self._sid(n) or self.ids.get(n, "")) for n in ns] or [(role, "", "")]
+                continue
             elif role == "online":
                 ppl = self.online.get(line, []) if line in ONLINE_LINES else []
                 out += [(role, n, s) for n, s in ppl] or [(role, "", "")]
