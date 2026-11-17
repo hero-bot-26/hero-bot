@@ -261,7 +261,38 @@ def load_owners(sheets) -> dict[str, dict]:
             # 분류는 담당자와 따로 본다 — 담당자가 비었을 뿐 `대복종`은 차 있는 행이 있다.
             prev["cat"] = g("대복종")
     _fill_from_ledger(sheets, out)
+    _sc_from_workreq(sheets, out)
     return out
+
+
+def _sc_from_workreq(sheets, out: dict[str, dict]) -> None:
+    """★소싱 = 작업의뢰 발매1 '소싱담당'이 정본(사용자 결정 11/13·11/17 — PLM sc_nm 은 다른 품번이 많다).
+    launch_plan 이 쓰는 `_OPS_PLAN`(발매1 파싱본)의 sourcing 이 차 있으면 PLM 값을 덮는다(비면 PLM 유지).
+    같은 품번이 여러 시즌이면 늦은 시즌이 이긴다. 발매·촬샘 알림(alert_route)과 같은 기준."""
+    try:
+        v = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID, range="'_OPS_PLAN'!A1:AQ").execute().get("values", [])
+    except Exception as e:
+        print(f"[ASN알림] `_OPS_PLAN` 못 읽음({str(e)[:80]}) → 소싱은 PLM 그대로")
+        return
+    hi = next((i for i, r in enumerate(v[:5]) if "style" in r and "sourcing" in r and "season" in r), None)
+    if hi is None:
+        print("[ASN알림] `_OPS_PLAN` 머리말에 style/sourcing 없음 → 소싱은 PLM 그대로")
+        return
+    H = v[hi]
+    I = {k: H.index(k) for k in ("season", "style", "sourcing")}
+    best: dict[str, tuple[str, str]] = {}
+    for r in v[hi + 1:]:
+        g = lambda k: str(r[I[k]]).strip() if I[k] < len(r) else ""
+        st, sc, se = g("style"), g("sourcing"), g("season")
+        if st and sc and (st not in best or se >= best[st][0]):
+            best[st] = (se, sc)
+    n = 0
+    for st, (_, sc) in best.items():
+        cur = out.setdefault(st, {"md": "", "ds": "", "sc": "", "cat": ""})
+        if cur.get("sc") != sc:
+            cur["sc"] = sc
+            n += 1
+    print(f"[ASN알림] 소싱 = 작업의뢰 기준 {len(best)} STY (PLM 과 달라 바꾼 것 {n})")
 
 
 def _fill_from_ledger(sheets, out: dict[str, dict]) -> None:
