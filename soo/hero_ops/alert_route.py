@@ -37,12 +37,12 @@ import urllib.request
 ALERT_LIVE = False
 STRATEGY_DM = ["U09BU1F85TR"]          # 수영님 — 전체 사본 · 시험본 · 담당자 미매핑 건
 ROUTES = {
-    "launch_chg": ("md", "content", "online", "offline"),   # 소싱 제외·오프라인실(상품컨트롤) 포함(사용자 11/17)
+    "launch_chg": ("md", "ds", "content", "online", "offline"),   # 디자인실(PLM ds_nm) 추가(사용자 11/17)   # 소싱 제외·오프라인실(상품컨트롤) 포함(사용자 11/17)
     "shoot_chg": ("md", "content"),                   # 소싱 제외 — 촬샘일을 바꾸는 주체(사용자 11/17)
     "shoot_miss": ("md", "sc", "content", "online"),
     "shoot_pre": ("md", "sc"),                        # D-7 독촉 = 기획·소싱만(사용자 11/17)
 }
-ROLE_KO = {"md": "기획", "sc": "소싱", "content": "콘텐츠마케팅", "online": "온라인", "offline": "오프라인"}
+ROLE_KO = {"md": "기획", "ds": "디자인", "sc": "소싱", "content": "콘텐츠마케팅", "online": "온라인", "offline": "오프라인"}
 ONLINE_LINES = ("남성", "여성", "키즈")   # 발매1 '구분' 그대로 = 담당자매핑 온라인MD category. 제품·언더웨어·신발은 미정(사용자 확인 대기)
 
 TEAM_TAB = "_OPS_TEAM"
@@ -62,7 +62,10 @@ ID_SEED = [
     ("문환웅", "U0AP5GE5R55"), ("주인아", "U0C0EMBVBD4"), ("엄기훈", "U06H5CESNA3"), ("장인영", "U08QSUR31U7"),
     ("김재희", "U0CAUUYRSBC"), ("권경민", "U0CEU2VCCAY"),                      # 소싱
     ("김세현", "U0B9F182X9C"), ("황수정", "U0BCV28NVAQ"), ("구새봄", "U0C1QG2N1L7"),    # 기획MD (PLM '황수현'은 슬랙에 없음 — 매핑 안 함)
-    ("전혜미", "U07L63PNQBB")]   # 온라인MD 여성(담당자매핑엔 ID 빈칸 — ASN 은 그대로, 사용자 지시 2026-11-17)
+    ("전혜미", "U07L63PNQBB"),   # 온라인MD 여성
+    # 디자이너 — PLM ds_nm 에 있는데 담당자매핑에 ID 없던 8명(슬랙 디자인 조직 확인 2026-11-17, 김수빈=RnD디자인)
+    ("김수빈", "U07PH584GNR"), ("김지용", "U02CQTKFBPU"), ("유희경", "U0AKC0BD5PC"), ("정주연", "U0AF3T2K79N"),
+    ("김연재", "U0BEAL9NP7Y"), ("강수령", "U0BNX7AS4MN"), ("정진우", "U02CZFY1SKY"), ("김효영", "U0B4GNGCFST")]   # 온라인MD 여성(담당자매핑엔 ID 빈칸 — ASN 은 그대로, 사용자 지시 2026-11-17)
 
 
 def _names(v) -> list[str]:
@@ -103,6 +106,8 @@ class Router:
         for role in ROUTES[route]:
             if role == "md":
                 ns = list(dict.fromkeys(NAME_FIX.get(n, n) for n in _names(o.get("md"))))
+            elif role == "ds":
+                ns = _names(o.get("ds"))
             elif role == "sc":
                 ns = _names(sourcing) or _names(o.get("sc"))
             elif role == "offline":      # 오프라인실 = ASN 과 같은 상품컨트롤팀 배정(품번 앞 2자, ME 없음)

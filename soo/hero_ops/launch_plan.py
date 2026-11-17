@@ -590,7 +590,7 @@ def _notify_pending(sheets, now: _dt.datetime) -> None:
     todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 5 and not (r[7] if len(r) > 7 else "").strip()]
     if not todo:
         return
-    # 받는 팀 = 기획·콘텐츠마케팅·온라인실·오프라인실(사용자 지시 2026-11-17, alert_route.ROUTES)
+    # 받는 팀 = 기획·디자인·콘텐츠마케팅·온라인실·오프라인실(사용자 지시 2026-11-17, alert_route.ROUTES)
     ok = alert_route.deliver(todo, "launch_chg", _ctx_of, _router(sheets),
                              lambda rs, who=None: format_changes(rs, now, who=who),
                              lambda m, lb, t: send_changes(m, label=lb, targets=t), "발매일 변경 알림")
