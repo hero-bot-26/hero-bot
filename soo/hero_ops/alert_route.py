@@ -53,6 +53,9 @@ CONTENT_SEED = [   # 사용자 1차 명단 2026-11-17
     ("조예나", "U02MHMT6MGD"), ("정도영", "U06R2EJH10Q"), ("김초은", "U07HH20L00Y"), ("성다은", "U0AG33Z01HV"),
     ("최수영", "U0AM2L50211"), ("김린", "U0BHD8NMRKL"), ("김선재", "U0BHH6QJFD2"), ("양도원", "U0BPNE6G39Q"),
     ("김은애", "U0C6VD5LFFH")]
+# 디자인실 소속 스타일리스트 — 콘텐츠마케팅과 같이 받는다(사용자 11/17). 슬랙 소속 동기화(콘텐츠마케팅 org)엔 안 잡혀 코드로 붙인다.
+#   김도현(스타일리스트 어시스트, musinsaptnr 계정)은 사용자 확인 전이라 뺐다.
+CONTENT_EXTRA = [("이혜린", "U0A7L648HEU"), ("신윤주", "U0A6EHQE3KL")]
 CONTENT_SEED_OUT = [("이인직", "U02AZR9PNTF")]   # 같은 소속이지만 1차 명단에 없음 → '제외'
 # 알림 전용 이름 → Slack ID(role 'id'). `담당자매핑` 에 넣으면 **ASN 알림까지 받기 시작**하므로 여기 따로 둔다(2026-11-17).
 #   작업의뢰 소싱담당·PLM 기획MD 에 나오는데 담당자매핑에 ID 가 없던 사람 + 사용자가 준 소싱 명단 중 빠진 사람.
@@ -89,6 +92,10 @@ class Router:
                     self.ids[r["name"]] = r["slack_id"]
                 else:
                     self.team[r["role"]].append((r["name"], r["slack_id"]))
+        _out = {r["name"] for r in read_team(sheets, app_sheet_id) if r["role"] == "content" and r["status"] == "제외"}
+        for n, sid in CONTENT_EXTRA:          # 탭에서 '제외'로 바꾸면 빠진다
+            if n not in _out and n not in {x for x, _ in self.team["content"]}:
+                self.team["content"].append((n, sid))
         for n, sid in ID_SEED:               # 코드 ID_SEED 는 탭 생성 뒤 추가분도 항상 반영(탭 값이 우선)
             self.ids.setdefault(n, sid)
         rows = sheets.spreadsheets().values().get(spreadsheetId=app_sheet_id, range="담당자매핑!A2:E").execute().get("values", [])
