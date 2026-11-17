@@ -118,7 +118,9 @@ class Router:
                 out += [(role, n, self._sid(n) or self.ids.get(n, "")) for n in ns] or [(role, "", "")]
                 continue
             elif role == "online":
-                ppl = self.online.get(line, []) if line in ONLINE_LINES else []
+                # 구분이 남성·여성·키즈가 아니면(언더웨어·빈칸) 품번 앞 2자로 — ASN ONLINE_LEADS 와 같은 기준(사용자 11/17)
+                ln = line if line in ONLINE_LINES else {"MM": "남성", "MW": "여성", "MK": "키즈"}.get(str(style)[:2], "")
+                ppl = self.online.get(ln, [])
                 out += [(role, n, s) for n, s in ppl] or [(role, "", "")]
                 continue
             else:
