@@ -740,7 +740,9 @@ def format_shoot(rows: list[list], kind: str, test: bool = False, who: list[str]
     else:
         head = ":warning: 촬샘 입고 예정일이 지났는데 아직 입고 완료(실 입고일) 표시가 없어요"
         tail = ":point_right: 스케줄대로 들어왔는지 확인 부탁드려요!"
-    return ("[시험] " if test else "") + head + "\n" + "\n".join(lines) + more + "\n" + tail
+    # 링크 — 발매일 변경과 같은 발매 캘린더(사용자 11/17 "촬샘 알림에도 붙여")
+    return (("[시험] " if test else "") + head + "\n" + "\n".join(lines) + more + "\n" + tail
+            + "\n:point_right: <https://hero-master-app.vercel.app/ops?tab=cal|발매 캘린더 보러가기>")
 
 
 def track_shoot(sheets, plans: list[dict], now: _dt.datetime, apply: bool) -> list[list]:
