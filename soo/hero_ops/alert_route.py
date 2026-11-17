@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-ALERT_LIVE = False
+ALERT_LIVE = True   # 2026-11-17 16시 사용자 지시 "오늘것부터" — 공지 81명 발송 후 담당자 실발송 개시
 STRATEGY_DM = ["U09BU1F85TR"]          # 수영님 — 전체 사본 · 시험본 · 담당자 미매핑 건
 ROUTES = {
     "launch_chg": ("md", "ds", "content", "online", "offline"),   # 디자인실(PLM ds_nm) 추가(사용자 11/17)   # 소싱 제외·오프라인실(상품컨트롤) 포함(사용자 11/17)
