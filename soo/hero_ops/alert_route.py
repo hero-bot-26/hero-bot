@@ -89,6 +89,8 @@ class Router:
                     self.ids[r["name"]] = r["slack_id"]
                 else:
                     self.team[r["role"]].append((r["name"], r["slack_id"]))
+        for n, sid in ID_SEED:               # 코드 ID_SEED 는 탭 생성 뒤 추가분도 항상 반영(탭 값이 우선)
+            self.ids.setdefault(n, sid)
         rows = sheets.spreadsheets().values().get(spreadsheetId=app_sheet_id, range="담당자매핑!A2:E").execute().get("values", [])
         self.online: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
         for r in rows:
