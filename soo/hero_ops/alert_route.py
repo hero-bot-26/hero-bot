@@ -128,7 +128,13 @@ class Router:
             elif role == "online":
                 # 구분이 남성·여성·키즈가 아니면(언더웨어·빈칸) 품번 앞 2자로 — ASN ONLINE_LEADS 와 같은 기준(사용자 11/17)
                 ln = line if line in ONLINE_LINES else {"MM": "남성", "MW": "여성", "MK": "키즈"}.get(str(style)[:2], "")
-                ppl = self.online.get(ln, [])
+                if ln:
+                    ppl = self.online.get(ln, [])
+                elif str(style).startswith("ME"):
+                    # 잡화 중 성별 미상(공용·맨 — 작업의뢰 성별구분 빈칸·상품명 '우먼즈' 없음) → 남성·여성 온라인MD 둘 다(사용자 11/18)
+                    ppl = list(dict.fromkeys(self.online.get("남성", []) + self.online.get("여성", [])))
+                else:
+                    ppl = []
                 out += [(role, n, s) for n, s in ppl] or [(role, "", "")]
                 continue
             else:
