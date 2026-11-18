@@ -631,6 +631,7 @@ SHOOT_SNAP_TAB = "_OPS_SHOOT_SNAP"
 SHOOT_TAB = "_OPS_SHOOT_CHG"
 SHOOT_HEADER = ["detected_at", "season", "style", "name", "kind", "old", "new", "sourcing", "notified", "md"]
 SHOOT_GRACE_DAYS = 1      # 예정일 + 1일부터 미입고
+SHOOT_MISS_MAX_DAYS = 3   # 미입고는 D+3 까지 매일, 최대 3회(사용자 지시 2026-11-18 — 다음날 한 번만 X)
 SHOOT_REMIND_DAYS = 7     # 예정일 D-7 이내 진입 시 사전 독촉(사용자 지시 2026-11-13)
 # ★수신 라우팅·LIVE 스위치는 alert_route(ALERT_LIVE · ROUTES) — 네 알림이 한 스위치를 쓴다(2026-11-17)
 
@@ -690,15 +691,22 @@ def shoot_events(plans: list[dict], snap_rows: list[list] | None, ledger: list[l
     if snap_rows and st.get("done_prev", 0) >= 20 and st["done_now"] < st["done_prev"] * 0.8:
         print(f"[shoot] ⚠ 실 입고일 기입 {st['done_prev']}→{st['done_now']} 급감 — 미입고 판정 건너뜀")
     else:
-        seen = {(r[1], r[2], r[5]) for r in (ledger or []) if len(r) > 5 and r[4] == "미입고"}
+        # 키별 원장 기록일 — D+1~D+3 동안 실 입고일이 계속 비면 하루 한 번씩 최대 3회(사용자 지시 2026-11-18)
+        seen: dict[tuple, set] = collections.defaultdict(set)
+        for r in ledger or []:
+            if len(r) > 5 and r[4] == "미입고":
+                seen[(r[1], r[2], r[5])].add(str(r[0])[:10])
         first = ledger is None
         miss = {}
         for p in plans:
             sp = p.get("shoot_plan")
-            if not p.get("shoot_ok") or not sp or p["shoot_done"] or (today - sp).days < SHOOT_GRACE_DAYS:
+            late = (today - sp).days if sp else -1
+            if not p.get("shoot_ok") or not sp or p["shoot_done"] or late < SHOOT_GRACE_DAYS:
                 continue
             k = (p["season"], p["style"], sp.isoformat())
-            if k not in seen:
+            days = seen.get(k, set())
+            # 처음 보는 건은 늦어도 한 번(CI 빠진 날 보전) · 이미 보낸 건은 D+3 이내·하루 한 번·합 3회까지
+            if not days or (late <= SHOOT_MISS_MAX_DAYS and len(days) < SHOOT_MISS_MAX_DAYS and today.isoformat() not in days):
                 miss.setdefault(k, [stamp, *k[:2], p["name"], "미입고", k[2], "", p["sourcing"], "기준선" if first else ""])
         events += sorted(miss.values(), key=lambda r: (r[5], r[2]))
         # ③ 사전(D-7 이내) — 같은 급감 가드 안에 둔다(완료 칸이 통째로 비면 무더기 독촉이 나간다)
@@ -728,7 +736,7 @@ def format_shoot(rows: list[list], kind: str, test: bool = False, who: list[str]
             d = (_dt.date.fromisoformat(r[5]) - _kst_now().date()).days
             lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — 예정 {md(r[5])} (D-{d}){tail}")
             continue
-        what = f"{md(r[5])} → {md(r[6])}" if kind == "변경" else f"예정 {md(r[5])}"
+        what = f"{md(r[5])} → {md(r[6])}" if kind == "변경" else f"예정 {md(r[5])}" + (f" (D+{(_kst_now().date() - _dt.date.fromisoformat(r[5])).days})" if kind == "미입고" else "")
         lines.append(f":small_orange_diamond: [{r[1]}] {r[2]} {r[3][:30]} — {what}{src(r) if not tail else ''}{tail}")
     more = "" if len(rows) <= 30 else f"\n… 외 {len(rows) - 30}건"
     if kind == "변경":
@@ -739,7 +747,8 @@ def format_shoot(rows: list[list], kind: str, test: bool = False, who: list[str]
                 "관련 분들께 노티 부탁드려요!")
     else:
         head = ":warning: 촬샘 입고 예정일이 지났는데 아직 입고 완료(실 입고일) 표시가 없어요"
-        tail = ":point_right: 스케줄대로 들어왔는지 확인 부탁드려요!"
+        tail = (":point_right: 꼭 스케줄대로 들어왔는지 확인 부탁드려요!\n"
+                ":point_right: 촬샘 입고 완료된 거면 꼭 시트에 헷갈리지 않도록 표시해주세요!")
     # 링크 — 발매일 변경과 같은 발매 캘린더(사용자 11/17 "촬샘 알림에도 붙여")
     return (("[시험] " if test else "") + head + "\n" + "\n".join(lines) + more + "\n" + tail
             + "\n:point_right: <https://hero-master-app.vercel.app/ops?tab=cal|발매 캘린더 보러가기>")
