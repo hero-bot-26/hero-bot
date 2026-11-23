@@ -814,13 +814,16 @@ def _fix_header(sheets) -> None:
 
 
 def _notify_shoot(sheets, now: _dt.datetime, open_keys: set | None = None) -> None:
+    # ★토·일엔 촬샘 알림 3종 모두 보내지 않는다(사용자 지시 2026-11-23). notified 빈칸인 행은 월요일 첫 발송 시각에 나간다
+    if now.weekday() >= 5:
+        print("[shoot] 주말 — 촬샘 알림 발송 보류(월요일에 발송)")
+        return
     _ensure(sheets, SHOOT_TAB, SHOOT_HEADER)
     rows = sheets.spreadsheets().values().get(spreadsheetId=APP_SHEET_ID,
                                               range=f"'{SHOOT_TAB}'!A2:{_col(len(SHOOT_HEADER))}").execute().get("values", [])
     col = _col(SHOOT_HEADER.index("notified") + 1)    # I — 'md' 열(J)이 붙어도 notified 는 I
     _notify_remind(sheets, now, rows, col, open_keys or set())
-    # 금요일에 발송 실패로 남은 미입고 행도 주말엔 묶어 두었다가 월요일에 보낸다
-    for kind in (("변경",) if now.weekday() >= 5 else ("변경", "미입고")):          # '사전' 은 _notify_remind(사람별)
+    for kind in ("변경", "미입고"):          # '사전' 은 _notify_remind(사람별)
         todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 6 and r[4] == kind and not (r[8] if len(r) > 8 else "").strip()]
         if not todo:
             continue
