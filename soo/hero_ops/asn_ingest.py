@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import re
 from pathlib import Path
 
 from soo.auth import get_credentials, build_services
@@ -564,6 +565,53 @@ def summarize(grid: list[list], today: datetime.date) -> str:
 RELAY_IDLE_FROM, RELAY_IDLE_UNTIL = 21, 8
 
 
+# ★27SS HERO 합류 (2026-11-23) — 26FW `HERO STY` 는 그대로 두고 **MSTRD_27SS 상품MAP `STY` 탭 D열=HERO** 를 더한다.
+#   build_pumbon2hero 는 입고 보드·발매·앱 생성기도 쓰므로 고치지 않는다(26FW 15종 전용 유지).
+#   겹치는 품번은 26FW 라벨이 이긴다. 열은 4행 머리말 라벨로 찾는다([[CLAUDE 1-1]]).
+MAP_27SS_SID = "1bYdK3XU9TxLxmoVwBuAz4JnH7uoGEeIB2ngC36nqDTs"
+MIN_27SS_HERO = 80           # 이보다 적으면 부분 읽기·열 밀림으로 보고 직전 목록을 유지한다(11/23 실측 120)
+
+
+def load_27ss_heroes(sheets) -> dict[str, str]:
+    """{품번: '27SS 시리즈'} — D열 HERO · 유지 행. 시리즈(C열)가 빈 STY 는 '27SS HERO'."""
+    v = sheets.spreadsheets().values().get(spreadsheetId=MAP_27SS_SID, range="'STY'!A4:AZ",
+                                           valueRenderOption="FORMATTED_VALUE").execute().get("values", [])
+    hdr = [str(h).replace(chr(10), "").strip() for h in (v[0] if v else [])]
+    need = ("테마/시리즈", "HERO/핵심상품", "유지/미운영", "신품번")
+    miss = [k for k in need if k not in hdr]
+    if miss:
+        raise RuntimeError(f"27SS 상품MAP 머리말에 {miss} 없음 — 실제 머리말 {hdr[:30]}")
+    I = {k: hdr.index(k) for k in need}
+    g = lambda r, k: str(r[I[k]]).strip() if I[k] < len(r) else ""
+    out = {}
+    for r in v[1:]:
+        st = g(r, "신품번")
+        if g(r, "HERO/핵심상품") == "HERO" and g(r, "유지/미운영") == "유지" and re.fullmatch(r"[A-Z0-9]{9}", st):
+            ser = g(r, "테마/시리즈")
+            out[st] = f"27SS {ser}" if ser else "27SS HERO"
+    if len(out) < MIN_27SS_HERO:
+        raise RuntimeError(f"27SS HERO {len(out)}개 < {MIN_27SS_HERO} — 부분 읽기 의심")
+    return out
+
+
+def build_asn_scope(sheets) -> dict[str, str]:
+    """ASN 감시 범위 = 26FW 히어로 ∪ 27SS HERO. 27SS 를 못 읽으면 범위를 줄이지 않고 직전 목록을 유지한다."""
+    from soo.hero_ops import dbx_relay
+    p2h = dict(build_pumbon2hero(sheets))
+    try:
+        h27 = load_27ss_heroes(sheets)
+    except Exception as e:
+        print(f"[ASN범위] ⚠ 27SS 목록 못 읽음 → 직전 목록 유지: {type(e).__name__}: {e}")
+        prev = sheets.spreadsheets().values().get(spreadsheetId=dbx_relay.STAGING_ID,
+                                                  range=f"'{dbx_relay.STYLE_TAB}'!A2:A").execute().get("values", [])
+        h27 = {r[0]: "27SS HERO" for r in prev if r and r[0] not in p2h}
+    n26 = len(p2h)
+    for st, label in h27.items():
+        p2h.setdefault(st, label)
+    print(f"[ASN범위] 26FW {n26} + 27SS {len(h27)} (겹침 {n26 + len(h27) - len(p2h)}) = {len(p2h)}품번")
+    return p2h
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="시트에 기입(기본은 드라이런)")
@@ -573,7 +621,7 @@ def main() -> None:
     svc = build_services(get_credentials(HERO / "credentials.json", HERO / "token.json"))
     sheets = svc["sheets"]
 
-    p2h = build_pumbon2hero(sheets)
+    p2h = build_asn_scope(sheets)
     # ★2026-10-12 DBX 중계 — DBX 잡(spec=asn, 매시 :35)이 이 품번 목록으로 같은 SQL 을 돌려 둔다.
     #   목록을 먼저 올리고(바뀐 경우만), 결과는 2시간 안의 것만 인정한다(ASN 은 실시간성이 가치).
     from soo.hero_ops import dbx_relay
