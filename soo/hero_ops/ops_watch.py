@@ -479,7 +479,6 @@ def check_asn_gap(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
     if gate and now.hour < 11:          # 중계 첫 적재(10:50) 이후에만
         return []
     from soo.hero_ops import asn_ingest, dbx_relay
-    from soo.hero_ops.inbound_board import build_pumbon2hero
     dbx_relay.configure(sheets, "asn_gap", max_age_h=30)
     try:
         rows = dbx_relay.rows(asn_ingest.ASN_GAP_SQL, print)
@@ -488,7 +487,7 @@ def check_asn_gap(sheets, now: dt.datetime, gate: bool) -> list[Finding]:
                         f"ASN 사본 누락 대조 결과를 못 읽었다 — 중계 잡 `asn_gap` 실행 이력을 볼 것. {e}", "경고")]
     finally:
         dbx_relay._cfg["sheets"] = None
-    p2h = build_pumbon2hero(sheets)
+    p2h = asn_ingest.build_asn_scope(sheets)   # 수집 범위와 같게(27SS 포함)
     cut = (now - dt.timedelta(days=1)).strftime("%Y%m%d")
     old = [r for r in rows if str(r[3] or "")[:8] <= cut]
     hero = [r for r in old if str(r[1]) in p2h]
