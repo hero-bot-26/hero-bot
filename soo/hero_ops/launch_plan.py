@@ -632,6 +632,7 @@ SHOOT_TAB = "_OPS_SHOOT_CHG"
 SHOOT_HEADER = ["detected_at", "season", "style", "name", "kind", "old", "new", "sourcing", "notified", "md"]
 SHOOT_GRACE_DAYS = 1      # 예정일 + 1일부터 미입고
 SHOOT_MISS_MAX_DAYS = 3   # 미입고는 D+3 까지 매일, 최대 3회(사용자 지시 2026-11-18 — 다음날 한 번만 X)
+SHOOT_MISS_MONDAY_DAYS = SHOOT_MISS_MAX_DAYS + 2   # 토·일엔 미입고를 안 보내고, 그 이틀에 걸린 건은 월요일에 한 통으로(사용자 지시 2026-11-23)
 SHOOT_REMIND_DAYS = 7     # 예정일 D-7 이내 진입 시 사전 독촉(사용자 지시 2026-11-13)
 # ★수신 라우팅·LIVE 스위치는 alert_route(ALERT_LIVE · ROUTES) — 네 알림이 한 스위치를 쓴다(2026-11-17)
 
@@ -698,7 +699,9 @@ def shoot_events(plans: list[dict], snap_rows: list[list] | None, ledger: list[l
                 seen[(r[1], r[2], r[5])].add(str(r[0])[:10])
         first = ledger is None
         miss = {}
-        for p in plans:
+        # ★주말엔 원장 행도 만들지 않는다 — 만들면 월요일에 토·일 행이 함께 나가고 3회 한도도 소진된다
+        max_late = SHOOT_MISS_MONDAY_DAYS if today.weekday() == 0 else SHOOT_MISS_MAX_DAYS
+        for p in ([] if today.weekday() >= 5 else plans):
             sp = p.get("shoot_plan")
             late = (today - sp).days if sp else -1
             if not p.get("shoot_ok") or not sp or p["shoot_done"] or late < SHOOT_GRACE_DAYS:
@@ -706,7 +709,7 @@ def shoot_events(plans: list[dict], snap_rows: list[list] | None, ledger: list[l
             k = (p["season"], p["style"], sp.isoformat())
             days = seen.get(k, set())
             # 처음 보는 건은 늦어도 한 번(CI 빠진 날 보전) · 이미 보낸 건은 D+3 이내·하루 한 번·합 3회까지
-            if not days or (late <= SHOOT_MISS_MAX_DAYS and len(days) < SHOOT_MISS_MAX_DAYS and today.isoformat() not in days):
+            if not days or (late <= max_late and len(days) < SHOOT_MISS_MAX_DAYS and today.isoformat() not in days):
                 miss.setdefault(k, [stamp, *k[:2], p["name"], "미입고", k[2], "", p["sourcing"], "기준선" if first else ""])
         events += sorted(miss.values(), key=lambda r: (r[5], r[2]))
         # ③ 사전(D-7 이내) — 같은 급감 가드 안에 둔다(완료 칸이 통째로 비면 무더기 독촉이 나간다)
@@ -816,7 +819,8 @@ def _notify_shoot(sheets, now: _dt.datetime, open_keys: set | None = None) -> No
                                               range=f"'{SHOOT_TAB}'!A2:{_col(len(SHOOT_HEADER))}").execute().get("values", [])
     col = _col(SHOOT_HEADER.index("notified") + 1)    # I — 'md' 열(J)이 붙어도 notified 는 I
     _notify_remind(sheets, now, rows, col, open_keys or set())
-    for kind in ("변경", "미입고"):          # '사전' 은 _notify_remind(사람별)
+    # 금요일에 발송 실패로 남은 미입고 행도 주말엔 묶어 두었다가 월요일에 보낸다
+    for kind in (("변경",) if now.weekday() >= 5 else ("변경", "미입고")):          # '사전' 은 _notify_remind(사람별)
         todo = [(i, r) for i, r in enumerate(rows) if len(r) >= 6 and r[4] == kind and not (r[8] if len(r) > 8 else "").strip()]
         if not todo:
             continue
